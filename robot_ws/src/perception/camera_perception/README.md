@@ -72,7 +72,6 @@ camera_perception/
 | `robot_interfaces` | VictimDetection 메시지 |
 | `tensorrt` | |
 | `opencv-python` | |
-| `numpy` | |
 
 ---
 
