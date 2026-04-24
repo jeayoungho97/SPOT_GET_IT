@@ -14,7 +14,7 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         measure_heights = False
 
     class init_state(LeggedRobotCfg.init_state):
-        pos = [0.0, 0.0, 0.24]
+        pos = [0.0, 0.0, 0.23]
         default_joint_angles = {
             'front_left_shoulder': 0.0,
             'front_left_leg': -0.6,
@@ -34,7 +34,7 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         control_type = 'P'
         stiffness = {'shoulder': 20.0, 'leg': 20.0, 'foot': 20.0}
         damping = {'shoulder': 0.5, 'leg': 0.5, 'foot': 0.5}
-        action_scale = 0.14
+        action_scale = 0.22
         decimation = 4
 
     class asset(LeggedRobotCfg.asset):
@@ -49,12 +49,12 @@ class SpotmicroTestCfg(LeggedRobotCfg):
 
     class rewards(LeggedRobotCfg.rewards):
         class scales:
-            tracking_lin_vel = 1.0
-            tracking_ang_vel = 0.9 
+            tracking_lin_vel = 2.5
+            tracking_ang_vel = 2.0 
             termination = -10.0
             lin_vel_z = -2.0
-            ang_vel_xy = -0.05
-            orientation = -1.0
+            ang_vel_xy = -0.2
+            orientation = -4.0
             torques = -0.001
             dof_vel = -0.001
             dof_acc = -2.5e-7
@@ -118,7 +118,7 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'step_tracking_ik_phase_v6'
+        run_name = 'spotmicro_v1_1_3_vel_improve'
         experiment_name = 'spotmicro_test'
-        max_iterations = 1500
+        max_iterations = 1000
         save_interval = 100
