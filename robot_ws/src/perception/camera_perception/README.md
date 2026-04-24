@@ -2,6 +2,8 @@
 
 RGB 스트림을 수신하여 YOLOv11 + TensorRT 기반 인명 탐지를 수행하고 결과를 publish합니다.
 
+> ⚠️ 실행 전 TensorRT 엔진 파일 배포가 필요합니다. [엔진 파일 배포](#엔진-파일-배포) 섹션을 반드시 확인하십시오.
+
 ---
 
 ## 역할
@@ -55,8 +57,8 @@ camera_perception/
 | `iou_threshold` | 0.45 | NMS IOU 임계값 |
 | `infer_size` | 480 | 추론 입력 크기 (정사각형) |
 | `show_preview` | false | imshow 미리보기 활성화 |
-| `preview_width` | 640 | 미리보기 창 너비 |
-| `preview_height` | 480 | 미리보기 창 높이 |
+| `preview_width` | 480 | 미리보기 창 너비 |
+| `preview_height` | 270 | 미리보기 창 높이 |
 
 ---
 
@@ -87,6 +89,18 @@ ros2 launch camera_perception camera_perception.launch.py
 
 ```bash
 ros2 topic echo /perception/camera/victim_detection
+```
+
+---
+
+## 엔진 파일 배포
+
+TensorRT 엔진 파일은 `ai_training/vision/models/best.engine`에 있습니다.
+`camera_perception.param.yaml`의 `engine_path`가 `/home/jetson/models/best.engine`을 가리키므로 배포 전 아래 명령어를 실행하십시오.
+
+```bash
+mkdir -p /home/jetson/models
+cp ~/vision_test/SPOT_GET_IT/ai_training/vision/models/best.engine /home/jetson/models/best.engine
 ```
 
 ---
