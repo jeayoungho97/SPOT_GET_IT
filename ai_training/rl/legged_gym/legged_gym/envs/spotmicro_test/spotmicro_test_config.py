@@ -53,8 +53,8 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             tracking_ang_vel = 0.9 
             termination = -10.0
             lin_vel_z = -2.0
-            ang_vel_xy = -0.1
-            orientation = -2.0
+            ang_vel_xy = -0.2
+            orientation = -4.0
             torques = -0.001
             dof_vel = -0.001
             dof_acc = -2.5e-7
@@ -118,7 +118,7 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v1_1_1_lin_vel_improve'
+        run_name = 'spotmicro_v1_1_2_orientation_improve'
         experiment_name = 'spotmicro_test'
         max_iterations = 1000
         save_interval = 100
