@@ -58,7 +58,7 @@ class OakCameraDriverNode(Node):
         encoder = pipeline.create(dai.node.VideoEncoder)
         encoder.setDefaultProfilePreset(
             self.fps,
-            dai.VideoEncoderProperties.Profile.H264_MAIN
+            dai.VideoEncoderProperties.Profile.MJPEG
         )
         encoder_input = cam_rgb.requestOutput(
             (enc_w, enc_h),
@@ -87,7 +87,7 @@ class OakCameraDriverNode(Node):
             msg = CompressedImage()
             msg.header.stamp = now
             msg.header.frame_id = 'oak_camera'
-            msg.format = 'h264'
+            msg.format = 'jpeg'
             msg.data = encoded_data.getData().tobytes()
             self.encoded_pub.publish(msg)
 
