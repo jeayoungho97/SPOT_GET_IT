@@ -1,6 +1,7 @@
 # play_diagnostic.py
-# SpotMicro RL 학습 결과 종합 진단 스크립트 v2
+# SpotMicro RL 학습 결과 종합 진단 스크립트 v3
 # 사용법: python legged_gym/scripts/play_diagnostic.py --task=spotmicro_test
+#         python legged_gym/scripts/play_diagnostic.py --task=spotmicro_test --checkpoint /path/to/model_500.pt --lightweight
 #
 # 출력:
 #   1. 터미널에 종합 진단 리포트
@@ -13,9 +14,16 @@
 #   - [9] 보행 패턴 분석 - 발 접촉/공중 시간 (Step 5용)
 #   - [10] 에너지 효율 분석 (Step 4~6용)
 #   - 자세 안정성 판정 버그 수정 (높이 목표 대비 편차 반영)
+#
+# v3 추가 항목:
+#   - --checkpoint / --lightweight 옵션 (중간 iter 경량 스냅샷)
+#   - Gait FFT 주파수 / L-R 비대칭 / 대각 동기화율
+#   - 관절별 사용 범위/편향 JSON 저장
+#   - 관절별 전력 분배 / 에너지 상세 JSON 저장
  
 from legged_gym import LEGGED_GYM_ROOT_DIR
 import os
+import re
 import isaacgym
 from legged_gym.envs import *
 from legged_gym.utils import get_args, task_registry
@@ -27,7 +35,7 @@ import matplotlib.pyplot as plt
 from collections import defaultdict
  
  
-def run_diagnostic(args):
+def run_diagnostic(args, checkpoint_path=None, lightweight=False):
     # ============ 환경 설정 ============
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
     env_cfg.env.num_envs = min(env_cfg.env.num_envs, 64)
@@ -41,7 +49,18 @@ def run_diagnostic(args):
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     obs = env.get_observations()
  
+    # --- Checkpoint 로드 (항목 1-A) ---
     train_cfg.runner.resume = True
+    if checkpoint_path:
+        # checkpoint 경로에서 run 디렉토리와 모델 번호 추출
+        ck_dir = os.path.dirname(checkpoint_path)
+        ck_basename = os.path.basename(checkpoint_path)  # e.g. model_500.pt
+        train_cfg.runner.load_run = ck_dir
+        # 모델 번호 추출 (model_500.pt → 500)
+        m = re.search(r'model_(\d+)\.pt', ck_basename)
+        if m:
+            train_cfg.runner.checkpoint = int(m.group(1))
+
     ppo_runner, train_cfg = task_registry.make_alg_runner(
         env=env, name=args.task, args=args, train_cfg=train_cfg
     )
@@ -69,11 +88,11 @@ def run_diagnostic(args):
     urdf_lower = np.zeros_like(dof_pos_lower)
     urdf_upper = np.zeros_like(dof_pos_upper)
     for i in range(num_joints):
-        m = (dof_pos_lower[i] + dof_pos_upper[i]) / 2
+        mid = (dof_pos_lower[i] + dof_pos_upper[i]) / 2
         r_soft = dof_pos_upper[i] - dof_pos_lower[i]
         r_urdf = r_soft / soft_ratio if soft_ratio > 0 else r_soft
-        urdf_lower[i] = m - r_urdf / 2
-        urdf_upper[i] = m + r_urdf / 2
+        urdf_lower[i] = mid - r_urdf / 2
+        urdf_upper[i] = mid + r_urdf / 2
  
     # foot 이름 추출
     try:
@@ -82,14 +101,31 @@ def run_diagnostic(args):
     except:
         foot_names = [f'foot_{i}' for i in range(num_feet)]
  
-    print(f"\n{'='*60}")
-    print(f"  SpotMicro RL 진단 v2")
-    print(f"  Envs: {num_envs}, Joints: {num_joints}, Feet: {num_feet}")
-    print(f"  Foot names: {foot_names}")
-    print(f"{'='*60}\n")
+    # --- 경량/풀 모드 헤더 ---
+    iter_number = 0
+    if checkpoint_path:
+        m = re.search(r'model_(\d+)\.pt', os.path.basename(checkpoint_path))
+        if m:
+            iter_number = int(m.group(1))
+
+    if not lightweight:
+        print(f"\n{'='*60}")
+        print(f"  SpotMicro RL 진단 v3")
+        print(f"  Envs: {num_envs}, Joints: {num_joints}, Feet: {num_feet}")
+        print(f"  Foot names: {foot_names}")
+        if checkpoint_path:
+            print(f"  Checkpoint: {os.path.basename(checkpoint_path)}")
+        print(f"{'='*60}\n")
+    else:
+        print(f"  [경량] iter={iter_number}, checkpoint={os.path.basename(checkpoint_path) if checkpoint_path else 'latest'}")
  
     # ============ 데이터 수집 ============
-    NUM_STEPS = int(env.max_episode_length) * 3
+    # 경량 모드: 1 에피소드 (max_episode_length steps)
+    # 풀 모드: 3 에피소드 분량
+    if lightweight:
+        NUM_STEPS = int(env.max_episode_length)
+    else:
+        NUM_STEPS = int(env.max_episode_length) * 3
  
     data = defaultdict(list)
  
@@ -124,6 +160,10 @@ def run_diagnostic(args):
  
     # 에너지 추적
     power_list = []
+
+    # --- 관절별 전력 추적 (항목 6-A) ---
+    per_joint_power_sum = np.zeros(num_joints)
+    peak_power = 0.0
  
     for step in range(NUM_STEPS):
         actions = policy(obs.detach())
@@ -211,6 +251,14 @@ def run_diagnostic(args):
         power = np.mean(np.sum(np.abs(torques_np * dof_vel_np), axis=1))
         power_list.append(power)
         data['power'].append(power)
+
+        # --- 관절별 전력 (항목 6-A) ---
+        per_joint_power = np.mean(np.abs(torques_np * dof_vel_np), axis=0)  # (num_joints,)
+        per_joint_power_sum += per_joint_power
+
+        # peak_power 추적
+        step_total_power = np.sum(np.abs(torques_np * dof_vel_np), axis=1).mean()
+        peak_power = max(peak_power, step_total_power)
  
         # --- 에피소드 통계 ---
         current_ep_return += rews
@@ -225,9 +273,129 @@ def run_diagnostic(args):
         # --- alive 비율 ---
         alive = (env.reset_buf == 0).sum().item()
         data['alive_ratio'].append(alive / num_envs)
- 
-    # ============ 리포트 출력 ============
+
+    # ============ 공통 후처리 ============
     total_samples = total_steps * num_envs
+
+    # --- 속도 오차 요약 ---
+    mean_err_x = np.mean(vel_errors_x)
+    mean_err_y = np.mean(vel_errors_y)
+    mean_ang_err = np.mean(ang_vel_errors)
+
+    # --- 자세 요약 ---
+    mean_height = np.mean(data['base_height'])
+    std_height = np.std(data['base_height'])
+    mean_vel_z = np.mean(np.abs(data['base_vel_z']))
+    height_target = env.cfg.rewards.base_height_target
+
+    # --- Roll/Pitch 요약 ---
+    mean_roll = np.mean(roll_list)
+    mean_pitch = np.mean(pitch_list)
+    max_roll = np.max(roll_list)
+    max_pitch = np.max(pitch_list)
+
+    # --- 토크 요약 ---
+    overall_sat = np.mean(data['torque_saturation_ratio']) * 100
+
+    # --- 에너지 요약 ---
+    mean_power = np.mean(power_list)
+    std_power = np.std(power_list)
+    mean_vel = np.mean(np.abs(data['actual_vel_x']))
+    robot_mass = 2.6
+    cot = mean_power / (robot_mass * 9.81 * mean_vel) if mean_vel > 0.01 else 0.0
+
+    # --- 에피소드 통계 ---
+    timeout_rate = 0.0
+    early_death_rate = 0.0
+    if episode_lengths:
+        timeout_rate = np.sum(np.array(episode_lengths) >= env.max_episode_length) / len(episode_lengths) * 100
+        early_death_rate = np.sum(np.array(episode_lengths) < 50) / len(episode_lengths) * 100
+
+    # --- Gait FFT 주파수 (항목 3-A) ---
+    contact_patterns = np.array(data['contact_pattern'])  # (steps, num_feet)
+    gait_frequency = 0.0
+    gait_period_steps = 0
+
+    if len(contact_patterns) > 100:
+        signal = contact_patterns[:, 0].astype(float)  # FL foot
+        signal = signal - signal.mean()  # DC 제거
+
+        dt_step = env.dt * env.cfg.control.decimation  # 1 step의 실제 시간(초)
+
+        from numpy.fft import fft, fftfreq
+        N = len(signal)
+        yf = np.abs(fft(signal))[:N//2]
+        xf = fftfreq(N, d=dt_step)[:N//2]
+
+        # DC(0Hz) 제외하고 피크 찾기
+        yf[0] = 0
+        peak_idx = np.argmax(yf)
+        gait_frequency = float(xf[peak_idx])  # Hz
+        gait_period_steps = int(1.0 / (gait_frequency * dt_step)) if gait_frequency > 0 else 0
+
+    # --- L/R 비대칭 (항목 3-B) ---
+    left_contact = []
+    right_contact = []
+    for f in range(num_feet):
+        total = feet_contact_count[f] + feet_air_count[f]
+        pct = feet_contact_count[f] / total * 100 if total > 0 else 0
+        fn_lower = foot_names[f].lower()
+        if 'left' in fn_lower or '_l_' in fn_lower:
+            left_contact.append(pct)
+        elif 'right' in fn_lower or '_r_' in fn_lower:
+            right_contact.append(pct)
+
+    lr_asymmetry = abs(np.mean(left_contact) - np.mean(right_contact)) if left_contact and right_contact else 0.0
+
+    # --- 대각 동기화율 (항목 3-C) ---
+    overall_trot = 0.0
+    diag1_sync = 0.0
+    diag2_sync = 0.0
+    all_ground = True
+    for f in range(num_feet):
+        total = feet_contact_count[f] + feet_air_count[f]
+        air_pct = feet_air_count[f] / total * 100 if total > 0 else 0
+        if air_pct > 5:
+            all_ground = False
+
+    if not all_ground and num_feet == 4 and len(contact_patterns) > 100:
+        diag1_sync = float(np.mean(contact_patterns[:, 0] == contact_patterns[:, 3]))
+        diag2_sync = float(np.mean(contact_patterns[:, 1] == contact_patterns[:, 2]))
+        overall_trot = (diag1_sync + diag2_sync) / 2
+
+    # ================================================================
+    # 경량 모드: JSON 저장만 하고 리턴 (항목 1-B, 1-C)
+    # ================================================================
+    if lightweight:
+        import json as _json
+
+        # 발별 접촉 비율
+        feet_contact_pct_dict = {}
+        for f in range(num_feet):
+            fname = foot_names[f]
+            total = feet_contact_count[f] + feet_air_count[f]
+            feet_contact_pct_dict[fname] = float(feet_contact_count[f] / total * 100) if total > 0 else 0.0
+
+        snapshot = {
+            'iter': iter_number,
+            'timeout_pct': float(timeout_rate),
+            'vel_error_x': float(mean_err_x),
+            'torque_saturation_pct': float(overall_sat),
+            'mean_roll_deg': float(np.degrees(mean_roll)),
+            'mean_pitch_deg': float(np.degrees(mean_pitch)),
+            'mean_power': float(mean_power),
+            'episode_return': float(np.mean(episode_returns)) if episode_returns else 0.0,
+            'feet_contact_pct': feet_contact_pct_dict,
+            'diagonal_sync': float(overall_trot * 100),
+        }
+
+        snapshot_path = os.path.join(diag_dir, f'snapshot_iter{iter_number:04d}.json')
+        with open(snapshot_path, 'w', encoding='utf-8') as jf:
+            _json.dump(snapshot, jf, indent=2, ensure_ascii=False)
+        print(f"    -> 스냅샷 저장: {snapshot_path}")
+        return  # 경량 모드 종료
+
+    # ============ 리포트 출력 (풀 모드만) ============
  
     # --- [1] 토크 분석 ---
     print(f"\n{'='*60}")
@@ -247,7 +415,6 @@ def run_diagnostic(args):
             status = "✓ 정상"
         print(f"  {joint_names[j]:<30} {limit:>7.3f} {max_seen:>8.3f} {sat_pct:>6.1f}% {status}")
  
-    overall_sat = np.mean(data['torque_saturation_ratio']) * 100
     print(f"\n  전체 평균 토크 포화율: {overall_sat:.1f}%")
     if overall_sat > 10:
         print(f"  → 토크 한계에 자주 도달. PD 게인 또는 action_scale 확인 필요.")
@@ -271,8 +438,6 @@ def run_diagnostic(args):
     print(f"\n{'='*60}")
     print(f"  [3] 선속도 추종 분석 (Linear Velocity Tracking)")
     print(f"{'='*60}")
-    mean_err_x = np.mean(vel_errors_x)
-    mean_err_y = np.mean(vel_errors_y)
     print(f"  평균 X속도 오차: {mean_err_x:.4f} m/s")
     print(f"  평균 Y속도 오차: {mean_err_y:.4f} m/s")
     if mean_err_x < 0.03:
@@ -292,31 +457,21 @@ def run_diagnostic(args):
               f"(max: {env.max_episode_length} = timeout)")
         print(f"  최소/최대 길이: {np.min(episode_lengths):.0f} / {np.max(episode_lengths):.0f}")
         print(f"  평균 리턴: {np.mean(episode_returns):.3f}")
- 
-        timeout_rate = np.sum(np.array(episode_lengths) >= env.max_episode_length) / len(episode_lengths) * 100
         print(f"  Timeout 비율: {timeout_rate:.1f}%")
- 
-        early_death_rate = np.sum(np.array(episode_lengths) < 50) / len(episode_lengths) * 100
         print(f"  조기 종료 비율 (<50 steps): {early_death_rate:.1f}%")
         if early_death_rate > 30:
             print(f"  → ⚠ 리셋 직후 넘어짐 빈번.")
     else:
         print(f"  에피소드 완료 없음")
  
-    # --- [5] 자세 안정성 (수정됨) ---
+    # --- [5] 자세 안정성 ---
     print(f"\n{'='*60}")
     print(f"  [5] 자세 안정성 (Posture Stability)")
     print(f"{'='*60}")
-    mean_height = np.mean(data['base_height'])
-    std_height = np.std(data['base_height'])
-    mean_vel_z = np.mean(np.abs(data['base_vel_z']))
-    height_target = env.cfg.rewards.base_height_target
     height_error = abs(mean_height - height_target)
- 
     print(f"  평균 높이: {mean_height:.4f} m (목표: {height_target} m, 편차: {height_error:.4f} m)")
     print(f"  높이 표준편차: {std_height:.4f} m")
     print(f"  평균 수직 속도(abs): {mean_vel_z:.4f} m/s")
- 
     if mean_height < 0.13:
         print(f"  → ⚠ 주저앉음. Kp 부족 또는 토크 포화 확인.")
     elif height_error > 0.04:
@@ -332,11 +487,9 @@ def run_diagnostic(args):
     print(f"\n{'='*60}")
     print(f"  [6] 회전 추종 분석 (Angular Velocity Tracking)")
     print(f"{'='*60}")
-    mean_ang_err = np.mean(ang_vel_errors)
     mean_cmd_yaw = np.mean(np.abs(data['cmd_ang_vel']))
     print(f"  평균 yaw 명령(abs): {mean_cmd_yaw:.4f} rad/s")
     print(f"  평균 yaw 오차: {mean_ang_err:.4f} rad/s")
- 
     if mean_cmd_yaw < 0.01:
         print(f"  → yaw 명령 없음 (Step 2 이전이면 정상)")
     elif mean_ang_err < 0.05:
@@ -350,14 +503,8 @@ def run_diagnostic(args):
     print(f"\n{'='*60}")
     print(f"  [7] 자세 각도 분석 (Roll/Pitch)")
     print(f"{'='*60}")
-    mean_roll = np.mean(roll_list)
-    mean_pitch = np.mean(pitch_list)
-    max_roll = np.max(roll_list)
-    max_pitch = np.max(pitch_list)
- 
     print(f"  평균 |roll|:  {np.degrees(mean_roll):.2f}° (최대: {np.degrees(max_roll):.2f}°)")
     print(f"  평균 |pitch|: {np.degrees(mean_pitch):.2f}° (최대: {np.degrees(max_pitch):.2f}°)")
- 
     if mean_roll > np.radians(15) or mean_pitch > np.radians(15):
         print(f"  → ⚠ 기울어짐 심각. orientation reward 강화 필요.")
     elif mean_roll > np.radians(8) or mean_pitch > np.radians(8):
@@ -374,7 +521,6 @@ def run_diagnostic(args):
         max_action_rate = np.max(action_rates)
         print(f"  평균 action rate (MSE): {mean_action_rate:.6f}")
         print(f"  최대 action rate (MSE): {max_action_rate:.6f}")
- 
         if mean_action_rate > 0.1:
             print(f"  → ⚠ 동작 급변 심함. 떨림 가능성. action_rate 페널티 추가 고려.")
         elif mean_action_rate > 0.01:
@@ -388,15 +534,10 @@ def run_diagnostic(args):
     print(f"{'='*60}")
     print(f"  {'Foot':<25} {'접촉%':>8} {'공중%':>8} {'상태':>10}")
     print(f"  {'-'*51}")
- 
-    all_ground = True
     for f in range(num_feet):
         total = feet_contact_count[f] + feet_air_count[f]
         contact_pct = feet_contact_count[f] / total * 100 if total > 0 else 0
         air_pct = feet_air_count[f] / total * 100 if total > 0 else 0
-        if air_pct > 5:
-            all_ground = False
- 
         if air_pct < 2:
             status = "⚠ 끌림"
         elif air_pct < 10:
@@ -406,16 +547,11 @@ def run_diagnostic(args):
         else:
             status = "⚠ 과도"
         print(f"  {foot_names[f]:<25} {contact_pct:>7.1f}% {air_pct:>7.1f}% {status}")
- 
+
     if all_ground:
         print(f"\n  → 모든 발이 바닥에 붙어 있음. Step 5 이전이면 정상.")
     else:
-        contact_patterns = np.array(data['contact_pattern'])
         if num_feet == 4 and len(contact_patterns) > 100:
-            diag1_sync = np.mean(contact_patterns[:, 0] == contact_patterns[:, 3])
-            diag2_sync = np.mean(contact_patterns[:, 1] == contact_patterns[:, 2])
-            overall_trot = (diag1_sync + diag2_sync) / 2
- 
             print(f"\n  대각선 동기화율: {overall_trot*100:.1f}%")
             print(f"    (FL-RR: {diag1_sync*100:.1f}%, FR-RL: {diag2_sync*100:.1f}%)")
             if overall_trot > 0.7:
@@ -424,20 +560,19 @@ def run_diagnostic(args):
                 print(f"  → 부분적 trot 패턴. 학습 더 필요.")
             else:
                 print(f"  → Trot이 아닌 다른 gait. 안정적이면 OK.")
+
+    # --- Gait FFT 출력 (항목 3) ---
+    print(f"\n  Gait 주파수: {gait_frequency:.2f} Hz (주기: {gait_period_steps} steps)")
+    print(f"  L/R 비대칭: {lr_asymmetry:.1f}%p")
  
     # --- [10] 에너지 효율 ---
     print(f"\n{'='*60}")
     print(f"  [10] 에너지 효율 분석 (Energy/Power)")
     print(f"{'='*60}")
-    mean_power = np.mean(power_list)
-    std_power = np.std(power_list)
     print(f"  평균 소비 전력: {mean_power:.4f} W")
     print(f"  전력 표준편차: {std_power:.4f} W")
- 
-    mean_vel = np.mean(np.abs(data['actual_vel_x']))
-    robot_mass = 2.6
+    print(f"  피크 전력: {peak_power:.4f} W")
     if mean_vel > 0.01:
-        cot = mean_power / (robot_mass * 9.81 * mean_vel)
         print(f"  Cost of Transport: {cot:.2f}")
         if cot < 2.0:
             print(f"  → ✓ 에너지 효율 우수")
@@ -448,13 +583,11 @@ def run_diagnostic(args):
     else:
         print(f"  → 속도 거의 0이라 CoT 계산 불가")
 
-    # --- [11] 대각선 쌍 공중시간 분석 ---
+    # --- [11] Trot 상세 분석 ---
     print(f"\n{'='*60}")
     print(f"  [11] Trot 상세 분석 (Trot Detail)")
     print(f"{'='*60}")
-
-    # 각 발의 평균 연속 공중시간 / 연속 접지시간 계산
-    contact_history = np.array(data['contact_pattern'])  # (steps, 4)
+    contact_history = np.array(data['contact_pattern'])
     for f in range(num_feet):
         air_durations = []
         ground_durations = []
@@ -475,8 +608,7 @@ def run_diagnostic(args):
         mean_air = np.mean(air_durations) if air_durations else 0
         mean_gnd = np.mean(ground_durations) if ground_durations else 0
         print(f"  {foot_names[f]}: 공중 {mean_air:.3f}s / 접지 {mean_gnd:.3f}s")
-    
-    # 대각선 쌍 비교
+
     print(f"\n  FL-RR 평균 공중시간 vs FR-RL 평균 공중시간")
     print(f"  비율이 1.0에 가까울수록 대칭")
 
@@ -500,9 +632,6 @@ def run_diagnostic(args):
         data['fall_heights'] = []
         data['fall_rolls'] = []
         data['fall_pitches'] = []
-
-    # 데이터 수집 루프에 추가 필요:
-    # done_ids에서 timeout이 아닌 경우의 높이/기울기를 기록
     if data['fall_heights']:
         print(f"  넘어질 때 평균 높이: {np.mean(data['fall_heights']):.4f} m")
         print(f"  넘어질 때 평균 |roll|: {np.degrees(np.mean(data['fall_rolls'])):.1f}°")
@@ -525,13 +654,12 @@ def run_diagnostic(args):
         print(f"  {joint_names[j]}: 사용범위 {usage_pct:.0f}%, 편향 {bias:+.3f} rad")
         if abs(bias) > 0.1:
             print(f"    → ⚠ 한쪽으로 편향. 비대칭 보행 원인 가능")
+
     # ============ 그래프 1: 종합 대시보드 ============
     fig, axes = plt.subplots(4, 2, figsize=(16, 20))
-    fig.suptitle('SpotMicro RL Diagnostic Report v2', fontsize=16, fontweight='bold')
- 
+    fig.suptitle('SpotMicro RL Diagnostic Report v3', fontsize=16, fontweight='bold')
     steps_range = range(len(data['cmd_vel_x']))
- 
-    # (0,0) 토크 포화율
+
     ax = axes[0, 0]
     sat_pcts = torque_saturation_count / total_samples * 100
     colors = ['red' if s > 20 else 'orange' if s > 5 else 'green' for s in sat_pcts]
@@ -541,8 +669,7 @@ def run_diagnostic(args):
     ax.set_xlabel('Saturation %')
     ax.set_title('Torque Saturation per Joint (>90% limit)')
     ax.axvline(x=10, color='orange', linestyle='--', alpha=0.5)
- 
-    # (0,1) 관절 사용 범위
+
     ax = axes[0, 1]
     for j in range(num_joints):
         ax.plot([j, j], [urdf_lower[j], urdf_upper[j]], 'b-', linewidth=6, alpha=0.2)
@@ -551,49 +678,34 @@ def run_diagnostic(args):
     ax.set_xticklabels(short_names, rotation=45, ha='right', fontsize=8)
     ax.set_ylabel('Angle (rad)')
     ax.set_title('Joint Range: URDF(blue) vs Actual(red)')
- 
-    # (1,0) 선속도 추종
+
     ax = axes[1, 0]
     ax.plot(steps_range, data['cmd_vel_x'], 'b-', alpha=0.7, label='Command X')
     ax.plot(steps_range, data['actual_vel_x'], 'r-', alpha=0.7, label='Actual X')
-    ax.set_xlabel('Step')
-    ax.set_ylabel('Velocity (m/s)')
-    ax.set_title('Linear Velocity Tracking')
-    ax.legend()
- 
-    # (1,1) 각속도 추종
+    ax.set_xlabel('Step'); ax.set_ylabel('Velocity (m/s)')
+    ax.set_title('Linear Velocity Tracking'); ax.legend()
+
     ax = axes[1, 1]
     ax.plot(steps_range, data['cmd_ang_vel'], 'b-', alpha=0.7, label='Command Yaw')
     ax.plot(steps_range, data['actual_ang_vel'], 'r-', alpha=0.7, label='Actual Yaw')
-    ax.set_xlabel('Step')
-    ax.set_ylabel('Angular Vel (rad/s)')
-    ax.set_title('Angular Velocity Tracking')
-    ax.legend()
- 
-    # (2,0) Roll/Pitch
+    ax.set_xlabel('Step'); ax.set_ylabel('Angular Vel (rad/s)')
+    ax.set_title('Angular Velocity Tracking'); ax.legend()
+
     ax = axes[2, 0]
     ax.plot(steps_range, [np.degrees(r) for r in data['roll_abs']], 'r-', alpha=0.7, label='|Roll|')
     ax.plot(steps_range, [np.degrees(p) for p in data['pitch_abs']], 'b-', alpha=0.7, label='|Pitch|')
     ax.axhline(y=15, color='red', linestyle='--', alpha=0.3, label='Warning 15°')
-    ax.set_xlabel('Step')
-    ax.set_ylabel('Angle (deg)')
-    ax.set_title('Roll / Pitch Stability')
-    ax.legend()
- 
-    # (2,1) 높이
+    ax.set_xlabel('Step'); ax.set_ylabel('Angle (deg)')
+    ax.set_title('Roll / Pitch Stability'); ax.legend()
+
     ax = axes[2, 1]
     ax.plot(steps_range, data['base_height'], 'g-', alpha=0.7, label='Height')
-    ax.axhline(y=height_target, color='blue', linestyle='--', alpha=0.5,
-               label=f'Target ({height_target}m)')
+    ax.axhline(y=height_target, color='blue', linestyle='--', alpha=0.5, label=f'Target ({height_target}m)')
     ax.axhline(y=0.12, color='red', linestyle='--', alpha=0.5, label='Termination')
-    ax.set_xlabel('Step')
-    ax.set_ylabel('Height (m)')
-    ax.set_title('Base Height')
-    ax.legend()
- 
-    # (3,0) 보행 패턴
+    ax.set_xlabel('Step'); ax.set_ylabel('Height (m)')
+    ax.set_title('Base Height'); ax.legend()
+
     ax = axes[3, 0]
-    contact_patterns = np.array(data['contact_pattern'])
     show_steps = min(200, len(contact_patterns))
     if show_steps > 0:
         pattern_slice = contact_patterns[-show_steps:]
@@ -601,24 +713,19 @@ def run_diagnostic(args):
             y_vals = pattern_slice[:, f].astype(float) * (num_feet - f)
             ax.fill_between(range(show_steps), y_vals - 0.4, y_vals + 0.4,
                           alpha=0.6, label=foot_names[f])
-        ax.set_xlabel('Step (last 200)')
-        ax.set_ylabel('Foot (filled=contact)')
-        ax.set_title('Gait Pattern (Robot #0)')
-        ax.legend(fontsize=7)
-        ax.set_yticks([])
- 
-    # (3,1) 에너지
+        ax.set_xlabel('Step (last 200)'); ax.set_ylabel('Foot (filled=contact)')
+        ax.set_title('Gait Pattern (Robot #0)'); ax.legend(fontsize=7); ax.set_yticks([])
+
     ax = axes[3, 1]
     ax.plot(steps_range, data['power'], 'orange', alpha=0.7)
-    ax.set_xlabel('Step')
-    ax.set_ylabel('Power (W)')
+    ax.set_xlabel('Step'); ax.set_ylabel('Power (W)')
     ax.set_title('Mechanical Power Consumption')
- 
+
     plt.tight_layout()
     save_path = os.path.join(diag_dir, 'diagnostic_report.png')
     plt.savefig(save_path, dpi=150)
     print(f"\n  종합 그래프 저장: {save_path}")
- 
+
     # ============ 그래프 2: 관절별 토크 상세 ============
     print(f"  관절별 토크 히스토리 수집 중...")
     torque_history = []
@@ -629,73 +736,58 @@ def run_diagnostic(args):
         obs, _, rews, dones, infos = env.step(actions.detach())
         torque_history.append(env.torques[0].cpu().numpy())
         dof_pos_history.append(env.dof_pos[0].cpu().numpy())
- 
+
     torque_history = np.array(torque_history)
     dof_pos_history = np.array(dof_pos_history)
- 
+
     fig2, axes2 = plt.subplots(4, 3, figsize=(18, 16))
     fig2.suptitle('Per-Joint Torque & Position (Robot #0, last 500 steps)', fontsize=14)
- 
     for j in range(min(num_joints, 12)):
-        row = j // 3
-        col = j % 3
-        ax = axes2[row, col]
-        ax_pos = ax.twinx()
- 
+        row = j // 3; col = j % 3
+        ax = axes2[row, col]; ax_pos = ax.twinx()
         t_steps = range(len(torque_history))
         ax.plot(t_steps, torque_history[:, j], 'b-', alpha=0.7, linewidth=0.8)
         ax.axhline(y=torque_limits[j], color='red', linestyle='--', alpha=0.3)
         ax.axhline(y=-torque_limits[j], color='red', linestyle='--', alpha=0.3)
         ax.set_ylabel('Torque (Nm)', color='blue', fontsize=8)
         ax.set_ylim(-torque_limits[j] * 1.2, torque_limits[j] * 1.2)
- 
         ax_pos.plot(t_steps, dof_pos_history[:, j], 'g-', alpha=0.5, linewidth=0.8)
         ax_pos.axhline(y=urdf_lower[j], color='orange', linestyle=':', alpha=0.3)
         ax_pos.axhline(y=urdf_upper[j], color='orange', linestyle=':', alpha=0.3)
         ax_pos.set_ylabel('Pos (rad)', color='green', fontsize=8)
- 
         ax.set_title(joint_names[j], fontsize=9)
         ax.tick_params(axis='both', labelsize=7)
- 
+
     plt.tight_layout()
     save_path2 = os.path.join(diag_dir, 'joint_detail.png')
     plt.savefig(save_path2, dpi=150)
     print(f"  관절 상세 그래프 저장: {save_path2}")
- 
+
     # ============ 그래프 3: 동작 부드러움 ============
     if action_rates:
         fig3, axes3 = plt.subplots(1, 2, figsize=(14, 5))
         fig3.suptitle('Action Smoothness Analysis', fontsize=14)
- 
         ax = axes3[0]
         ax.plot(action_rates, 'purple', alpha=0.7, linewidth=0.5)
-        ax.set_xlabel('Step')
-        ax.set_ylabel('Action Rate (MSE)')
+        ax.set_xlabel('Step'); ax.set_ylabel('Action Rate (MSE)')
         ax.set_title('Action Rate Over Time')
- 
         ax = axes3[1]
         ax.hist(action_rates, bins=50, color='purple', edgecolor='white', alpha=0.7)
-        ax.set_xlabel('Action Rate (MSE)')
-        ax.set_ylabel('Count')
+        ax.set_xlabel('Action Rate (MSE)'); ax.set_ylabel('Count')
         ax.set_title('Action Rate Distribution')
- 
         plt.tight_layout()
         save_path3 = os.path.join(diag_dir, 'action_smoothness.png')
         plt.savefig(save_path3, dpi=150)
         print(f"  동작 부드러움 그래프 저장: {save_path3}")
- 
+
     print(f"\n{'='*60}")
     print(f"  진단 완료!")
     print(f"  그래프 위치: {diag_dir}/")
     print(f"{'='*60}\n")
- 
+
     # ============ JSON 요약 저장 (experiment_report.py 연동용) ============
     import json as _json
     from datetime import datetime as _dt
-
-    # timeout_rate 변수가 위에서 이미 계산되어 있음
-    _timeout_rate = timeout_rate if 'timeout_rate' in dir() else 0.0
-    _early_death_rate = early_death_rate if 'early_death_rate' in dir() else 0.0
 
     diagnostic_summary = {
         'timestamp': _dt.now().isoformat(),
@@ -704,8 +796,8 @@ def run_diagnostic(args):
         'max_iterations': train_cfg.runner.max_iterations,
         'num_envs': num_envs,
         'metrics': {
-            'timeout_pct': float(_timeout_rate),
-            'early_death_pct': float(_early_death_rate),
+            'timeout_pct': float(timeout_rate),
+            'early_death_pct': float(early_death_rate),
             'vel_error_x': float(mean_err_x),
             'vel_error_y': float(mean_err_y),
             'ang_vel_error': float(mean_ang_err),
@@ -755,15 +847,25 @@ def run_diagnostic(args):
             if isinstance(val, (int, float)):
                 diagnostic_summary['reward_scales'][attr] = float(val)
 
-    # 관절별 상세
+    # 관절별 상세 (항목 5-A: 사용 범위/편향 추가)
     for j in range(num_joints):
         jname = joint_names[j]
         sat_pct = float(torque_saturation_count[j] / total_samples * 100)
         near_pct = float(dof_near_limit_count[j] / total_samples * 100)
+
+        range_used = float(dof_pos_max_seen[j] - dof_pos_min_seen[j])
+        range_total = float(urdf_upper[j] - urdf_lower[j])
+        usage_pct = range_used / range_total * 100 if range_total > 0 else 0
+        bias = float((dof_pos_max_seen[j] + dof_pos_min_seen[j]) / 2)
+
         diagnostic_summary['torque_per_joint'][jname] = {
             'saturation_pct': sat_pct,
             'max_torque_seen': float(torque_max_seen[j]),
             'torque_limit': float(torque_limits[j]),
+            'range_used_rad': range_used,
+            'range_total_rad': range_total,
+            'range_usage_pct': float(usage_pct),
+            'position_bias_rad': bias,
         }
         diagnostic_summary['joint_limit_near_pct'][jname] = near_pct
 
@@ -776,16 +878,60 @@ def run_diagnostic(args):
         diagnostic_summary['gait']['feet_air_pct'][fname] = \
             float(feet_air_count[f] / total * 100) if total > 0 else 0
 
+    # Gait 분석 데이터 (항목 3-D)
+    diagnostic_summary['gait']['frequency_hz'] = float(gait_frequency)
+    diagnostic_summary['gait']['period_steps'] = int(gait_period_steps)
+    diagnostic_summary['gait']['diagonal_sync_pct'] = float(overall_trot * 100)
+    diagnostic_summary['gait']['lr_asymmetry_pct'] = float(lr_asymmetry)
+
+    # 에너지 상세 (항목 6-B)
+    diagnostic_summary['energy'] = {
+        'mean_power': float(mean_power),
+        'peak_power': float(peak_power),
+        'peak_mean_ratio': float(peak_power / mean_power) if mean_power > 0 else None,
+        'cost_of_transport': float(cot) if mean_vel > 0.01 else None,
+        'per_joint_power': {},
+    }
+    total_power_sum = per_joint_power_sum.sum()
+    for j in range(num_joints):
+        avg_power = per_joint_power_sum[j] / total_steps
+        pct = per_joint_power_sum[j] / total_power_sum * 100 if total_power_sum > 0 else 0
+        diagnostic_summary['energy']['per_joint_power'][joint_names[j]] = {
+            'mean_power_w': float(avg_power),
+            'share_pct': float(pct),
+        }
+
     # JSON 저장
     json_save_path = os.path.join(diag_dir, 'diagnostic_summary.json')
     with open(json_save_path, 'w', encoding='utf-8') as jf:
         _json.dump(diagnostic_summary, jf, indent=2, ensure_ascii=False)
     print(f"  JSON 요약 저장: {json_save_path}")
 
-# ============================================================
-# 패치 끝
+
 # ============================================================
 if __name__ == '__main__':
+    import sys
+
     args = get_args()
-    run_diagnostic(args)
- 
+
+    # --- 항목 1-A: 추가 CLI 인자 파싱 ---
+    checkpoint_path = None
+    lightweight = False
+
+    # get_args()가 처리하지 않는 인자를 수동으로 파싱
+    argv = sys.argv[1:]
+    i = 0
+    while i < len(argv):
+        if argv[i] == '--checkpoint' and i + 1 < len(argv):
+            checkpoint_path = argv[i + 1]
+            i += 2
+        elif argv[i].startswith('--checkpoint='):
+            checkpoint_path = argv[i].split('=', 1)[1]
+            i += 1
+        elif argv[i] == '--lightweight':
+            lightweight = True
+            i += 1
+        else:
+            i += 1
+
+    run_diagnostic(args, checkpoint_path=checkpoint_path, lightweight=lightweight)

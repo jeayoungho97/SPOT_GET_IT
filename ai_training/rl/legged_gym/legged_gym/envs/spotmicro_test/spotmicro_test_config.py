@@ -14,7 +14,7 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         measure_heights = False
 
     class init_state(LeggedRobotCfg.init_state):
-        pos = [0.0, 0.0, 0.24]
+        pos = [0.0, 0.0, 0.23]
         default_joint_angles = {
             'front_left_shoulder': 0.0,
             'front_left_leg': -0.6,
@@ -118,7 +118,7 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'step_tracking_ik_phase_v6'
+        run_name = 'spotmicro_v1_0_ik_tracking'
         experiment_name = 'spotmicro_test'
-        max_iterations = 1500
+        max_iterations = 1000
         save_interval = 100

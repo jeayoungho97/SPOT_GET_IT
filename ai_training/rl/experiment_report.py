@@ -1,28 +1,19 @@
 #!/usr/bin/env python3
 """
-SpotMicro RL 실험 보고서 자동 생성 + Git 자동 커밋
+SpotMicro RL 실험 보고서 자동 생성 + Git 자동 커밋 (v3)
 =====================================================
 
 사용법:
-  # 방법 1: 목적을 CLI로 전달
   python experiment_report.py --task=spotmicro_test \
       --purpose "Step4: torques/action_rate 페널티 추가로 동작 부드럽게"
 
-  # 방법 2: 목적을 파일로 전달 (학습 전에 미리 작성)
-  echo "Step4: torques/action_rate 페널티 추가" > .experiment_purpose.txt
-  python experiment_report.py --task=spotmicro_test
-
-  # 방법 3: 목적 없이 실행 (보고서에 TODO로 표시)
-  python experiment_report.py --task=spotmicro_test
-
-동작:
-  1. diagnostics/ 에서 최신 diagnostic_summary.json 읽기
-  2. logs/ 에서 tensorboard 스칼라 + 그래프 추출
-  3. git diff로 이전 버전 대비 config 변경점 자동 감지
-  4. 이전 실험 보고서에서 수치 읽어서 비교표 생성
-  5. pass/fail 기준에 따라 결론 자동 생성
-  6. 마크다운 보고서 생성 → experiments/ 폴더
-  7. git add → commit → push
+v3 추가 섹션:
+  - 학습 추이 (Checkpoint 스냅샷) — 항목 1
+  - 학습 곡선 분석 — 항목 4
+  - Per-leg 분석 — 항목 2
+  - Gait 분석 — 항목 3
+  - 관절별 상세 — 항목 5
+  - 에너지 효율 상세 — 항목 6
 """
 
 import os
@@ -34,14 +25,13 @@ import subprocess
 import argparse
 from datetime import datetime
 from pathlib import Path
+import numpy as np
 
 # ============================================================
 # 설정
 # ============================================================
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
-# legged_gym이 다른 경로에 있으면 여기서 수정
-# PROJECT_ROOT를 legged_gym 루트로 바꾸거나, 아래 경로들을 조정
 LOGS_DIR = os.path.join(PROJECT_ROOT, 'legged_gym', 'logs')
 DIAG_DIR = os.path.join(PROJECT_ROOT, 'legged_gym', 'diagnostics')
 EXPERIMENTS_DIR = os.path.join(PROJECT_ROOT, 'experiments')
@@ -69,7 +59,7 @@ def parse_args():
 def get_next_experiment_id(experiments_dir):
     """experiments/ 폴더에서 마지막 번호를 찾아 +1"""
     os.makedirs(experiments_dir, exist_ok=True)
-    existing = glob.glob(os.path.join(experiments_dir, 'exp*.md'))
+    existing = glob.glob(os.path.join(experiments_dir, 'exp*'))
     if not existing:
         return 1
 
@@ -86,16 +76,13 @@ def get_next_experiment_id(experiments_dir):
 # 2. 목적(purpose) 읽기
 # ============================================================
 def get_purpose(args):
-    """CLI 인자 > .experiment_purpose.txt > TODO 순서로 읽기"""
     if args.purpose:
         return args.purpose
-
     if os.path.exists(PURPOSE_FILE):
         with open(PURPOSE_FILE, 'r', encoding='utf-8') as f:
             purpose = f.read().strip()
         if purpose:
             return purpose
-
     return "TODO: 실험 목적을 여기에 작성하세요"
 
 
@@ -103,23 +90,33 @@ def get_purpose(args):
 # 3. Diagnostic JSON 읽기
 # ============================================================
 def load_diagnostic_summary(experiment_name):
-    """play_diagnostic.py가 저장한 diagnostic_summary.json 로드"""
     json_path = os.path.join(DIAG_DIR, experiment_name, 'diagnostic_summary.json')
-
     if not os.path.exists(json_path):
         print(f"[경고] {json_path} 없음.")
         print(f"  play_diagnostic.py 에 JSON 저장 패치를 적용했는지 확인하세요.")
-        print(f"  패치 없이도 보고서 골격은 생성합니다.")
         return None
-
     with open(json_path, 'r', encoding='utf-8') as f:
         return json.load(f)
 
+
 # ============================================================
-# 4. Tensorboard 스칼라 추출
+# 3-1. 중간 checkpoint 스냅샷 로드 (항목 1-F)
+# ============================================================
+def load_snapshots(experiment_name):
+    """중간 checkpoint 스냅샷 JSON들을 읽어서 iter 순 정렬 반환"""
+    pattern = os.path.join(DIAG_DIR, experiment_name, 'snapshot_iter*.json')
+    files = sorted(glob.glob(pattern))  # 파일명 순 = iter 순
+    snapshots = []
+    for f in files:
+        with open(f, 'r') as fp:
+            snapshots.append(json.load(fp))
+    return snapshots
+
+
+# ============================================================
+# 4. Tensorboard 스칼라 추출 (항목 4-B: values/steps 추가)
 # ============================================================
 def extract_tensorboard_data(experiment_name, run_name=None):
-    """최신 run의 tensorboard event 파일에서 스칼라 추출"""
     try:
         from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
     except ImportError:
@@ -131,7 +128,6 @@ def extract_tensorboard_data(experiment_name, run_name=None):
         print(f"[경고] 로그 디렉토리 없음: {log_base}")
         return None
 
-    # 최신 run 찾기 (수정 시간 기준)
     if run_name:
         run_dirs = [os.path.join(log_base, run_name)]
     else:
@@ -143,18 +139,15 @@ def extract_tensorboard_data(experiment_name, run_name=None):
         if not all_runs:
             print(f"[경고] run 디렉토리 없음: {log_base}")
             return None
-        run_dirs = [all_runs[-1]]  # 최신 run
+        run_dirs = [all_runs[-1]]
 
     run_dir = run_dirs[0]
     run_name_actual = os.path.basename(run_dir)
     print(f"  Tensorboard 읽는 중: {run_dir}")
 
-    # event 파일 찾기
     event_files = glob.glob(os.path.join(run_dir, 'events.out.tfevents.*'))
     if not event_files:
-        # 하위 폴더 탐색
         event_files = glob.glob(os.path.join(run_dir, '**', 'events.out.tfevents.*'), recursive=True)
-
     if not event_files:
         print(f"[경고] event 파일 없음: {run_dir}")
         return None
@@ -168,7 +161,6 @@ def extract_tensorboard_data(experiment_name, run_name=None):
         'scalars': {},
     }
 
-    # 주요 스칼라 태그 추출
     scalar_tags = ea.Tags().get('scalars', [])
     for tag in scalar_tags:
         events = ea.Scalars(tag)
@@ -181,16 +173,87 @@ def extract_tensorboard_data(experiment_name, run_name=None):
                 'min': min(values),
                 'mean_last_10pct': sum(values[int(len(values)*0.9):]) / max(1, len(values) - int(len(values)*0.9)),
                 'total_steps': steps[-1] if steps else 0,
+                'values': values,   # 항목 4-B 추가
+                'steps': steps,     # 항목 4-B 추가
             }
 
     return tb_data
 
 
 # ============================================================
+# 4-C. 학습 곡선 형상 분석 (항목 4)
+# ============================================================
+def analyze_training_curve(tb_data):
+    """TB 스칼라에서 학습 곡선 형상 지표 추출"""
+    if not tb_data or not tb_data.get('scalars'):
+        return {}
+
+    result = {}
+
+    # mean_reward 키 찾기
+    reward_key = None
+    for key in tb_data.get('scalars', {}):
+        short = key.split('/')[-1] if '/' in key else key
+        if short in ('mean_reward', 'mean_return', 'mean_episode_reward'):
+            reward_key = key
+            break
+    if not reward_key:
+        return result
+
+    scalar = tb_data['scalars'][reward_key]
+    values = scalar.get('values', [])
+    steps = scalar.get('steps', [])
+    if len(values) < 10:
+        return result
+
+    values = np.array(values)
+    steps = np.array(steps)
+    final_val = scalar['max']  # 최고 reward 기준
+
+    # 1) 수렴 iter: 최종값의 90%에 처음 도달한 iter
+    threshold_90 = final_val * 0.9
+    convergence_iter = None
+    for i, v in enumerate(values):
+        if v >= threshold_90:
+            convergence_iter = int(steps[i])
+            break
+    result['convergence_iter_90pct'] = convergence_iter
+
+    # 2) 후반 안정성: 후반 50% 구간의 표준편차 / 평균
+    half = len(values) // 2
+    latter_half = values[half:]
+    if len(latter_half) > 0 and np.mean(latter_half) != 0:
+        stability = np.std(latter_half) / abs(np.mean(latter_half))
+    else:
+        stability = None
+    result['latter_half_cv'] = float(stability) if stability is not None else None
+
+    # 3) 정체 구간 탐지
+    window = max(10, len(values) // 20)
+    plateau_start = None
+    plateau_length = 0
+    for i in range(len(values) - window):
+        segment = values[i:i+window]
+        if np.std(segment) < 0.01 * abs(np.mean(segment) + 1e-8):
+            if plateau_start is None:
+                plateau_start = int(steps[i])
+            plateau_length = int(steps[i+window-1] - steps[i])
+        else:
+            plateau_start = None
+    result['plateau_detected'] = plateau_start is not None
+    result['plateau_start_iter'] = plateau_start
+    result['plateau_length'] = plateau_length
+
+    # total_steps for convergence judgment
+    result['total_steps'] = int(steps[-1]) if len(steps) > 0 else 0
+
+    return result
+
+
+# ============================================================
 # 5. Tensorboard 그래프 저장
 # ============================================================
 def save_tensorboard_graphs(tb_data, save_dir):
-    """주요 reward 커브를 PNG로 저장"""
     try:
         from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
         import matplotlib
@@ -213,15 +276,13 @@ def save_tensorboard_graphs(tb_data, save_dir):
     os.makedirs(save_dir, exist_ok=True)
     saved_files = []
 
-    # --- 그래프 1: Total Reward + Episode Length ---
     fig, axes = plt.subplots(2, 1, figsize=(12, 8))
     fig.suptitle(f"Training Curves: {tb_data['run_name']}", fontsize=14)
 
     reward_tags = [t for t in scalar_tags if 'reward' in t.lower() or 'return' in t.lower()]
     length_tags = [t for t in scalar_tags if 'length' in t.lower() or 'episode_length' in t.lower()]
 
-    # 메인 reward
-    for tag in reward_tags[:3]:  # 상위 3개만
+    for tag in reward_tags[:3]:
         events = ea.Scalars(tag)
         steps = [e.step for e in events]
         values = [e.value for e in events]
@@ -233,7 +294,6 @@ def save_tensorboard_graphs(tb_data, save_dir):
     axes[0].legend(fontsize=8)
     axes[0].grid(True, alpha=0.3)
 
-    # Episode length
     for tag in length_tags[:2]:
         events = ea.Scalars(tag)
         steps = [e.step for e in events]
@@ -252,7 +312,6 @@ def save_tensorboard_graphs(tb_data, save_dir):
     plt.close()
     saved_files.append(path1)
 
-    # --- 그래프 2: 개별 Reward 항목들 ---
     rew_tags = [t for t in scalar_tags if t.startswith('rew_') or '/rew_' in t]
     if rew_tags:
         n_plots = len(rew_tags)
@@ -278,7 +337,6 @@ def save_tensorboard_graphs(tb_data, save_dir):
             ax.set_title(label, fontsize=10)
             ax.grid(True, alpha=0.3)
 
-        # 빈 서브플롯 제거
         for i in range(n_plots, rows * cols):
             r, c = i // cols, i % cols
             ax = axes[r][c] if rows > 1 else axes[0][c]
@@ -292,13 +350,12 @@ def save_tensorboard_graphs(tb_data, save_dir):
 
     return saved_files
 
+
 def copy_final_model(experiment_name, dest_dir):
-    """최신 run의 최종 모델을 experiments 폴더로 복사"""
     import shutil
     log_base = os.path.join(LOGS_DIR, experiment_name)
     if not os.path.exists(log_base):
         return None
-
     runs = sorted(
         [os.path.join(log_base, d) for d in os.listdir(log_base)
          if os.path.isdir(os.path.join(log_base, d))],
@@ -306,58 +363,47 @@ def copy_final_model(experiment_name, dest_dir):
     )
     if not runs:
         return None
-
     latest_run = runs[-1]
     models = sorted(glob.glob(os.path.join(latest_run, 'model_*.pt')))
     if not models:
         return None
-
     final_model = models[-1]
     dest_path = os.path.join(dest_dir, 'model_final.pt')
     shutil.copy2(final_model, dest_path)
     return dest_path
-    
+
+
 # ============================================================
 # 6. Git Diff로 변경점 자동 감지
 # ============================================================
 def get_config_diff():
-    """git diff로 마지막 커밋 대비 config 변경 사항 추출"""
     try:
-        # staged + unstaged 변경 모두 포함
         result = subprocess.run(
             ['git', 'diff', 'HEAD', '--', '*.py'],
             capture_output=True, text=True, cwd=PROJECT_ROOT
         )
         if result.returncode != 0:
-            # 첫 커밋이거나 git이 없는 경우
             result = subprocess.run(
                 ['git', 'diff', '--cached', '--', '*.py'],
                 capture_output=True, text=True, cwd=PROJECT_ROOT
             )
-
         diff_text = result.stdout.strip()
         if not diff_text:
-            # unstaged만 있을 수 있음
             result = subprocess.run(
                 ['git', 'diff', '--', '*.py'],
                 capture_output=True, text=True, cwd=PROJECT_ROOT
             )
             diff_text = result.stdout.strip()
-
         return diff_text if diff_text else "(변경 사항 없음 또는 git 미설정)"
-
     except FileNotFoundError:
         return "(git이 설치되지 않음)"
 
 
 def parse_config_changes(diff_text):
-    """diff에서 reward scales, hyperparams 등 주요 변경 사항을 사람이 읽기 좋게 요약"""
     if diff_text.startswith("("):
         return diff_text
-
     changes = []
     lines = diff_text.split('\n')
-
     for i, line in enumerate(lines):
         if line.startswith('+') and not line.startswith('+++'):
             content = line[1:].strip()
@@ -367,10 +413,8 @@ def parse_config_changes(diff_text):
             content = line[1:].strip()
             if content and not content.startswith('#'):
                 changes.append(f"  - {content}")
-
     if not changes:
         return "(코드 변경 없음)"
-
     return '\n'.join(changes)
 
 
@@ -378,13 +422,10 @@ def parse_config_changes(diff_text):
 # 7. 이전 실험과 비교
 # ============================================================
 def load_previous_experiment(experiments_dir, current_id):
-    """직전 실험 보고서에서 수치 읽기"""
     prev_id = current_id - 1
     if prev_id < 1:
         return None
-
-    # JSON 사이드카 파일 찾기
-    pattern = os.path.join(experiments_dir, f'exp{prev_id:03d}_*.json')
+    pattern = os.path.join(experiments_dir, f'exp{prev_id:03d}_*/*metrics.json')
     files = glob.glob(pattern)
     if files:
         with open(files[0], 'r', encoding='utf-8') as f:
@@ -396,14 +437,12 @@ def load_previous_experiment(experiments_dir, current_id):
 # 8. Pass/Fail 자동 판정
 # ============================================================
 def auto_judge(metrics, run_name=''):
-    """phase4_detailed_guide의 통과 기준에 따라 자동 판정"""
     if not metrics:
         return "⚠ 수치 데이터 없음 — 수동 판정 필요", []
 
     judgments = []
     all_pass = True
 
-    # Timeout%
     timeout = metrics.get('timeout_pct', 0)
     if timeout >= 80:
         judgments.append(f"✅ Timeout: {timeout:.1f}% (≥80%)")
@@ -414,7 +453,6 @@ def auto_judge(metrics, run_name=''):
         judgments.append(f"❌ Timeout: {timeout:.1f}% (<60%, 미달)")
         all_pass = False
 
-    # 속도 오차 X
     vel_err = metrics.get('vel_error_x', 999)
     if vel_err < 0.12:
         judgments.append(f"✅ 속도오차 X: {vel_err:.4f} m/s (<0.12)")
@@ -424,7 +462,6 @@ def auto_judge(metrics, run_name=''):
         judgments.append(f"❌ 속도오차 X: {vel_err:.4f} m/s (>0.2, 미달)")
         all_pass = False
 
-    # 토크 포화율
     torque_sat = metrics.get('torque_saturation_pct', 0)
     if torque_sat < 10:
         judgments.append(f"✅ 토크포화: {torque_sat:.1f}% (<10%)")
@@ -434,7 +471,6 @@ def auto_judge(metrics, run_name=''):
         judgments.append(f"❌ 토크포화: {torque_sat:.1f}% (>40%)")
         all_pass = False
 
-    # 자세 안정성
     roll = metrics.get('mean_roll_deg', 0)
     pitch = metrics.get('mean_pitch_deg', 0)
     if roll < 8 and pitch < 8:
@@ -445,7 +481,6 @@ def auto_judge(metrics, run_name=''):
         judgments.append(f"❌ 자세: roll {roll:.1f}°, pitch {pitch:.1f}° (불안정)")
         all_pass = False
 
-    # 조기 종료
     early_death = metrics.get('early_death_pct', 0)
     if early_death < 5:
         judgments.append(f"✅ 조기종료: {early_death:.1f}% (<5%)")
@@ -472,13 +507,14 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
     elif diag_data:
         run_name = diag_data.get('run_name', '')
 
+    run_name = re.sub(r'^[A-Z][a-z]{2}\d{2}_\d{2}-\d{2}-\d{2}_', '', run_name)
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
     date_str = datetime.now().strftime('%Y-%m-%d')
 
     # 파일명
     safe_run = re.sub(r'[^\w\-]', '_', run_name) if run_name else 'unknown'
-    filename = f"exp{exp_id:03d}_{safe_run}.md"
-    json_filename = f"exp{exp_id:03d}_{safe_run}.json"
+    filename = f"exp{exp_id:03d}_{run_name}_report.md"
+    json_filename = f"exp{exp_id:03d}_{run_name}_metrics.json"
 
     metrics = diag_data.get('metrics', {}) if diag_data else {}
     config_snapshot = diag_data.get('config', {}) if diag_data else {}
@@ -487,7 +523,7 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
     # 자동 판정
     overall_judge, judgments = auto_judge(metrics, run_name)
 
-    # --- 변경점 요약 ---
+    # 변경점 요약
     changes_summary = parse_config_changes(diff_text)
 
     # --- 이전 대비 비교표 ---
@@ -539,7 +575,6 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
             graph_lines.append(f"![{gname}]({exp_dir_rel}/{gname})")
         graph_refs = '\n'.join(graph_lines)
 
-    # diagnostic 그래프 참조
     diag_graph_dir = os.path.join(DIAG_DIR, task_name)
     diag_graphs_ref = ""
     if os.path.exists(diag_graph_dir):
@@ -557,6 +592,245 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
                 reward_rows.append(f"| {k} | {v} |")
         if reward_rows:
             reward_table = "| Reward | Scale |\n|--------|-------|\n" + '\n'.join(reward_rows)
+
+    # =====================================================
+    # 신규 섹션 생성
+    # =====================================================
+
+    # --- 항목 1: 학습 추이 (Checkpoint 스냅샷) ---
+    snapshots = load_snapshots(task_name)
+    snapshot_section = ""
+    if snapshots:
+        snap_rows = []
+        for s in snapshots:
+            snap_rows.append(
+                f"| {s.get('iter', '?')} "
+                f"| {s.get('timeout_pct', 0):.1f} "
+                f"| {s.get('vel_error_x', 0):.4f} "
+                f"| {s.get('torque_saturation_pct', 0):.1f} "
+                f"| {s.get('mean_roll_deg', 0):.1f} "
+                f"| {s.get('mean_pitch_deg', 0):.1f} "
+                f"| {s.get('mean_power', 0):.2f} "
+                f"| {s.get('episode_return', 0):.1f} |"
+            )
+        snap_table = '\n'.join(snap_rows)
+        snapshot_section = f"""
+## 학습 추이 (Checkpoint 스냅샷)
+
+| iter | Timeout% | 속도오차X | 토크포화% | Roll° | Pitch° | 전력(W) | Return |
+|------|----------|----------|----------|-------|--------|---------|--------|
+{snap_table}
+"""
+
+    # --- 항목 4: 학습 곡선 분석 ---
+    curve_section = ""
+    curve_analysis = analyze_training_curve(tb_data)
+    if curve_analysis:
+        conv_iter = curve_analysis.get('convergence_iter_90pct')
+        total_iter = curve_analysis.get('total_steps', 1)
+        cv = curve_analysis.get('latter_half_cv')
+        plateau = curve_analysis.get('plateau_detected', False)
+        plateau_start = curve_analysis.get('plateau_start_iter')
+        plateau_len = curve_analysis.get('plateau_length', 0)
+
+        # 수렴 판정
+        if conv_iter is not None and total_iter > 0:
+            ratio = conv_iter / total_iter
+            if ratio < 0.3:
+                conv_judge = "빠름"
+            elif ratio < 0.7:
+                conv_judge = "보통"
+            else:
+                conv_judge = "느림"
+            conv_str = f"{conv_iter}"
+        else:
+            conv_judge = "미수렴"
+            conv_str = "N/A"
+
+        # CV 판정
+        if cv is not None:
+            if cv < 0.05:
+                cv_judge = "안정"
+            elif cv < 0.15:
+                cv_judge = "보통"
+            else:
+                cv_judge = "불안정"
+            cv_str = f"{cv:.3f}"
+        else:
+            cv_judge = "N/A"
+            cv_str = "N/A"
+
+        # 정체 판정
+        if plateau:
+            plateau_str = f"있음 (iter {plateau_start}, {plateau_len} iter)"
+        else:
+            plateau_str = "없음"
+
+        curve_section = f"""
+## 학습 곡선 분석
+
+| 지표 | 값 | 판정 |
+|------|-----|------|
+| 수렴 iter (90%) | {conv_str} | {conv_judge} |
+| 후반 안정성 (CV) | {cv_str} | {cv_judge} |
+| 정체 구간 | {plateau_str} | |
+"""
+
+    # --- 항목 2: Per-leg 분석 ---
+    per_leg_section = ""
+    gait_data = diag_data.get('gait', {}) if diag_data else {}
+    contact_pct = gait_data.get('feet_contact_pct', {})
+    air_pct = gait_data.get('feet_air_pct', {})
+
+    if contact_pct:
+        leg_rows = []
+        for foot in contact_pct:
+            c = contact_pct[foot]
+            a = air_pct.get(foot, 0)
+            leg_rows.append(f"| {foot} | {c:.1f}% | {a:.1f}% |")
+        per_leg_table = "| 발 | 접촉% | 공중% |\n|-----|-------|------|\n" + '\n'.join(leg_rows)
+
+        # 관절별 토크 포화 테이블
+        torque_per_joint = diag_data.get('torque_per_joint', {}) if diag_data else {}
+        per_joint_torque_table = ""
+        if torque_per_joint:
+            jt_rows = []
+            for jname, jdata in torque_per_joint.items():
+                sat = jdata.get('saturation_pct', 0)
+                max_t = jdata.get('max_torque_seen', 0)
+                limit = jdata.get('torque_limit', 0)
+                status = "❌" if sat > 20 else "⚠️" if sat > 5 else "✅"
+                jt_rows.append(f"| {jname} | {sat:.1f}% | {max_t:.3f} | {limit:.3f} | {status} |")
+            per_joint_torque_table = (
+                "| 관절 | 포화% | 최대토크 | 한계 | 상태 |\n"
+                "|------|------|---------|------|------|\n"
+                + '\n'.join(jt_rows)
+            )
+
+        per_leg_section = f"""
+## Per-leg 분석
+
+### 발별 접촉/공중 비율
+
+{per_leg_table}
+
+### 관절별 토크 포화
+
+{per_joint_torque_table}
+"""
+
+    # --- 항목 3: Gait 분석 ---
+    gait_section = ""
+    if gait_data:
+        gait_freq = gait_data.get('frequency_hz', 0)
+        gait_period = gait_data.get('period_steps', 0)
+        diag_sync = gait_data.get('diagonal_sync_pct', 0)
+        lr_asym = gait_data.get('lr_asymmetry_pct', 0)
+
+        # 대각 동기화 판정
+        if diag_sync >= 70:
+            sync_judge = "✅ Trot 패턴"
+        elif diag_sync >= 50:
+            sync_judge = "⚠️ 부분적 Trot"
+        else:
+            sync_judge = "다른 Gait"
+
+        # L/R 비대칭 판정
+        if lr_asym < 3:
+            asym_judge = "✅ 대칭"
+        elif lr_asym < 10:
+            asym_judge = "⚠️ 약간 비대칭"
+        else:
+            asym_judge = "❌ 비대칭"
+
+        gait_judge = f"{sync_judge} / {asym_judge}"
+
+        freq_str = f"{gait_freq:.2f}" if gait_freq > 0 else "측정 불가"
+        period_str = f"{gait_period}" if gait_period > 0 else "측정 불가"
+
+        gait_section = f"""
+## Gait 분석
+
+| 지표 | 값 |
+|------|-----|
+| Gait 주파수 | {freq_str} Hz |
+| Gait 주기 | {period_str} steps |
+| 대각 동기화율 | {diag_sync:.1f}% |
+| L/R 비대칭 | {lr_asym:.1f}%p |
+| 판정 | {gait_judge} |
+"""
+
+    # --- 항목 5: 관절별 상세 ---
+    joint_detail_section = ""
+    torque_per_joint = diag_data.get('torque_per_joint', {}) if diag_data else {}
+    joint_limit_near = diag_data.get('joint_limit_near_pct', {}) if diag_data else {}
+    if torque_per_joint:
+        jd_rows = []
+        for jname, jdata in torque_per_joint.items():
+            sat = jdata.get('saturation_pct', 0)
+            usage = jdata.get('range_usage_pct', 0)
+            bias = jdata.get('position_bias_rad', 0)
+            near = joint_limit_near.get(jname, 0)
+
+            # 상태 판정
+            if sat > 20 or abs(bias) > 0.1 or near > 10:
+                status = "⚠️"
+            else:
+                status = "✅"
+
+            jd_rows.append(
+                f"| {jname} | {sat:.1f}% | {usage:.0f}% | {bias:+.3f} | {near:.1f}% | {status} |"
+            )
+        jd_table = '\n'.join(jd_rows)
+        joint_detail_section = f"""
+## 관절별 상세
+
+| 관절 | 토크포화% | 사용범위% | 편향(rad) | 한계근접% | 상태 |
+|------|----------|----------|----------|----------|------|
+{jd_table}
+"""
+
+    # --- 항목 6: 에너지 효율 상세 ---
+    energy_section = ""
+    energy_data = diag_data.get('energy', {}) if diag_data else {}
+    if energy_data:
+        e_mean = energy_data.get('mean_power', 0)
+        e_peak = energy_data.get('peak_power', 0)
+        e_ratio = energy_data.get('peak_mean_ratio')
+        e_cot = energy_data.get('cost_of_transport')
+
+        ratio_str = f"{e_ratio:.1f}x" if e_ratio is not None else "N/A"
+        cot_str = f"{e_cot:.2f}" if e_cot is not None else "N/A"
+
+        # 관절별 전력 분배
+        per_jp = energy_data.get('per_joint_power', {})
+        jp_table = ""
+        if per_jp:
+            jp_rows = []
+            # 전력 비율 순으로 정렬
+            sorted_jp = sorted(per_jp.items(), key=lambda x: x[1].get('share_pct', 0), reverse=True)
+            for jname, jpdata in sorted_jp:
+                jp_rows.append(
+                    f"| {jname} | {jpdata.get('mean_power_w', 0):.3f} | {jpdata.get('share_pct', 0):.1f}% |"
+                )
+            jp_table = (
+                "\n### 관절별 전력 분배\n\n"
+                "| 관절 | 평균전력(W) | 비율% |\n"
+                "|------|-----------|-------|\n"
+                + '\n'.join(jp_rows)
+            )
+
+        energy_section = f"""
+## 에너지 효율 상세
+
+| 지표 | 값 |
+|------|-----|
+| 평균 전력 | {e_mean:.2f} W |
+| 피크 전력 | {e_peak:.2f} W |
+| 피크/평균 비율 | {ratio_str} |
+| CoT | {cot_str} |
+{jp_table}
+"""
 
     # --- 보고서 조립 ---
     report = f"""# 실험 {exp_id:03d}: {run_name}
@@ -613,6 +887,12 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
 | Action Rate | {metrics.get('mean_action_rate', 'N/A')} |
 | 평균 전력 | {metrics.get('mean_power', 'N/A')} W |
 | CoT | {metrics.get('cost_of_transport', 'N/A')} |
+{snapshot_section}
+{curve_section}
+{per_leg_section}
+{gait_section}
+{joint_detail_section}
+{energy_section}
 {comparison}
 {tb_summary}
 
@@ -647,7 +927,6 @@ _(추가 메모가 있으면 여기에 작성)_
 
 
 def _delta(current, previous, unit, higher_better=True):
-    """변화량을 화살표로 표시"""
     if current is None or previous is None:
         return "N/A"
     try:
@@ -663,7 +942,6 @@ def _delta(current, previous, unit, higher_better=True):
 
 
 def _auto_conclusion(metrics, judgments):
-    """수치 기반 자동 결론 생성"""
     if not metrics:
         return "데이터 없음. play_diagnostic.py를 실행 후 다시 시도하세요."
 
@@ -684,7 +962,6 @@ def _auto_conclusion(metrics, judgments):
         for i in issues:
             lines.append(f"  - {i}")
 
-        # 구체적 제안
         timeout = metrics.get('timeout_pct', 100)
         if timeout < 60:
             lines.append("")
@@ -705,18 +982,14 @@ def _auto_conclusion(metrics, judgments):
 # 10. EXPERIMENT_LOG.md 업데이트
 # ============================================================
 def update_experiment_log(exp_id, run_name, purpose, metrics, overall_judge):
-    """전체 실험 요약 테이블에 한 줄 추가"""
     log_path = os.path.join(EXPERIMENTS_DIR, 'EXPERIMENT_LOG.md')
-
     date_str = datetime.now().strftime('%m/%d')
     timeout = f"{metrics.get('timeout_pct', 'N/A'):.1f}%" if metrics else "N/A"
     vel_err = f"{metrics.get('vel_error_x', 'N/A'):.3f}" if metrics else "N/A"
     torque = f"{metrics.get('torque_saturation_pct', 'N/A'):.1f}%" if metrics else "N/A"
     result = "✅" if "PASS" in overall_judge else "❌"
 
-    # 목적 줄이기 (테이블에 들어갈 만큼)
     short_purpose = purpose[:40] + "..." if len(purpose) > 40 else purpose
-
     new_row = (
         f"| {exp_id:03d} | {date_str} | {run_name} | {short_purpose} "
         f"| {timeout} | {vel_err} | {torque} | {result} |"
@@ -736,7 +1009,6 @@ def update_experiment_log(exp_id, run_name, purpose, metrics, overall_judge):
 
     with open(log_path, 'w', encoding='utf-8') as f:
         f.write(content)
-
     print(f"  실험 로그 업데이트: {log_path}")
 
 
@@ -744,12 +1016,9 @@ def update_experiment_log(exp_id, run_name, purpose, metrics, overall_judge):
 # 11. Git Commit & Push
 # ============================================================
 def git_commit_push(exp_id, run_name, overall_judge, no_push=False):
-    """git add → commit → push"""
     try:
-        # 전체 변경사항 스테이징
         subprocess.run(['git', 'add', '-A'], cwd=PROJECT_ROOT, check=True)
 
-        # 커밋 메시지
         result_tag = "PASS" if "PASS" in overall_judge else "FAIL"
         msg = f"[exp{exp_id:03d}] {run_name} — {result_tag}"
 
@@ -786,7 +1055,7 @@ def main():
     args = parse_args()
 
     print("\n" + "=" * 60)
-    print("  SpotMicro RL 실험 보고서 자동 생성")
+    print("  SpotMicro RL 실험 보고서 자동 생성 v3")
     print("=" * 60)
 
     # --- 실험 ID ---
@@ -817,12 +1086,13 @@ def main():
     elif diag_data:
         run_name = diag_data.get('run_name', '')
 
+    run_name = re.sub(r'^[A-Z][a-z]{2}\d{2}_\d{2}-\d{2}-\d{2}_', '', run_name)
     safe_run = re.sub(r'[^\w\-]', '_', run_name) if run_name else 'unknown'
-    exp_assets_dir = os.path.join(EXPERIMENTS_DIR, f"exp{exp_id:03d}_{safe_run}")
+    exp_assets_dir = os.path.join(EXPERIMENTS_DIR, f"exp{exp_id:03d}_{run_name}")
     os.makedirs(exp_assets_dir, exist_ok=True)
 
     tb_graphs = save_tensorboard_graphs(tb_data, exp_assets_dir)
-    
+
     # 최종 모델 복사
     model_path = copy_final_model(args.task, exp_assets_dir)
     if model_path:
@@ -845,7 +1115,6 @@ def main():
     # --- 이전 실험 비교 ---
     prev_data = load_previous_experiment(EXPERIMENTS_DIR, exp_id)
 
-
     # --- 보고서 생성 ---
     print(f"\n[5/6] 보고서 생성...")
     report, md_filename, json_filename = generate_report(
@@ -854,13 +1123,13 @@ def main():
     )
 
     # 보고서 저장
-    md_path = os.path.join(EXPERIMENTS_DIR, md_filename)
+    md_path = os.path.join(exp_assets_dir, md_filename)
     with open(md_path, 'w', encoding='utf-8') as f:
         f.write(report)
     print(f"    보고서: {md_path}")
 
-    # JSON 사이드카 저장 (다음 실험 비교용)
-    json_path = os.path.join(EXPERIMENTS_DIR, json_filename)
+    # JSON 사이드카 저장
+    json_path = os.path.join(exp_assets_dir, json_filename)
     sidecar = {
         'exp_id': exp_id,
         'run_name': run_name,
