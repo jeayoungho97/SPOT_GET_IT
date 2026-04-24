@@ -1,0 +1,1 @@
+set(__QT_DEPLOY_PLUGINS )
