@@ -4,8 +4,6 @@ camera_perception_node:
     conf_threshold: 0.25
     iou_threshold: 0.45
     infer_size: 480
-    depth_roi_size: 5        # 거리 추정 ROI 크기 (픽셀)
-    depth_smooth_frames: 5   # 거리 스무딩 프레임 수
-    show_preview: false   # true로 변경하면 bbox 미리보기 창 활성화
-    preview_width: 480
-    preview_height: 270
+    show_preview: true   # true로 변경하면 bbox 미리보기 창 활성화
+    preview_width: 640
+    preview_height: 480
