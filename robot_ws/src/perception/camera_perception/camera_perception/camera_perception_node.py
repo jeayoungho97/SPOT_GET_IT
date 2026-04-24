@@ -15,15 +15,15 @@ class CameraPerceptionNode(Node):
         super().__init__('camera_perception_node')
 
         # 파라미터 선언
-        self.declare_parameter('engine_path',      '/home/jetson/models/best_fp16.engine')
+        self.declare_parameter('engine_path',      '/home/jetson/models/best.engine')
         self.declare_parameter('conf_threshold',   0.25)
         self.declare_parameter('iou_threshold',    0.45)
         self.declare_parameter('infer_size',       480)
         self.declare_parameter('depth_roi_size',   5)
         self.declare_parameter('depth_smooth_frames', 5)
         self.declare_parameter('show_preview', False)
-        self.declare_parameter('preview_width', 640)
-        self.declare_parameter('preview_height', 480)
+        self.declare_parameter('preview_width', 480)
+        self.declare_parameter('preview_height', 270)
 
         engine_path         = self.get_parameter('engine_path').value
         conf_threshold      = self.get_parameter('conf_threshold').value
