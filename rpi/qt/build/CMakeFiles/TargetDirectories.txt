@@ -1,0 +1,9 @@
+/home/pi/robot_project/qt_app/build/CMakeFiles/TestApp.dir
+/home/pi/robot_project/qt_app/build/CMakeFiles/edit_cache.dir
+/home/pi/robot_project/qt_app/build/CMakeFiles/rebuild_cache.dir
+/home/pi/robot_project/qt_app/build/CMakeFiles/list_install_components.dir
+/home/pi/robot_project/qt_app/build/CMakeFiles/install.dir
+/home/pi/robot_project/qt_app/build/CMakeFiles/install/local.dir
+/home/pi/robot_project/qt_app/build/CMakeFiles/install/strip.dir
+/home/pi/robot_project/qt_app/build/CMakeFiles/TestApp_autogen_timestamp_deps.dir
+/home/pi/robot_project/qt_app/build/CMakeFiles/TestApp_autogen.dir
