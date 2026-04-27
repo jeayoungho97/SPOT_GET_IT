@@ -33,7 +33,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from collections import defaultdict
- 
+import argparse, sys 
  
 def run_diagnostic(args, checkpoint_path=None, lightweight=False):
     # ============ 환경 설정 ============
