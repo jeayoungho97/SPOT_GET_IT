@@ -335,6 +335,10 @@ class LeggedRobot(BaseTask):
 
         if self.cfg.terrain.measure_heights:
             self.measured_heights = self._get_heights()
+        if self.common_step_counter < 3:
+            print(f"[DEBUG] push_robots={self.cfg.domain_rand.push_robots}, "
+                  f"push_interval={self.cfg.domain_rand.push_interval}, "
+                  f"step={self.common_step_counter}")
         if self.cfg.domain_rand.push_robots and  (self.common_step_counter % self.cfg.domain_rand.push_interval == 0):
             self._push_robots()
 
