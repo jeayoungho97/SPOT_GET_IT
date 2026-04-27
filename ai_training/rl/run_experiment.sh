@@ -110,7 +110,7 @@ echo "[2/4] 중간 checkpoint 경량 스냅샷..."
 echo "----------------------------------------------"
 
 # 최신 run 디렉토리 찾기
-LATEST_RUN=$(ls -td "$LEGGED_GYM_DIR/legged_gym/logs/$TASK"/*/ 2>/dev/null | head -1)
+LATEST_RUN=$(ls -td "$LEGGED_GYM_DIR/logs/$TASK"/*/ 2>/dev/null | head -1)
 
 if [ -n "$LATEST_RUN" ]; then
     # checkpoint 목록에서 균등 간격으로 5개 선택
