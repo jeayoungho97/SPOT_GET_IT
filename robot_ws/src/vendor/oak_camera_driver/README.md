@@ -52,8 +52,8 @@ oak_camera_driver/
 | `rgb_width` | 480 | RGB 출력 너비 (victim_detection bbox 정규화 기준) |
 | `rgb_height` | 270 | RGB 출력 높이 (victim_detection bbox 정규화 기준) |
 | `show_preview` | false | imshow 미리보기 활성화 |
-| `preview_width` | 1280 | 미리보기 창 너비 |
-| `preview_height` | 720 | 미리보기 창 높이 |
+| `preview_width` | 480 | 미리보기 창 너비 |
+| `preview_height` | 270 | 미리보기 창 높이 |
 
 ---
 
