@@ -44,7 +44,7 @@ class CameraPerceptionNode(Node):
         # Subscriber
         self.rgb_sub = self.create_subscription(
             Image,
-            '/perception/camera/image_raw',
+            '/vendor/camera/image_raw',
             self.rgb_callback,
             1
         )

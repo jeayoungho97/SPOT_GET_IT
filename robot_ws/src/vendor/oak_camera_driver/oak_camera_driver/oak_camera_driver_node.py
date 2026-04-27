@@ -26,8 +26,8 @@ class OakCameraDriverNode(Node):
         self.preview_height = self.get_parameter('preview_height').value
 
         # Publisher
-        self.rgb_pub     = self.create_publisher(Image,           '/perception/camera/image_raw', 1)
-        self.encoded_pub = self.create_publisher(CompressedImage, '/perception/camera/encoded',   1)
+        self.rgb_pub     = self.create_publisher(Image,           '/vendor/camera/image_raw', 1)
+        self.encoded_pub = self.create_publisher(CompressedImage, '/vendor/camera/encoded',   1)
 
         self.bridge = CvBridge()
 
@@ -52,7 +52,7 @@ class OakCameraDriverNode(Node):
         )
         self.rgb_queue = rgb_out.createOutputQueue(maxSize=1, blocking=False)
 
-        # H.264 인코더 (width: 32의 배수, height: 8의 배수)
+        # MJPEG 인코더 (width: 32의 배수, height: 8의 배수)
         enc_w = (self.rgb_width  + 31) // 32 * 32
         enc_h = (self.rgb_height +  7) //  8 *  8
         encoder = pipeline.create(dai.node.VideoEncoder)
@@ -81,7 +81,7 @@ class OakCameraDriverNode(Node):
             msg.header.frame_id = 'oak_camera'
             self.rgb_pub.publish(msg)
 
-        # H.264 인코딩 스트림 publish
+        # MJPEG 인코딩 스트림 publish
         encoded_data = self.encoded_queue.tryGet()
         if encoded_data is not None:
             msg = CompressedImage()
