@@ -49,8 +49,8 @@ class SpotmicroTestCfg(LeggedRobotCfg):
 
     class rewards(LeggedRobotCfg.rewards):
         class scales:
-            tracking_lin_vel = 2.5
-            tracking_ang_vel = 2.0 
+            tracking_lin_vel = 1.5
+            tracking_ang_vel = 0.9 
             termination = -10.0
             lin_vel_z = -2.0
             ang_vel_xy = -0.2
@@ -68,8 +68,10 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             feet_clearance = 0.0
             trot_contact = 0.5
             tracking_ik = 1.0
+            stand_still = 1.0
         soft_dof_pos_limit = 0.9
         base_height_target = 0.206
+        tracking_sigma = 0.1
 
     class normalization(LeggedRobotCfg.normalization):
         class obs_scales:
@@ -80,7 +82,7 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             height_measurements = 5.0
 
     class noise(LeggedRobotCfg.noise):
-        add_noise = False
+        add_noise = True 
         noise_level = 1.0
         class noise_scales:
             dof_pos = 0.01
@@ -97,19 +99,21 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         resampling_time = 10.0
         heading_command = False
         class ranges:
-            lin_vel_x = [0.15, 0.4]
+            lin_vel_x = [0.0, 0.4]
             lin_vel_y = [0.0, 0.0]
             ang_vel_yaw = [-0.4, 0.4]
             heading = [-3.14, 3.14]
 
     class domain_rand(LeggedRobotCfg.domain_rand):
-        randomize_friction = False
+        randomize_friction = True
         friction_range = [0.4, 1.2]
-        randomize_base_mass = False
-        added_mass_range = [-0.5, 0.5]
-        push_robots = False
+        randomize_base_mass = True
+        added_mass_range = [-0.2, 0.2]
+        push_robots = True
         push_interval_s = 15
-        max_push_vel_xy = 0.5
+        max_push_vel_xy = 0.2
+        action_delay = True
+        action_delay_range = [1, 2]
 
 
 class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
@@ -118,7 +122,7 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v1_1_3_vel_improve'
+        run_name = 'spotmicro_v2_5_stand_still'
         experiment_name = 'spotmicro_test'
         max_iterations = 1000
         save_interval = 100

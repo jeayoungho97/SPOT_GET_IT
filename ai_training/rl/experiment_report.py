@@ -454,12 +454,12 @@ def auto_judge(metrics, run_name=''):
         all_pass = False
 
     vel_err = metrics.get('vel_error_x', 999)
-    if vel_err < 0.12:
-        judgments.append(f"✅ 속도오차 X: {vel_err:.4f} m/s (<0.12)")
-    elif vel_err < 0.2:
-        judgments.append(f"⚠️ 속도오차 X: {vel_err:.4f} m/s (0.12~0.2, 보통)")
+    if vel_err < 0.08:
+        judgments.append(f"✅ 속도오차 X: {vel_err:.4f} m/s (<0.08)")
+    elif vel_err < 0.12:
+        judgments.append(f"⚠️ 속도오차 X: {vel_err:.4f} m/s (0.08~0.12, 보통)")
     else:
-        judgments.append(f"❌ 속도오차 X: {vel_err:.4f} m/s (>0.2, 미달)")
+        judgments.append(f"❌ 속도오차 X: {vel_err:.4f} m/s (>0.12, 미달)")
         all_pass = False
 
     torque_sat = metrics.get('torque_saturation_pct', 0)
@@ -567,7 +567,7 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
 
     # --- 그래프 참조 ---
     graph_refs = ""
-    exp_dir_rel = f"experiments/exp{exp_id:03d}_{safe_run}"
+    exp_dir_rel = f"."
     if tb_graphs:
         graph_lines = []
         for gp in tb_graphs:

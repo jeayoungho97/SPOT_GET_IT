@@ -33,18 +33,21 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from collections import defaultdict
+import argparse, sys 
  
- 
-def run_diagnostic(args, checkpoint_path=None, lightweight=False):
+def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False):
     # ============ 환경 설정 ============
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
     env_cfg.env.num_envs = min(env_cfg.env.num_envs, 64)
     env_cfg.terrain.num_rows = 5
     env_cfg.terrain.num_cols = 5
     env_cfg.terrain.curriculum = False
-    env_cfg.noise.add_noise = False
-    env_cfg.domain_rand.randomize_friction = False
-    env_cfg.domain_rand.push_robots = False
+    if not with_dr:
+        env_cfg.noise.add_noise = False
+        env_cfg.domain_rand.randomize_friction = False
+        env_cfg.domain_rand.push_robots = False
+    else:
+        print("[진단] DR 활성화 상태로 진단합니다")
  
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     obs = env.get_observations()
@@ -912,6 +915,10 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False):
 if __name__ == '__main__':
     import sys
 
+    with_dr = '--with_dr' in sys.argv
+    if with_dr:
+        sys.argv.remove('--with_dr')
+        
     args = get_args()
 
     # --- 항목 1-A: 추가 CLI 인자 파싱 ---
@@ -934,4 +941,4 @@ if __name__ == '__main__':
         else:
             i += 1
 
-    run_diagnostic(args, checkpoint_path=checkpoint_path, lightweight=lightweight)
+    run_diagnostic(args, checkpoint_path=checkpoint_path, lightweight=lightweight, with_dr=with_dr)
