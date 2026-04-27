@@ -567,7 +567,7 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
 
     # --- 그래프 참조 ---
     graph_refs = ""
-    exp_dir_rel = f"experiments/exp{exp_id:03d}_{safe_run}"
+    exp_dir_rel = f"."
     if tb_graphs:
         graph_lines = []
         for gp in tb_graphs:

@@ -106,8 +106,8 @@ class SpotmicroTestCfg(LeggedRobotCfg):
     class domain_rand(LeggedRobotCfg.domain_rand):
         randomize_friction = True
         friction_range = [0.4, 1.2]
-        randomize_base_mass = False
-        added_mass_range = [-0.5, 0.5]
+        randomize_base_mass = True
+        added_mass_range = [-0.2, 0.2]
         push_robots = False
         push_interval_s = 15
         max_push_vel_xy = 0.5
@@ -119,7 +119,7 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v2_0_DR_friction'
+        run_name = 'spotmicro_v2_1_DR_mass'
         experiment_name = 'spotmicro_test'
         max_iterations = 1000
         save_interval = 100
