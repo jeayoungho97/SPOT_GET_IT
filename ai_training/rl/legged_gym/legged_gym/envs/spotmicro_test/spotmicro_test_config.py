@@ -81,7 +81,7 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             height_measurements = 5.0
 
     class noise(LeggedRobotCfg.noise):
-        add_noise = False
+        add_noise = True 
         noise_level = 1.0
         class noise_scales:
             dof_pos = 0.01
@@ -119,7 +119,7 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v2_2_DR_external_push'
+        run_name = 'spotmicro_v2_3_DR_sensor_noise'
         experiment_name = 'spotmicro_test'
         max_iterations = 1000
         save_interval = 100

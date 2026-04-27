@@ -315,7 +315,8 @@ class LeggedRobot(BaseTask):
         # randomize base mass
         if self.cfg.domain_rand.randomize_base_mass:
             rng = self.cfg.domain_rand.added_mass_range
-            props[0].mass += np.random.uniform(rng[0], rng[1])
+            added = np.random.uniform(rng[0], rng[1])
+            props[0].mass += added
             if env_id < 5:  # 처음 5개 env만 출력
                 print(f"[DR] Env {env_id}: base mass = {props[0].mass:.3f} kg (added {added:+.3f})")
         return props
@@ -420,8 +421,11 @@ class LeggedRobot(BaseTask):
         max_vel = self.cfg.domain_rand.max_push_vel_xy
         self.root_states[:, 7:9] = torch_rand_float(-max_vel, max_vel, (self.num_envs, 2), device=self.device) # lin vel x/y
         self.gym.set_actor_root_state_tensor(self.sim, gymtorch.unwrap_tensor(self.root_states))
-        if self.common_step_counter % 1000 == 0:  # 너무 자주 안 찍히게
-            print(f"[DR] Push applied at step {self.common_step_counter}, max_vel={max_vel}")
+        if not hasattr(self, '_push_count'):
+            self._push_count = 0
+        self._push_count += 1
+        if self._push_count <= 3:  # 처음 3번만 확인
+            print(f"[DR] Push #{self._push_count} at step {self.common_step_counter}, max_vel={max_vel}")
 
     def _update_terrain_curriculum(self, env_ids):
         """ Implements the game-inspired curriculum.
