@@ -111,6 +111,8 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         push_robots = True
         push_interval_s = 15
         max_push_vel_xy = 0.2
+        action_delay = True
+        action_delay_range = [0,1]
 
 
 class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
