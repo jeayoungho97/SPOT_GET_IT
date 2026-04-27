@@ -10,8 +10,8 @@ class SpotmicroTest(LeggedRobot):
         self.gym.refresh_rigid_body_state_tensor(self.sim)
         self.rigid_body_states = gymtorch.wrap_tensor(rigid_body_state).view(
             self.num_envs, self.num_bodies, 13)
-        self.gait_freq = 2.0  # Trot 주파수 (Hz)
-        
+        self.gait_freq = 2.0
+
         # ====IK 변수====
         self.L1_X = 0.01
         self.L1_Z = 0.12
@@ -19,79 +19,60 @@ class SpotmicroTest(LeggedRobot):
         self.L1_EFF = (0.01**2 + 0.12**2)**0.5
         self.ALPHA = torch.atan2(torch.tensor(0.01), torch.tensor(0.12)).item()
         self.robot_width = 0.15 
-        
+
         self.gait_period = 0.6
         self.duty_factor = 0.5
         self.step_height = 0.03
         self.body_height = 0.206
-        
+
         self.gait_phase = torch.zeros(self.num_envs, 1, dtype=torch.float, device=self.device)
         self.commands_scale = torch.tensor(
             [self.obs_scales.lin_vel, self.obs_scales.lin_vel, self.obs_scales.ang_vel],
             device=self.device)
 
-        # ==== Action Delay Buffer (Step 5: 서보 응답 지연) ====
+        # ==== Step 5: 서보 응답 지연 (substep 단위, dt=5ms 해상도) ====
         if self.cfg.domain_rand.action_delay:
             delay_range = self.cfg.domain_rand.action_delay_range
-            self.max_action_delay = delay_range[1]
-            buf_size = self.max_action_delay + 1  # 현재 + 과거 저장
+            decimation = self.cfg.control.decimation
+            assert delay_range[1] < decimation, (
+                f"action_delay_range max({delay_range[1]})은 "
+                f"decimation({decimation})보다 작아야 합니다. "
+                f"그래야 한 policy step 안에서 처리됩니다.")
             
-            # 링 버퍼: [buf_size, num_envs, num_actions]
-            self.action_buf = torch.zeros(
-                buf_size, self.num_envs, self.num_actions,
-                dtype=torch.float, device=self.device)
-            
-            # 현재 쓰기 위치 (스칼라, 모든 env 공유)
-            self.action_buf_idx = 0
-            
-            # 환경별 지연 step 수 (정수)
-            self.action_delay_env = torch.randint(
+            # 환경별 지연 substep 수 (정수)
+            self.action_delay_substeps = torch.randint(
                 delay_range[0], delay_range[1] + 1,
                 (self.num_envs,), device=self.device)
             
-            print(f"[Action Delay] 활성화: range={delay_range}, "
-                  f"policy_step={self.dt:.3f}s, "
-                  f"실제 지연={delay_range[0]*self.dt*1000:.1f}~{delay_range[1]*self.dt*1000:.1f}ms")
-
-    def _push_action_buf(self, actions):
-        """현재 액션을 링 버퍼에 저장"""
-        self.action_buf[self.action_buf_idx] = actions
-    
-    def _get_delayed_actions(self):
-        """환경별로 N step 전의 액션을 꺼냄"""
-        buf_size = self.max_action_delay + 1
-        # 각 env마다 (현재 idx - delay) % buf_size 위치에서 읽기
-        read_idx = (self.action_buf_idx - self.action_delay_env) % buf_size
-        
-        # advanced indexing: 각 env에 대해 해당 delay의 액션을 가져옴
-        return self.action_buf[read_idx, torch.arange(self.num_envs, device=self.device)]
-    
-    def _advance_action_buf(self):
-        """쓰기 위치를 다음으로 이동"""
-        buf_size = self.max_action_delay + 1
-        self.action_buf_idx = (self.action_buf_idx + 1) % buf_size
+            dt_ms = self.sim_params.dt * 1000
+            print(f"[Action Delay] 활성화: "
+                  f"substep 단위, dt={dt_ms:.1f}ms, "
+                  f"range={delay_range[0]*dt_ms:.0f}~{delay_range[1]*dt_ms:.0f}ms")
 
     def step(self, actions):
-        """부모 step을 오버라이드: 지연된 액션을 물리 엔진에 적용
+        """서보 응답 지연을 substep 단위로 적용
         
-        self.actions = 현재 액션 (observation, reward 계산용)
-        delayed_actions = N step 전 액션 (실제 토크 계산용)
+        decimation 루프의 각 substep에서:
+          - i < delay인 환경 → 이전 액션(last_actions) 사용
+          - i >= delay인 환경 → 현재 액션 사용
+        
+        이렇게 하면 5ms 해상도로 지연을 시뮬레이션할 수 있음.
+        self.actions는 현재 액션 그대로 유지 (observation, reward용).
         """
         clip_actions = self.cfg.normalization.clip_actions
         self.actions = torch.clip(actions, -clip_actions, clip_actions).to(self.device)
         
-        # Action Delay 처리
-        if self.cfg.domain_rand.action_delay:
-            self._push_action_buf(self.actions)
-            delayed_actions = self._get_delayed_actions()
-            self._advance_action_buf()
-        else:
-            delayed_actions = self.actions
-        
-        # 물리 시뮬레이션 (delayed_actions로 토크 계산)
         self.render()
-        for _ in range(self.cfg.control.decimation):
-            self.torques = self._compute_torques(delayed_actions).view(self.torques.shape)
+        for i in range(self.cfg.control.decimation):
+            if self.cfg.domain_rand.action_delay:
+                # i < delay인 환경: 서보에 아직 새 명령 안 도착 → 이전 액션
+                # i >= delay인 환경: 새 명령 도착 → 현재 액션
+                use_old = (i < self.action_delay_substeps).unsqueeze(1)  # [num_envs, 1]
+                torque_actions = torch.where(use_old, self.last_actions, self.actions)
+            else:
+                torque_actions = self.actions
+
+            self.torques = self._compute_torques(torque_actions).view(self.torques.shape)
             self.gym.set_dof_actuation_force_tensor(
                 self.sim, gymtorch.unwrap_tensor(self.torques))
             self.gym.simulate(self.sim)
@@ -99,7 +80,7 @@ class SpotmicroTest(LeggedRobot):
                 self.gym.fetch_results(self.sim, True)
             self.gym.refresh_dof_state_tensor(self.sim)
         self.post_physics_step()
-        
+
         clip_obs = self.cfg.normalization.clip_observations
         self.obs_buf = torch.clip(self.obs_buf, -clip_obs, clip_obs)
         if self.privileged_obs_buf is not None:
@@ -127,11 +108,10 @@ class SpotmicroTest(LeggedRobot):
         if hasattr(self, 'max_feet_height'):
             self.max_feet_height[env_ids] = 0.
         
-        # Action Delay: 리셋된 환경의 버퍼 초기화 + 지연 재랜덤
+        # Action Delay: 리셋 환경의 지연 재랜덤화
         if self.cfg.domain_rand.action_delay:
             delay_range = self.cfg.domain_rand.action_delay_range
-            self.action_buf[:, env_ids] = 0.
-            self.action_delay_env[env_ids] = torch.randint(
+            self.action_delay_substeps[env_ids] = torch.randint(
                 delay_range[0], delay_range[1] + 1,
                 (len(env_ids),), device=self.device)
 
@@ -172,17 +152,15 @@ class SpotmicroTest(LeggedRobot):
         
     def compute_observations(self):
         ref_dof_pos = self._get_ik_target()
-    
         phase_sin = torch.sin(2 * torch.pi * self.gait_phase)
         phase_cos = torch.cos(2 * torch.pi * self.gait_phase)
-    
         self.obs_buf = torch.cat([
             self.base_ang_vel * self.obs_scales.ang_vel,           # 3
             self.projected_gravity,                                 # 3
             self.commands[:, :3] * self.commands_scale,            # 3
             (self.dof_pos - ref_dof_pos) * self.obs_scales.dof_pos,  # 12
             self.dof_vel * self.obs_scales.dof_vel,                # 12
-            self.actions,                                           # 12 (현재 액션, 지연 아님)
+            self.actions,                                           # 12 (현재 액션)
             phase_sin, phase_cos,                                   # 2
         ], dim=-1)
         if self.add_noise:
