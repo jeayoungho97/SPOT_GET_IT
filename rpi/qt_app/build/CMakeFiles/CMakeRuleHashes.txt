@@ -1,0 +1,4 @@
+# Hashes of file build rules.
+90a08f197a077885e20367bbb6773dd2 CMakeFiles/TestApp_autogen
+9447c3560ed32c0013d131dbfbea4f8c TestApp_autogen/3YJK5W5UP7/qrc_resources.cpp
+2f904dc1103c6254a356bfaae26deeae TestApp_autogen/timestamp

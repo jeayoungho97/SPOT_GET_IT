@@ -1,0 +1,99 @@
+/* Material Dark Theme Colors 
+   Background: #121212
+   Surface: #1E1E1E
+   Primary: #00ff22ff (Deep Purple)
+   On Primary: #000000
+   On Background/Surface: #FFFFFF (with opacity)
+*/
+
+QMainWindow, QWidget#centralWidget {
+    background-color: #121212;
+    color: #FFFFFF;
+}
+
+QStackedWidget {
+    background-color: #1E1E1E;
+    border-radius: 8px;
+}
+
+/* Material Buttons */
+QPushButton {
+    background-color: #1E1E1E;
+    color: #FFFFFF;
+    border: none;
+    border-radius: 6px;
+    padding: 12px 20px;
+    font-size: 16px;
+    font-weight: bold;
+    text-align: center;
+}
+
+QPushButton:hover {
+    background-color: #333333;
+}
+
+QPushButton:pressed {
+    background-color: #BB86FC;
+    color: #000000;
+}
+
+QPushButton:checked {
+    background-color: #BB86FC;
+    color: #000000;
+}
+
+/* Primary Form Button (Save Settings) */
+QPushButton#btnSaveSettings {
+    background-color: #BB86FC;
+    color: #000000;
+}
+
+QPushButton#btnSaveSettings:hover {
+    background-color: #9965f4;
+}
+
+QPushButton#btnSaveSettings:pressed {
+    background-color: #7b44d3;
+}
+
+/* Labels */
+QLabel {
+    color: #E0E0E0;
+    font-size: 15px;
+}
+
+/* Stream Label specifically */
+QLabel#streamLabel {
+    background-color: #000000;
+    color: #BB86FC;
+    font-size: 24px;
+    font-weight: bold;
+    border-radius: 8px;
+}
+
+/* Input Fields */
+QLineEdit {
+    background-color: #2C2C2C;
+    color: #FFFFFF;
+    border: 1px solid #444444;
+    border-radius: 4px;
+    padding: 8px 12px;
+    font-size: 15px;
+}
+
+QLineEdit:focus {
+    border: 2px solid #BB86FC;
+    background-color: #333333;
+}
+
+/* Form Layout Alignment */
+QFormLayout {
+    padding: 20px;
+}
+
+/* Graphics View for Map */
+QGraphicsView {
+    background-color: #1a1a1a;
+    border: none;
+    border-radius: 8px;
+}
