@@ -39,8 +39,8 @@ oak_camera_driver/
 
 | 토픽 | 타입 | 내용 |
 |------|------|------|
-| `/perception/camera/image_raw` | `sensor_msgs/Image` | RAW BGR 스트림 |
-| `/perception/camera/encoded` | `sensor_msgs/CompressedImage` | H.264 인코딩 스트림 (format=h264) |
+| `/vendor/camera/image_raw` | `sensor_msgs/Image` | RAW BGR 스트림 |
+| `/vendor/camera/encoded` | `sensor_msgs/CompressedImage` | MJPEG 인코딩 스트림 (format=jpeg) |
 
 ---
 
@@ -89,5 +89,5 @@ ros2 topic hz /perception/camera/encoded
 
 ## 참고
 
-- H.264 인코딩 포맷은 임시 결정. 통신팀 확정 시 `oak_camera_driver.param.yaml`의 VideoEncoder Profile 수정으로 전환 가능 (H.265, MJPEG)
+- MJPEG 인코딩 포맷 사용 중. 변경 필요 시 VideoEncoder Profile 및 `msg.format` 수정으로 전환 가능 (H.264, H.265)
 - Stereo Depth는 OAK-D Lite 온보드 메모리 한계로 미포함. RGB + H.264 + Stereo 동시 운용 불가

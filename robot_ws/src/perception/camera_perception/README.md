@@ -38,7 +38,7 @@ camera_perception/
 
 | 토픽 | 타입 | 내용 |
 |------|------|------|
-| `/perception/camera/image_raw` | `sensor_msgs/Image` | RAW BGR 스트림 (oak_camera_driver 발행) |
+| `/vendor/camera/image_raw` | `sensor_msgs/Image` | RAW BGR 스트림 (oak_camera_driver 발행) |
 
 ## Publish
 
