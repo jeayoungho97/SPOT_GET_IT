@@ -1,2 +1,0 @@
-qt.qpa.plugin: Could not find the Qt platform plugin "wayland" in ""
-ShmReader: shm_open failed: /robot_bridge_0
