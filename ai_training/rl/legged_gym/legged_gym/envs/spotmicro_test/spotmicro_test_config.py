@@ -123,7 +123,7 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v2_10_ang_improve'
+        run_name = 'spotmicro_v2_11_resample_mode'
         experiment_name = 'spotmicro_test'
         max_iterations = 1500
         save_interval = 100
