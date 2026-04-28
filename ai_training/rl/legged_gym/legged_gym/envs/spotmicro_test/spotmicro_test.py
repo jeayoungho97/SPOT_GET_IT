@@ -90,8 +90,8 @@ class SpotmicroTest(LeggedRobot):
     def post_physics_step(self):
         self.gym.refresh_rigid_body_state_tensor(self.sim)
 
-            # 속도 명령 크기에 비례하여 gait phase 진행
-        cmd_norm = torch.norm(self.commands[:, :2], dim=1, keepdim=True)  # [num_envs, 1]
+        # 속도 명령 크기에 비례하여 gait phase 진행
+        cmd_norm = torch.norm(self.commands[:, :3], dim=1, keepdim=True)  # [num_envs, 1]
         phase_scale = torch.clamp(cmd_norm / 0.1, 0.0, 1.0)  # 0.1 이하면 감속→정지
 
         dt_phase = self.dt / self.gait_period
@@ -120,6 +120,7 @@ class SpotmicroTest(LeggedRobot):
                 delay_range[0], delay_range[1] + 1,
                 (len(env_ids),), device=self.device)
 
+    
     def _reset_root_states(self, env_ids):
         """base 속도를 0으로 리셋"""
         self.root_states[env_ids] = self.base_init_state
@@ -131,6 +132,7 @@ class SpotmicroTest(LeggedRobot):
             self.sim,
             gymtorch.unwrap_tensor(self.root_states),
             gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
+    
 
     def check_termination(self):
         super().check_termination()
@@ -277,7 +279,7 @@ class SpotmicroTest(LeggedRobot):
         ref_dof_pos[:, 2::3] = theta_foot 
 
         # 정지 시 default pose로 블렌딩
-        cmd_norm = torch.norm(self.commands[:, :2], dim=1, keepdim=True)  # [num_envs, 1]
+        cmd_norm = torch.norm(self.commands[:, :3], dim=1, keepdim=True)  # [num_envs, 1]
         blend = torch.clamp(cmd_norm / 0.1, 0.0, 1.0)  # 0=정지→default, 1=이동→IK
         ref_dof_pos = blend * ref_dof_pos + (1.0 - blend) * self.default_dof_pos
     
