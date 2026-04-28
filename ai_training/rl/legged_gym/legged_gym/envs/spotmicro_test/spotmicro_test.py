@@ -249,7 +249,6 @@ class SpotmicroTest(LeggedRobot):
     def _get_ik_target(self):
         vx = self.commands[:, 0]
         wz = self.commands[:, 2] 
-        shoulder_angle = wz * 0.15  # 스케일은 튜닝 필요
 
         v_left = vx - (wz * self.robot_width / 2.0)
         v_right = vx + (wz * self.robot_width / 2.0)
@@ -278,11 +277,6 @@ class SpotmicroTest(LeggedRobot):
         theta_leg = q1 - self.ALPHA
         theta_foot = q2 + self.ALPHA
         ref_dof_pos = torch.zeros((self.num_envs, 12), device=self.device)
-        # FL, RR은 +방향, FR, RL은 -방향 (대각 쌍)
-        ref_dof_pos[:, 0] = shoulder_angle   # front_left
-        ref_dof_pos[:, 3] = -shoulder_angle  # front_right  
-        ref_dof_pos[:, 6] = -shoulder_angle  # rear_left
-        ref_dof_pos[:, 9] = shoulder_angle   # rear_right
         ref_dof_pos[:, 1::3] = theta_leg  
         ref_dof_pos[:, 2::3] = theta_foot 
 
@@ -300,7 +294,13 @@ class SpotmicroTest(LeggedRobot):
         return torch.clip(torques, -self.torque_limits, self.torque_limits)
         
     def _reward_tracking_ik(self):
-        error = torch.sum(torch.square(self.actions), dim=1)
+        # 관절별 페널티 가중치: [Shoulder, Leg, Foot] 순서
+        # 어깨(0.1)는 자유롭게 움직이도록 허용하고, Leg와 Foot(1.0)은 IK를 잘 따르도록 강제함
+        weights = torch.tensor([0.3, 1.0, 1.0] * 4, device=self.device)
+    
+        # action에 가중치를 곱해서 에러 계산
+        weighted_actions = self.actions * weights
+        error = torch.sum(torch.square(weighted_actions), dim=1)
         sigma = 2.0 
         return torch.exp(-error / sigma)
         
