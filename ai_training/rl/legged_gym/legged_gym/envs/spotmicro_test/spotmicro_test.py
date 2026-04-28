@@ -296,6 +296,12 @@ class SpotmicroTest(LeggedRobot):
         error = torch.sum(torch.square(self.actions), dim=1)
         sigma = 2.0 
         return torch.exp(-error / sigma)
+        
+    def _reward_tracking_ang_vel(self):
+        ang_vel_error = torch.square(
+            self.commands[:, 2] - self.base_ang_vel[:, 2])
+        return torch.exp(
+            -ang_vel_error / self.cfg.rewards.tracking_sigma_ang_vel)
 
     def _reward_trot_contact(self):
         offsets = torch.tensor([0.0, 0.5, 0.5, 0.0], device=self.device)

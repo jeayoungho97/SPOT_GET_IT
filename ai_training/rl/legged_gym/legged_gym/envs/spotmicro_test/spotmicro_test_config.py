@@ -53,8 +53,8 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             tracking_ang_vel = 0.9 
             termination = -10.0
             lin_vel_z = -2.0
-            ang_vel_xy = -0.2
-            orientation = -4.0
+            ang_vel_xy = -0.4
+            orientation = -6.0
             torques = -0.001
             dof_vel = -0.001
             dof_acc = -2.5e-7
@@ -72,6 +72,7 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         soft_dof_pos_limit = 0.9
         base_height_target = 0.206
         tracking_sigma = 0.1
+        tracking_sigma_ang_vel = 0.05
 
     class normalization(LeggedRobotCfg.normalization):
         class obs_scales:
@@ -122,7 +123,7 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v2_6_reset_state'
+        run_name = 'spotmicro_v2_7_stab_ang_improve'
         experiment_name = 'spotmicro_test'
         max_iterations = 1000
         save_interval = 100
