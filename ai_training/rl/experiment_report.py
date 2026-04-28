@@ -519,6 +519,8 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
     metrics = diag_data.get('metrics', {}) if diag_data else {}
     config_snapshot = diag_data.get('config', {}) if diag_data else {}
     reward_scales = diag_data.get('reward_scales', {}) if diag_data else {}
+    
+    command_mode_metrics = diag_data.get('command_mode_metrics', {}) if diag_data else {}
 
     # 자동 판정
     overall_judge, judgments = auto_judge(metrics, run_name)
@@ -718,6 +720,51 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
 
 {per_joint_torque_table}
 """
+    # --- Command mode별 yaw 추종 분석 ---
+    command_mode_section = ""
+
+    if command_mode_metrics:
+        mode_rows = []
+
+        mode_order = ['stand', 'forward', 'pure_turn', 'arc_turn', 'high_wz']
+
+        for key in mode_order:
+            m = command_mode_metrics.get(key, {})
+            label = m.get('label', key)
+            count = m.get('count', 0)
+            ratio = m.get('ratio_pct', 0.0)
+
+            err = m.get('mean_ang_error')
+            cmd = m.get('mean_abs_cmd_yaw')
+            actual = m.get('mean_abs_actual_yaw')
+
+            err_str = f"{err:.4f}" if err is not None else "N/A"
+            cmd_str = f"{cmd:.4f}" if cmd is not None else "N/A"
+            actual_str = f"{actual:.4f}" if actual is not None else "N/A"
+
+            # 간단 판정
+            if err is None:
+                status = "N/A"
+            elif key == 'stand':
+                status = "✅" if err < 0.03 else "⚠️" if err < 0.06 else "❌"
+            else:
+                status = "✅" if err < 0.08 else "⚠️" if err < 0.15 else "❌"
+
+            mode_rows.append(
+                f"| {label} | {ratio:.1f}% | {count} | {cmd_str} | {actual_str} | {err_str} | {status} |"
+            )
+
+        mode_table = '\n'.join(mode_rows)
+        
+        command_mode_section = f"""
+        ## Command Mode별 회전 추종 분석
+
+        | 모드 | 비율 | 샘플 수 | 평균 abs(cmd_wz) | 평균 abs(actual_wz) | yaw 오차 | 상태 |
+        |------|------|---------|------------------|---------------------|----------|------|
+        {mode_table}
+
+        > 해석 기준: `제자리 회전`만 나쁘면 pure turn 학습/보행 패턴 문제, `큰 회전명령`만 나쁘면 yaw 명령 범위가 현재 토크/보폭 한계보다 큰 문제, `정지`가 나쁘면 stop drift 문제로 보면 됩니다.
+        """
 
     # --- 항목 3: Gait 분석 ---
     gait_section = ""
@@ -887,6 +934,7 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
 | Action Rate | {metrics.get('mean_action_rate', 'N/A')} |
 | 평균 전력 | {metrics.get('mean_power', 'N/A')} W |
 | CoT | {metrics.get('cost_of_transport', 'N/A')} |
+{command_mode_section}
 {snapshot_section}
 {curve_section}
 {per_leg_section}

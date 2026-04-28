@@ -148,7 +148,56 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
     vel_errors_x = []
     vel_errors_y = []
     ang_vel_errors = []
- 
+    
+    command_mode_stats = {
+        'stand': {
+            'label': '정지',
+            'err_sum': 0.0,
+            'cmd_sum': 0.0,
+            'actual_sum': 0.0,
+            'count': 0,
+        },
+        'forward': {
+            'label': '직진/저회전',
+            'err_sum': 0.0,
+            'cmd_sum': 0.0,
+            'actual_sum': 0.0,
+            'count': 0,
+        },
+        'pure_turn': {
+            'label': '제자리 회전',
+            'err_sum': 0.0,
+            'cmd_sum': 0.0,
+            'actual_sum': 0.0,
+            'count': 0,
+        },
+        'arc_turn': {
+            'label': '전진+회전',
+            'err_sum': 0.0,
+            'cmd_sum': 0.0,
+            'actual_sum': 0.0,
+            'count': 0,
+        },
+        'high_wz': {
+            'label': '큰 회전명령',
+            'err_sum': 0.0,
+            'cmd_sum': 0.0,
+            'actual_sum': 0.0,
+            'count': 0,
+        },
+    }
+    
+    def _accumulate_command_mode(name, mask, yaw_err, cmd_yaw, actual_yaw):
+        """mode별 yaw error 누적"""
+        count = int(np.sum(mask))
+        if count == 0:
+            return
+
+        command_mode_stats[name]['err_sum'] += float(np.sum(yaw_err[mask]))
+        command_mode_stats[name]['cmd_sum'] += float(np.sum(np.abs(cmd_yaw[mask])))
+        command_mode_stats[name]['actual_sum'] += float(np.sum(np.abs(actual_yaw[mask])))
+        command_mode_stats[name]['count'] += count
+     
     # 동작 부드러움 추적
     action_rates = []
     prev_actions = None
@@ -211,9 +260,28 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
         # --- 각속도 추종 ---
         cmd_yaw = env.commands[:, 2].cpu().numpy()
         actual_yaw = env.base_ang_vel[:, 2].cpu().numpy()
-        ang_vel_errors.append(np.mean(np.abs(cmd_yaw - actual_yaw)))
+
+        yaw_err = np.abs(cmd_yaw - actual_yaw)
+        ang_vel_errors.append(np.mean(yaw_err))
+
         data['cmd_ang_vel'].append(np.mean(np.abs(cmd_yaw)))
         data['actual_ang_vel'].append(np.mean(actual_yaw))
+
+        # --- Command mode별 yaw 오차 ---
+        cmd_v = np.sqrt(cmd_x ** 2 + cmd_y ** 2)
+        cmd_w = np.abs(cmd_yaw)
+
+        stand_mask = (cmd_v < 0.05) & (cmd_w < 0.05)
+        forward_mask = (cmd_v >= 0.05) & (cmd_w < 0.15)
+        pure_turn_mask = (cmd_v < 0.05) & (cmd_w >= 0.15)
+        arc_turn_mask = (cmd_v >= 0.05) & (cmd_w >= 0.15)
+        high_wz_mask = cmd_w >= 0.30
+
+        _accumulate_command_mode('stand', stand_mask, yaw_err, cmd_yaw, actual_yaw)
+        _accumulate_command_mode('forward', forward_mask, yaw_err, cmd_yaw, actual_yaw)
+        _accumulate_command_mode('pure_turn', pure_turn_mask, yaw_err, cmd_yaw, actual_yaw)
+        _accumulate_command_mode('arc_turn', arc_turn_mask, yaw_err, cmd_yaw, actual_yaw)
+        _accumulate_command_mode('high_wz', high_wz_mask, yaw_err, cmd_yaw, actual_yaw)
  
         # --- Roll/Pitch ---
         projected_grav = env.projected_gravity.cpu().numpy()
@@ -284,6 +352,31 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
     mean_err_x = np.mean(vel_errors_x)
     mean_err_y = np.mean(vel_errors_y)
     mean_ang_err = np.mean(ang_vel_errors)
+    
+    # --- Command mode별 yaw 추종 요약 ---
+    command_mode_summary = {}
+
+    for name, stat in command_mode_stats.items():
+        count = stat['count']
+
+        if count > 0:
+            command_mode_summary[name] = {
+                'label': stat['label'],
+                'count': int(count),
+                'ratio_pct': float(count / total_samples * 100),
+                'mean_ang_error': float(stat['err_sum'] / count),
+                'mean_abs_cmd_yaw': float(stat['cmd_sum'] / count),
+                'mean_abs_actual_yaw': float(stat['actual_sum'] / count),
+            }
+        else:
+            command_mode_summary[name] = {
+                'label': stat['label'],
+                'count': 0,
+                'ratio_pct': 0.0,
+                'mean_ang_error': None,
+                'mean_abs_cmd_yaw': None,
+                'mean_abs_actual_yaw': None,
+            }
 
     # --- 자세 요약 ---
     mean_height = np.mean(data['base_height'])
@@ -493,6 +586,29 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
     mean_cmd_yaw = np.mean(np.abs(data['cmd_ang_vel']))
     print(f"  평균 yaw 명령(abs): {mean_cmd_yaw:.4f} rad/s")
     print(f"  평균 yaw 오차: {mean_ang_err:.4f} rad/s")
+    
+    print("")
+    print("  Command mode별 yaw 추종:")
+    print(f"  {'Mode':<14} {'Ratio':>7} {'Count':>8} {'Cmd|wz|':>10} {'Actual|wz|':>12} {'Err':>10}")
+    print(f"  {'-'*67}")
+
+    for key in ['stand', 'forward', 'pure_turn', 'arc_turn', 'high_wz']:
+        m = command_mode_summary[key]
+        label = m['label']
+        ratio = m['ratio_pct']
+        count = m['count']
+
+        if m['mean_ang_error'] is None:
+            cmd_str = "N/A"
+            actual_str = "N/A"
+            err_str = "N/A"
+        else:
+            cmd_str = f"{m['mean_abs_cmd_yaw']:.4f}"
+            actual_str = f"{m['mean_abs_actual_yaw']:.4f}"
+            err_str = f"{m['mean_ang_error']:.4f}"
+
+        print(f"  {label:<14} {ratio:>6.1f}% {count:>8} {cmd_str:>10} {actual_str:>12} {err_str:>10}")
+    
     if mean_cmd_yaw < 0.01:
         print(f"  → yaw 명령 없음 (Step 2 이전이면 정상)")
     elif mean_ang_err < 0.05:
@@ -822,6 +938,7 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
             'mean_episode_return': float(np.mean(episode_returns)) if episode_returns else 0.0,
             'num_episodes': len(episode_lengths),
         },
+        'command_mode_metrics': command_mode_summary,
         'config': {
             'control_type': env.cfg.control.control_type,
             'action_scale': float(env.cfg.control.action_scale),

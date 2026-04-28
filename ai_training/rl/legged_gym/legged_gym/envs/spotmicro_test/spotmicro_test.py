@@ -141,7 +141,7 @@ class SpotmicroTest(LeggedRobot):
         self.reset_buf |= (base_height < 0.155)
         self.reset_buf |= (self.projected_gravity[:, 2] > 0.0)
     
-    '''
+
     def _resample_commands(self, env_ids):
         self.commands[env_ids, 0] = torch_rand_float(
             self.command_ranges["lin_vel_x"][0], self.command_ranges["lin_vel_x"][1],
@@ -158,37 +158,6 @@ class SpotmicroTest(LeggedRobot):
                 self.command_ranges["ang_vel_yaw"][0], self.command_ranges["ang_vel_yaw"][1],
                 (len(env_ids), 1), device=self.device).squeeze(1)
         self.commands[env_ids, :2] *= (torch.norm(self.commands[env_ids, :2], dim=1) > 0.05).unsqueeze(1)
-    '''
-    def _resample_commands(self, env_ids):
-        n = len(env_ids)
-        r = torch.rand(n, device=self.device)
-
-        vx = torch.zeros(n, device=self.device)
-        vy = torch.zeros(n, device=self.device)
-        wz = torch.zeros(n, device=self.device)
-
-        # 15%: 완전 정지
-        stand = r < 0.15
-
-        # 35%: 직진 위주
-        forward = (r >= 0.15) & (r < 0.50)
-        vx[forward] = torch_rand_float(0.05, 0.40, (forward.sum(), 1), device=self.device).squeeze(1)
-        wz[forward] = torch_rand_float(-0.10, 0.10, (forward.sum(), 1), device=self.device).squeeze(1)
-
-        # 30%: 제자리 회전
-        turn = (r >= 0.50) & (r < 0.80)
-        wz_abs = torch_rand_float(0.15, 0.40, (turn.sum(), 1), device=self.device).squeeze(1)
-        wz_sign = torch.where(torch.rand(turn.sum(), device=self.device) > 0.5, 1.0, -1.0)
-        wz[turn] = wz_abs * wz_sign
-
-        # 20%: 전진 + 회전 arc
-        arc = r >= 0.80
-        vx[arc] = torch_rand_float(0.05, 0.35, (arc.sum(), 1), device=self.device).squeeze(1)
-        wz[arc] = torch_rand_float(-0.40, 0.40, (arc.sum(), 1), device=self.device).squeeze(1)
-
-        self.commands[env_ids, 0] = vx
-        self.commands[env_ids, 1] = vy
-        self.commands[env_ids, 2] = wz
         
     def compute_observations(self):
         ref_dof_pos = self._get_ik_target()
