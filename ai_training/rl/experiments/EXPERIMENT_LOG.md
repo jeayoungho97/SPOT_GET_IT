@@ -25,3 +25,4 @@
 | 021 | 04/28 | spotmicro_v2_9_angle_weight | V2.9: tracking_ik의 관절 각도 가중치 설정, 어깨 관절에 ... | 98.5% | 0.052 | 28.3% | ✅ |
 | 022 | 04/28 | spotmicro_v2_10_ang_improve | V2.10: 가중치 복구, trot contact reward 제자리 회... | 98.5% | 0.047 | 17.6% | ✅ |
 | 023 | 04/28 | spotmicro_v2_11_resample_mode | V2.11: 여러 경우의 동작을 mode로 구분하여 학습시킴 | 96.2% | 0.074 | 37.2% | ✅ |
+| 024 | 04/28 | spotmicro_v3_0_change_urdf | V3.0: urdf 실제 무게 반영 | 97.7% | 0.053 | 33.8% | ✅ |
