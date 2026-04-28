@@ -89,8 +89,13 @@ class SpotmicroTest(LeggedRobot):
 
     def post_physics_step(self):
         self.gym.refresh_rigid_body_state_tensor(self.sim)
+
+            # 속도 명령 크기에 비례하여 gait phase 진행
+        cmd_norm = torch.norm(self.commands[:, :2], dim=1, keepdim=True)  # [num_envs, 1]
+        phase_scale = torch.clamp(cmd_norm / 0.1, 0.0, 1.0)  # 0.1 이하면 감속→정지
+
         dt_phase = self.dt / self.gait_period
-        self.gait_phase = (self.gait_phase + dt_phase) % 1.0
+        self.gait_phase = (self.gait_phase + dt_phase * phase_scale) % 1.0
         super().post_physics_step()
               
     def _reset_dofs(self, env_ids):
@@ -270,6 +275,12 @@ class SpotmicroTest(LeggedRobot):
         ref_dof_pos = torch.zeros((self.num_envs, 12), device=self.device)
         ref_dof_pos[:, 1::3] = theta_leg  
         ref_dof_pos[:, 2::3] = theta_foot 
+
+        # 정지 시 default pose로 블렌딩
+        cmd_norm = torch.norm(self.commands[:, :2], dim=1, keepdim=True)  # [num_envs, 1]
+        blend = torch.clamp(cmd_norm / 0.1, 0.0, 1.0)  # 0=정지→default, 1=이동→IK
+        ref_dof_pos = blend * ref_dof_pos + (1.0 - blend) * self.default_dof_pos
+    
         return ref_dof_pos
         
     def _compute_torques(self, actions):
