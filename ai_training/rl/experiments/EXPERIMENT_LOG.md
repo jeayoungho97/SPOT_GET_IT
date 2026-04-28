@@ -23,3 +23,4 @@
 | 019 | 04/28 | spotmicro_v2_7_1_stab_ang_improve | V2.7.1: 나빠진 안정성, 각속도 오차 성능 향상, iteration... | 100.0% | 0.047 | 18.1% | ✅ |
 | 020 | 04/28 | spotmicro_v2_8_ang_shoulder | V2.8: ik shoulder 관절 목표값 설정, 회전 오차 감소하는지... | 5.7% | 0.077 | 22.2% | ❌ |
 | 021 | 04/28 | spotmicro_v2_9_angle_weight | V2.9: tracking_ik의 관절 각도 가중치 설정, 어깨 관절에 ... | 98.5% | 0.052 | 28.3% | ✅ |
+| 022 | 04/28 | spotmicro_v2_10_ang_improve | V2.10: 가중치 복구, trot contact reward 제자리 회... | 98.5% | 0.047 | 17.6% | ✅ |

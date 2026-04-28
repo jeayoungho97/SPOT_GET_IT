@@ -296,7 +296,7 @@ class SpotmicroTest(LeggedRobot):
     def _reward_tracking_ik(self):
         # 관절별 페널티 가중치: [Shoulder, Leg, Foot] 순서
         # 어깨(0.1)는 자유롭게 움직이도록 허용하고, Leg와 Foot(1.0)은 IK를 잘 따르도록 강제함
-        weights = torch.tensor([0.3, 1.0, 1.0] * 4, device=self.device)
+        weights = torch.tensor([1.0, 1.0, 1.0] * 4, device=self.device)
     
         # action에 가중치를 곱해서 에러 계산
         weighted_actions = self.actions * weights
@@ -316,6 +316,6 @@ class SpotmicroTest(LeggedRobot):
         desired_contact = phases < self.duty_factor
         actual_contact = self.contact_forces[:, self.feet_indices, 2] > 1.0
         match = (actual_contact == desired_contact).float()
-        cmd_norm = torch.norm(self.commands[:, :2], dim=1, keepdim=True)
+        cmd_norm = torch.norm(self.commands[:, :3], dim=1, keepdim=True)
         is_moving = (cmd_norm > 0.1).float()
         return torch.sum(match * is_moving, dim=1) / 4.0
