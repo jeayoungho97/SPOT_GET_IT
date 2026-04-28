@@ -1,0 +1,47 @@
+# C/C++
+build/
+bin/
+lib/
+*.o
+*.obj
+*.so
+*.dylib
+*.a
+*.dll
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+venv/
+.venv/
+.env
+
+# ROS / Colcon
+install/
+log/
+devel/
+
+# Qt
+*.pro.user
+*.ui.autosave
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+Makefile
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*_autogen/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*~
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
