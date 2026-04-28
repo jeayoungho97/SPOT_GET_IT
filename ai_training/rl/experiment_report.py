@@ -757,13 +757,13 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
         mode_table = '\n'.join(mode_rows)
         
         command_mode_section = f"""
-        ## Command Mode별 회전 추종 분석
+## Command Mode별 회전 추종 분석
 
-        | 모드 | 비율 | 샘플 수 | 평균 abs(cmd_wz) | 평균 abs(actual_wz) | yaw 오차 | 상태 |
-        |------|------|---------|------------------|---------------------|----------|------|
-        {mode_table}
+| 모드 | 비율 | 샘플 수 | 평균 abs(cmd_wz) | 평균 abs(actual_wz) | yaw 오차 | 상태 |
+|------|------|---------|------------------|---------------------|----------|------|
+{mode_table}
 
-        > 해석 기준: `제자리 회전`만 나쁘면 pure turn 학습/보행 패턴 문제, `큰 회전명령`만 나쁘면 yaw 명령 범위가 현재 토크/보폭 한계보다 큰 문제, `정지`가 나쁘면 stop drift 문제로 보면 됩니다.
+> 해석 기준: `제자리 회전`만 나쁘면 pure turn 학습/보행 패턴 문제, `큰 회전명령`만 나쁘면 yaw 명령 범위가 현재 토크/보폭 한계보다 큰 문제, `정지`가 나쁘면 stop drift 문제로 보면 됩니다.
         """
 
     # --- 항목 3: Gait 분석 ---

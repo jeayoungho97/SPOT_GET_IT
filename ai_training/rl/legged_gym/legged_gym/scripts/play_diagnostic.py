@@ -265,7 +265,7 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
         ang_vel_errors.append(np.mean(yaw_err))
 
         data['cmd_ang_vel'].append(np.mean(np.abs(cmd_yaw)))
-        data['actual_ang_vel'].append(np.mean(actual_yaw))
+        data['actual_ang_vel'].append(np.mean(np.abs(actual_yaw)))
 
         # --- Command mode별 yaw 오차 ---
         cmd_v = np.sqrt(cmd_x ** 2 + cmd_y ** 2)
