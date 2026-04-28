@@ -21,3 +21,4 @@
 | 017 | 04/28 | spotmicro_v2_6_reset_state | V2.6: 리셋 상태 랜덤화 | 96.2% | 0.053 | 18.2% | ✅ |
 | 018 | 04/28 | spotmicro_v2_7_stab_ang_improve | V2.7: 나빠진 안정성, 각속도 오차 성능 향상 | 97.7% | 0.049 | 16.3% | ✅ |
 | 019 | 04/28 | spotmicro_v2_7_1_stab_ang_improve | V2.7.1: 나빠진 안정성, 각속도 오차 성능 향상, iteration... | 100.0% | 0.047 | 18.1% | ✅ |
+| 020 | 04/28 | spotmicro_v2_8_ang_shoulder | V2.8: ik shoulder 관절 목표값 설정, 회전 오차 감소하는지... | 5.7% | 0.077 | 22.2% | ❌ |

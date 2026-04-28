@@ -249,6 +249,8 @@ class SpotmicroTest(LeggedRobot):
     def _get_ik_target(self):
         vx = self.commands[:, 0]
         wz = self.commands[:, 2] 
+        shoulder_angle = wz * 0.15  # 스케일은 튜닝 필요
+
         v_left = vx - (wz * self.robot_width / 2.0)
         v_right = vx + (wz * self.robot_width / 2.0)
         stance_time = self.gait_period * self.duty_factor
@@ -276,6 +278,11 @@ class SpotmicroTest(LeggedRobot):
         theta_leg = q1 - self.ALPHA
         theta_foot = q2 + self.ALPHA
         ref_dof_pos = torch.zeros((self.num_envs, 12), device=self.device)
+        # FL, RR은 +방향, FR, RL은 -방향 (대각 쌍)
+        ref_dof_pos[:, 0] = shoulder_angle   # front_left
+        ref_dof_pos[:, 3] = -shoulder_angle  # front_right  
+        ref_dof_pos[:, 6] = -shoulder_angle  # rear_left
+        ref_dof_pos[:, 9] = shoulder_angle   # rear_right
         ref_dof_pos[:, 1::3] = theta_leg  
         ref_dof_pos[:, 2::3] = theta_foot 
 
