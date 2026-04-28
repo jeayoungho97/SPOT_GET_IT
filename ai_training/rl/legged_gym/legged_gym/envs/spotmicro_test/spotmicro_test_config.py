@@ -32,9 +32,9 @@ class SpotmicroTestCfg(LeggedRobotCfg):
 
     class control(LeggedRobotCfg.control):
         control_type = 'P'
-        stiffness = {'shoulder': 20.0, 'leg': 20.0, 'foot': 20.0}
-        damping = {'shoulder': 0.5, 'leg': 0.5, 'foot': 0.5}
-        action_scale = 0.22
+        stiffness = {'shoulder': 8.0, 'leg': 8.0, 'foot': 8.0}
+        damping = {'shoulder': 0.2, 'leg': 0.2, 'foot': 0.2}
+        action_scale = 0.35
         decimation = 4
 
     class asset(LeggedRobotCfg.asset):
@@ -54,8 +54,8 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             termination = -10.0
             lin_vel_z = -2.0
             ang_vel_xy = -0.4
-            orientation = -6.0
-            torques = -0.001
+            orientation = -8.0
+            torques = -0.0005
             dof_vel = -0.001
             dof_acc = -2.5e-7
             action_rate = -0.05
@@ -123,7 +123,7 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v3_0_change_urdf'
+        run_name = 'spotmicro_v3_1_PD_change'
         experiment_name = 'spotmicro_test'
         max_iterations = 1500
         save_interval = 100
