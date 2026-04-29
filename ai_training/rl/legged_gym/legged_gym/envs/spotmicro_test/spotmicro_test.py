@@ -302,7 +302,7 @@ class SpotmicroTest(LeggedRobot):
         # action에 가중치를 곱해서 에러 계산
         weighted_actions = self.actions * weights
         error = torch.sum(torch.square(weighted_actions), dim=1)
-        sigma = 3.5 
+        sigma = 2.0
         return torch.exp(-error / sigma)
         
     def _reward_tracking_ang_vel(self):
