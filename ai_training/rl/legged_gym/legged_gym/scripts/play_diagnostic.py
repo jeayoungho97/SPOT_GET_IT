@@ -416,7 +416,7 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
         signal = contact_patterns[:, 0].astype(float)  # FL foot
         signal = signal - signal.mean()  # DC 제거
 
-        dt_step = env.dt * env.cfg.control.decimation  # 1 step의 실제 시간(초)
+        dt_step = env.dt  # 1 step의 실제 시간(초)
 
         from numpy.fft import fft, fftfreq
         N = len(signal)
