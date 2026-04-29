@@ -33,3 +33,4 @@
 | 029 | 04/29 | spotmicro_v3_2_noise_order | V3.2: observation 조정으로 인한 노이즈 함수 순서 조정 처... | 96.2% | 0.046 | 20.3% | ✅ |
 | 030 | 04/29 | spotmicro_v3_3_ik_desc | V3.3: IK 구조가 토크를 과도하게 먹는 구조인지 확인하기 위한 IK... | 94.8% | 0.044 | 24.7% | ✅ |
 | 031 | 04/29 | spotmicro_v3_3_1_torque_improve | V3.3.1: torque 페널티 증가시켜 leg, foot 토크 완화 ... | 97.0% | 0.047 | 19.2% | ✅ |
+| 032 | 04/29 | spotmicro_v3_3_2_torque_improve | V3.3.2: torque  페널티 적당히 조절, leg, foot 토크... | 6.0% | 0.096 | 26.4% | ❌ |
