@@ -55,7 +55,7 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             lin_vel_z = -2.0
             ang_vel_xy = -0.4
             orientation = -6.0
-            torques = -0.001
+            torques = -0.002
             dof_vel = -0.001
             dof_acc = -2.5e-7
             action_rate = -0.05
@@ -67,7 +67,7 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             symmetric_gait = 0.0
             feet_clearance = 0.0
             trot_contact = 0.5
-            tracking_ik = 0.7
+            tracking_ik = 1.0
             stand_still = -0.5
         soft_dof_pos_limit = 0.9
         base_height_target = 0.206
@@ -123,7 +123,7 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v3_3_ik_desc'
+        run_name = 'spotmicro_v3_3_1_torque_improve'
         experiment_name = 'spotmicro_test'
         max_iterations = 1500
         save_interval = 100
