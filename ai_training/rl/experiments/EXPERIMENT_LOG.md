@@ -27,3 +27,4 @@
 | 023 | 04/28 | spotmicro_v2_11_resample_mode | V2.11: 여러 경우의 동작을 mode로 구분하여 학습시킴 | 96.2% | 0.074 | 37.2% | ✅ |
 | 024 | 04/28 | spotmicro_v3_0_change_urdf | V3.0: urdf 실제 무게 반영 | 97.7% | 0.053 | 33.8% | ✅ |
 | 025 | 04/28 | spotmicro_v3_1_PD_change | V3.1: urdf 변경으로 인한 변경점을 보정하기 위한 PD 변경. | 92.1% | 0.043 | 18.1% | ✅ |
+| 026 | 04/29 | spotmicro_v3_1_1_urdf_fix | V3.1.1: urdf inertia 오류 수정. | 98.5% | 0.050 | 20.5% | ✅ |
