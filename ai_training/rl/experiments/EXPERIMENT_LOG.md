@@ -37,3 +37,4 @@
 | 033 | 05/04 | spotmicro_v3_4_ik_sigma_asc | V3.4: tracking_ik 의 sigma를 감소한 pd gain 값... | 99.2% | 0.041 | 22.2% | ✅ |
 | 034 | 05/04 | spotmicro_v4_0_new_tracking_ik | V4.0: tracking_ik 의 방식을 action에 따른 rewar... | 94.8% | 0.053 | 18.8% | ✅ |
 | 035 | 05/04 | spotmicro_v4_0_1_shoulder_weight | V4.0.11: shoulder 관절 weight를 0.9로 변경. 좀 ... | 96.2% | 0.033 | 23.3% | ✅ |
+| 036 | 05/04 | spotmicro_v4_1_new_IK | V4.1: IK를 2D에서 quasi-3D로 변경. | 98.5% | 0.032 | 24.7% | ✅ |
