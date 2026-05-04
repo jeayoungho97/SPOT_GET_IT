@@ -272,7 +272,15 @@ class SpotmicroTest(LeggedRobot):
         
     def _reward_stand_still(self):
         cmd_norm = torch.norm(self.commands[:, :3], dim=1)
-        return torch.sum(torch.abs(self.dof_pos - self.default_dof_pos), dim=1) * (cmd_norm < 0.1)
+        is_stand = (cmd_norm < 0.08).float()
+
+        lin_penalty = torch.sum(torch.square(self.base_lin_vel[:, :2]), dim=1)
+        yaw_penalty = torch.square(self.base_ang_vel[:, 2])
+        pose_penalty = 0.2 * torch.sum(
+            torch.square(self.dof_pos - self.default_dof_pos), dim=1
+        )
+
+        return (lin_penalty + 0.5 * yaw_penalty + pose_penalty) * is_stand
 
     def _get_ik_target(self):
         vx = self.commands[:, 0]
@@ -322,6 +330,21 @@ class SpotmicroTest(LeggedRobot):
         return torch.clip(torques, -self.torque_limits, self.torque_limits)
 
     def _reward_tracking_ik(self):
+        ref_dof_pos = self._get_ik_target()
+
+        # shoulder는 yaw/균형 보정 자유도를 남김
+        weights = torch.tensor([0.3, 1.0, 1.0] * 4, device=self.device)
+
+        joint_error = (self.dof_pos - ref_dof_pos) * weights
+        error = torch.sum(torch.square(joint_error), dim=1)
+
+        cmd_norm = torch.norm(self.commands[:, :3], dim=1)
+        is_moving = (cmd_norm > 0.08).float()
+
+        sigma = 0.15
+        return torch.exp(-error / sigma) * is_moving
+    
+    def _reward_residual_action(self):
         # 관절별 페널티 가중치: [Shoulder, Leg, Foot] 순서
         # 어깨(0.1)는 자유롭게 움직이도록 허용하고, Leg와 Foot(1.0)은 IK를 잘 따르도록 강제함
         weights = torch.tensor([1.0, 1.0, 1.0] * 4, device=self.device)
