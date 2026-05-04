@@ -32,9 +32,9 @@ class SpotmicroTestCfg(LeggedRobotCfg):
 
     class control(LeggedRobotCfg.control):
         control_type = 'P'
-        stiffness = {'shoulder': 20.0, 'leg': 20.0, 'foot': 20.0}
-        damping = {'shoulder': 0.5, 'leg': 0.5, 'foot': 0.5}
-        action_scale = 0.22
+        stiffness = {'shoulder': 15.0, 'leg': 10.0, 'foot': 10.0}
+        damping = {'shoulder': 0.3, 'leg': 0.3, 'foot': 0.2}
+        action_scale = 0.25
         decimation = 4
 
     class asset(LeggedRobotCfg.asset):
@@ -50,12 +50,12 @@ class SpotmicroTestCfg(LeggedRobotCfg):
     class rewards(LeggedRobotCfg.rewards):
         class scales:
             tracking_lin_vel = 1.5
-            tracking_ang_vel = 0.9 
+            tracking_ang_vel = 1.3 
             termination = -10.0
             lin_vel_z = -2.0
-            ang_vel_xy = -0.2
-            orientation = -4.0
-            torques = -0.001
+            ang_vel_xy = -0.4
+            orientation = -6.0
+            torques = -0.0015
             dof_vel = -0.001
             dof_acc = -2.5e-7
             action_rate = -0.05
@@ -68,10 +68,11 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             feet_clearance = 0.0
             trot_contact = 0.5
             tracking_ik = 1.0
-            stand_still = 1.0
+            stand_still = -0.5
         soft_dof_pos_limit = 0.9
         base_height_target = 0.206
         tracking_sigma = 0.1
+        tracking_sigma_ang_vel = 0.05
 
     class normalization(LeggedRobotCfg.normalization):
         class obs_scales:
@@ -122,7 +123,7 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v2_5_stand_still'
+        run_name = 'spotmicro_v3_3_2_torque_improve'
         experiment_name = 'spotmicro_test'
-        max_iterations = 1000
+        max_iterations = 1500
         save_interval = 100
