@@ -49,6 +49,7 @@
         <box size="0.13 0.045 0.035"/>
       </geometry>
       <material name="black"/>
+      <origin rpy="0 0 0" xyz="0 0 0.057"/>
     </visual>
     <collision>
       <geometry>

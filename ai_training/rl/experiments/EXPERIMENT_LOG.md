@@ -34,3 +34,4 @@
 | 030 | 04/29 | spotmicro_v3_3_ik_desc | V3.3: IK 구조가 토크를 과도하게 먹는 구조인지 확인하기 위한 IK... | 94.8% | 0.044 | 24.7% | ✅ |
 | 031 | 04/29 | spotmicro_v3_3_1_torque_improve | V3.3.1: torque 페널티 증가시켜 leg, foot 토크 완화 ... | 97.0% | 0.047 | 19.2% | ✅ |
 | 032 | 04/29 | spotmicro_v3_3_2_torque_improve | V3.3.2: torque  페널티 적당히 조절, leg, foot 토크... | 6.0% | 0.096 | 26.4% | ❌ |
+| 033 | 05/04 | spotmicro_v3_4_ik_sigma_asc | V3.4: tracking_ik 의 sigma를 감소한 pd gain 값... | 99.2% | 0.041 | 22.2% | ✅ |

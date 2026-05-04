@@ -320,7 +320,7 @@ class SpotmicroTest(LeggedRobot):
         ref_dof_pos = self._get_ik_target()
         torques = self.p_gains * (actions_scaled + ref_dof_pos - self.dof_pos) - self.d_gains * self.dof_vel
         return torch.clip(torques, -self.torque_limits, self.torque_limits)
-        
+
     def _reward_tracking_ik(self):
         # 관절별 페널티 가중치: [Shoulder, Leg, Foot] 순서
         # 어깨(0.1)는 자유롭게 움직이도록 허용하고, Leg와 Foot(1.0)은 IK를 잘 따르도록 강제함
@@ -329,7 +329,7 @@ class SpotmicroTest(LeggedRobot):
         # action에 가중치를 곱해서 에러 계산
         weighted_actions = self.actions * weights
         error = torch.sum(torch.square(weighted_actions), dim=1)
-        sigma = 2.0
+        sigma = 3.0
         return torch.exp(-error / sigma)
         
     def _reward_tracking_ang_vel(self):
