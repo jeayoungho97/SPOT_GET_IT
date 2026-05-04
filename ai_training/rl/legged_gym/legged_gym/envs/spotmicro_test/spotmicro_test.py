@@ -333,7 +333,7 @@ class SpotmicroTest(LeggedRobot):
         ref_dof_pos = self._get_ik_target()
 
         # shoulder는 yaw/균형 보정 자유도를 남김
-        weights = torch.tensor([0.3, 1.0, 1.0] * 4, device=self.device)
+        weights = torch.tensor([0.9, 1.0, 1.0] * 4, device=self.device)
 
         joint_error = (self.dof_pos - ref_dof_pos) * weights
         error = torch.sum(torch.square(joint_error), dim=1)

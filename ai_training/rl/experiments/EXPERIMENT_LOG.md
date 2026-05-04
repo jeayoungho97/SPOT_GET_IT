@@ -36,3 +36,4 @@
 | 032 | 04/29 | spotmicro_v3_3_2_torque_improve | V3.3.2: torque  페널티 적당히 조절, leg, foot 토크... | 6.0% | 0.096 | 26.4% | ❌ |
 | 033 | 05/04 | spotmicro_v3_4_ik_sigma_asc | V3.4: tracking_ik 의 sigma를 감소한 pd gain 값... | 99.2% | 0.041 | 22.2% | ✅ |
 | 034 | 05/04 | spotmicro_v4_0_new_tracking_ik | V4.0: tracking_ik 의 방식을 action에 따른 rewar... | 94.8% | 0.053 | 18.8% | ✅ |
+| 035 | 05/04 | spotmicro_v4_0_1_shoulder_weight | V4.0.11: shoulder 관절 weight를 0.9로 변경. 좀 ... | 96.2% | 0.033 | 23.3% | ✅ |
