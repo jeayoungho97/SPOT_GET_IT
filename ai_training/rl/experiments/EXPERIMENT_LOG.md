@@ -40,3 +40,4 @@
 | 036 | 05/04 | spotmicro_v4_1_new_IK | V4.1: IK를 2D에서 quasi-3D로 변경. | 98.5% | 0.032 | 24.7% | ✅ |
 | 037 | 05/04 | spotmicro_v4_2_height_reward | V4.2: 높이 reward 추가하여 뒷다리 토크 문제 해결 시도 | 90.8% | 0.032 | 22.4% | ✅ |
 | 038 | 05/04 | spotmicro_v4_3_body_height | V4.3: IK의 body height를 낮춰 토크 포화 감소 시도 | 49.6% | 0.039 | 25.0% | ❌ |
+| 039 | 05/04 | spotmicro_v4_4_pitch_z | V4.4: pitch/roll 에 따라 leg의 z값 보정, 균형 맞춰서... | 87.1% | 0.037 | 21.3% | ✅ |

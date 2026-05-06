@@ -66,9 +66,9 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             tracking_ik = 0.5
             stand_still = -0.5
             residual_action = 0.0
-            base_height = 0.0
+            base_height = -0.8
         soft_dof_pos_limit = 0.9
-        base_height_target = 0.195
+        base_height_target = 0.206
         tracking_sigma = 0.1
         tracking_sigma_ang_vel = 0.05
 
@@ -121,7 +121,7 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v4_3_body_height'
+        run_name = 'spotmicro_v4_4_pitch_z'
         experiment_name = 'spotmicro_test'
         max_iterations = 1500
         save_interval = 100

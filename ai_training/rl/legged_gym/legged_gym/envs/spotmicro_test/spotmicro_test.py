@@ -23,7 +23,7 @@ class SpotmicroTest(LeggedRobot):
         self.gait_period = 0.6
         self.duty_factor = 0.5
         self.step_height = 0.03
-        self.body_height = 0.195
+        self.body_height = 0.206
 
         self.gait_phase = torch.zeros(self.num_envs, 1, dtype=torch.float, device=self.device)
         self.commands_scale = torch.tensor(
@@ -74,7 +74,13 @@ class SpotmicroTest(LeggedRobot):
 
         self.shoulder_ref_limit = 0.15
         self.shoulder_y_gain = 2.0
-
+    '''
+    def step(self, actions):
+        # 모든 액션을 0으로 강제 → 순수 default_joint_angles만 적용
+        zero_actions = torch.zeros_like(actions)
+        return super().step(zero_actions)
+   
+    '''    
     def step(self, actions):
         """서보 응답 지연을 substep 단위로 적용
         
@@ -112,7 +118,7 @@ class SpotmicroTest(LeggedRobot):
         if self.privileged_obs_buf is not None:
             self.privileged_obs_buf = torch.clip(self.privileged_obs_buf, -clip_obs, clip_obs)
         return self.obs_buf, self.privileged_obs_buf, self.rew_buf, self.reset_buf, self.extras
-
+    
     def post_physics_step(self):
         self.gym.refresh_rigid_body_state_tensor(self.sim)
 
@@ -350,7 +356,25 @@ class SpotmicroTest(LeggedRobot):
     
         return ref_dof_pos
         '''
-    
+
+    def _get_leg_height_targets(self):
+        # body frame에서 world-up normal 추정
+        # projected_gravity는 body frame 기준 gravity direction, 보통 [0, 0, -1] 근처
+        n = -self.projected_gravity  # ground normal/up direction in body frame
+
+        nx = n[:, 0].unsqueeze(1)  # [N, 1]
+        ny = n[:, 1].unsqueeze(1)
+        nz = torch.clamp(n[:, 2].unsqueeze(1), min=0.3)
+
+        leg_x = self.leg_origin_x.unsqueeze(0)  # [1, 4]
+        leg_y = self.leg_origin_y.unsqueeze(0)  # [1, 4]
+
+        # 수평 지면이 body frame에서 기울어져 보이는 것을 보정
+        # flat이면 nx=0, ny=0, nz=1 -> z = -body_height
+        z_stance = (-self.body_height - nx * leg_x - ny * leg_y) / nz
+
+        return z_stance
+        
     def _get_ik_target(self):
         vx = self.commands[:, 0]  # [num_envs]
         vy = self.commands[:, 1]  # 현재는 0이지만 future-proof
@@ -384,7 +408,8 @@ class SpotmicroTest(LeggedRobot):
 
         x = torch.zeros((self.num_envs, 4), device=self.device)
         y = torch.zeros((self.num_envs, 4), device=self.device)
-        z = torch.full((self.num_envs, 4), -self.body_height, device=self.device)
+        z_stance = self._get_leg_height_targets()
+        z = z_stance.clone()
 
         is_stance = phases < self.duty_factor
         is_swing = ~is_stance
@@ -401,7 +426,7 @@ class SpotmicroTest(LeggedRobot):
         y[is_swing] = stride_y[is_swing] * (-0.5 + t_swing[is_swing])
 
         z[is_swing] = (
-            -self.body_height
+            z_stance[is_swing]
             + self.step_height * torch.sin(torch.pi * t_swing[is_swing])
         )
 
