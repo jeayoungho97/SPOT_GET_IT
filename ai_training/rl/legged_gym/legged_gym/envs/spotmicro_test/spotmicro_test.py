@@ -21,9 +21,10 @@ class SpotmicroTest(LeggedRobot):
         self.robot_width = 0.15 
 
         self.gait_period = 0.6
-        self.duty_factor = 0.5
-        self.step_height = 0.03
-        self.body_height = 0.206
+        self.duty_factor = 0.75
+        self.step_height = 0.02
+        self.body_height = 0.216
+        self.stride_scale = 0.3
 
         self.gait_phase = torch.zeros(self.num_envs, 1, dtype=torch.float, device=self.device)
         self.commands_scale = torch.tensor(
@@ -80,7 +81,7 @@ class SpotmicroTest(LeggedRobot):
         zero_actions = torch.zeros_like(actions)
         return super().step(zero_actions)
    
-    '''    
+    '''
     def step(self, actions):
         """서보 응답 지연을 substep 단위로 적용
         
@@ -131,8 +132,9 @@ class SpotmicroTest(LeggedRobot):
         super().post_physics_step()
               
     def _reset_dofs(self, env_ids):
+        #self.dof_pos[env_ids] = self.default_dof_pos
         self.dof_pos[env_ids] = self.default_dof_pos * torch_rand_float(
-            0.5, 1.5, (len(env_ids), self.num_dof), device=self.device)
+            0.6, 1.4, (len(env_ids), self.num_dof), device=self.device)
         self.dof_vel[env_ids] = 0.
 
         env_ids_int32 = env_ids.to(dtype=torch.int32)
@@ -157,8 +159,9 @@ class SpotmicroTest(LeggedRobot):
         """base 속도를 0으로 리셋"""
         self.root_states[env_ids] = self.base_init_state
         self.root_states[env_ids, :3] += self.env_origins[env_ids]
+        #self.root_states[env_ids, 7:13] = 0.
         self.root_states[env_ids, 7:13] = torch_rand_float(
-            -0.3, 0.3, (len(env_ids), 6), device=self.device)
+            -0.2, 0.2, (len(env_ids), 6), device=self.device)
 
         env_ids_int32 = env_ids.to(dtype=torch.int32)
         self.gym.set_actor_root_state_tensor_indexed(
@@ -397,8 +400,8 @@ class SpotmicroTest(LeggedRobot):
 
         stance_time = self.gait_period * self.duty_factor
 
-        stride_x = foot_vx * stance_time
-        stride_y = foot_vy * stance_time
+        stride_x = foot_vx * stance_time * self.stride_scale
+        stride_y = foot_vy * stance_time * self.stride_scale
 
         # ------------------------------------------------------------
         # 2. phase 생성
@@ -409,6 +412,11 @@ class SpotmicroTest(LeggedRobot):
         x = torch.zeros((self.num_envs, 4), device=self.device)
         y = torch.zeros((self.num_envs, 4), device=self.device)
         z_stance = self._get_leg_height_targets()
+        #z_stance = torch.full(
+        #    (self.num_envs, 4),
+        #    -self.body_height,
+        #    device=self.device,
+        #)
         z = z_stance.clone()
 
         is_stance = phases < self.duty_factor
@@ -483,6 +491,7 @@ class SpotmicroTest(LeggedRobot):
         # 6. 정지 근처에서는 default pose로 blend
         # ------------------------------------------------------------
         cmd_norm = torch.norm(self.commands[:, :3], dim=1, keepdim=True)
+        
         blend = torch.clamp(cmd_norm / 0.1, 0.0, 1.0)
 
         ref_dof_pos = blend * ref_dof_pos + (1.0 - blend) * self.default_dof_pos

@@ -62,13 +62,13 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             feet_air_time = 0.0
             dof_pos_limits = 0.0
             collision = -1.0
-            trot_contact = 0.2
-            tracking_ik = 0.5
+            trot_contact = 0.1
+            tracking_ik = 0.25
             stand_still = -0.5
             residual_action = 0.0
             base_height = -0.8
         soft_dof_pos_limit = 0.9
-        base_height_target = 0.206
+        base_height_target = 0.216
         tracking_sigma = 0.1
         tracking_sigma_ang_vel = 0.05
 
@@ -81,7 +81,7 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             height_measurements = 5.0
 
     class noise(LeggedRobotCfg.noise):
-        add_noise = True 
+        add_noise = True
         noise_level = 1.0
         class noise_scales:
             dof_pos = 0.01
