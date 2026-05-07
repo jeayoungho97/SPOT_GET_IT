@@ -1,15 +1,9 @@
 # hardware
 
-물리 하드웨어 설계 파일.
+SPOT GET IT 의 하드웨어 설계 폴더.
 
-## 예정 구성
-- `schematics/` — KiCad 회로도
-- `pcb/` — PDB 설계
-- `cad/` — Spot Micro STL (Git LFS)
-- `wiring/` — 전원 star topology 다이어그램
+## 구성
+- `cad/` — SPOT GET IT STL, STEP, f3z 파일
+- `documnets/` — 하드웨어 디자인(hardware_design.md), 전원부 설계 (power_system.md)
 
-## 주의
-- `.stl`, `.pdf`, `.step` 파일은 Git LFS로 관리 (`.gitattributes` 참조)
-- Spot Micro 원본 CAD 출처 명시 필요 (라이선스 검토 후 갱신)
-
-담당: HW
+담당: 제영호 (jeayoungho97)
