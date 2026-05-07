@@ -98,7 +98,7 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         resampling_time = 10.0
         heading_command = False
         class ranges:
-            lin_vel_x = [0.0, 0.4]
+            lin_vel_x = [0.0, 0.25]
             lin_vel_y = [0.0, 0.0]
             ang_vel_yaw = [-0.2, 0.2]
             heading = [-3.14, 3.14]
@@ -121,7 +121,7 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v4_4_pitch_z'
+        run_name = 'spotmicro_v4_6_lin_range_desc'
         experiment_name = 'spotmicro_test'
         max_iterations = 1500
         save_interval = 100
