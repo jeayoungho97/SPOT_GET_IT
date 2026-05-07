@@ -34,3 +34,12 @@
 | 030 | 04/29 | spotmicro_v3_3_ik_desc | V3.3: IK 구조가 토크를 과도하게 먹는 구조인지 확인하기 위한 IK... | 94.8% | 0.044 | 24.7% | ✅ |
 | 031 | 04/29 | spotmicro_v3_3_1_torque_improve | V3.3.1: torque 페널티 증가시켜 leg, foot 토크 완화 ... | 97.0% | 0.047 | 19.2% | ✅ |
 | 032 | 04/29 | spotmicro_v3_3_2_torque_improve | V3.3.2: torque  페널티 적당히 조절, leg, foot 토크... | 6.0% | 0.096 | 26.4% | ❌ |
+| 033 | 05/04 | spotmicro_v3_4_ik_sigma_asc | V3.4: tracking_ik 의 sigma를 감소한 pd gain 값... | 99.2% | 0.041 | 22.2% | ✅ |
+| 034 | 05/04 | spotmicro_v4_0_new_tracking_ik | V4.0: tracking_ik 의 방식을 action에 따른 rewar... | 94.8% | 0.053 | 18.8% | ✅ |
+| 035 | 05/04 | spotmicro_v4_0_1_shoulder_weight | V4.0.11: shoulder 관절 weight를 0.9로 변경. 좀 ... | 96.2% | 0.033 | 23.3% | ✅ |
+| 036 | 05/04 | spotmicro_v4_1_new_IK | V4.1: IK를 2D에서 quasi-3D로 변경. | 98.5% | 0.032 | 24.7% | ✅ |
+| 037 | 05/04 | spotmicro_v4_2_height_reward | V4.2: 높이 reward 추가하여 뒷다리 토크 문제 해결 시도 | 90.8% | 0.032 | 22.4% | ✅ |
+| 038 | 05/04 | spotmicro_v4_3_body_height | V4.3: IK의 body height를 낮춰 토크 포화 감소 시도 | 49.6% | 0.039 | 25.0% | ❌ |
+| 039 | 05/04 | spotmicro_v4_4_pitch_z | V4.4: pitch/roll 에 따라 leg의 z값 보정, 균형 맞춰서... | 87.1% | 0.037 | 21.3% | ✅ |
+| 040 | 05/06 | spotmicro_v4_4_pitch_z | V4.5: IK를 좀 덜 공격적이게 변경, 추종도 낮춰서 토크 포화 해결... | 74.9% | 0.035 | 19.4% | ❌ |
+| 041 | 05/06 | spotmicro_v4_6_lin_range_desc | V4.6: 속도 범위 감소시켜 토크에 영향 있는지 확인 | 92.1% | 0.042 | 23.4% | ✅ |

@@ -50,27 +50,25 @@ class SpotmicroTestCfg(LeggedRobotCfg):
     class rewards(LeggedRobotCfg.rewards):
         class scales:
             tracking_lin_vel = 1.5
-            tracking_ang_vel = 1.3 
+            tracking_ang_vel = 1.0 
             termination = -10.0
             lin_vel_z = -2.0
             ang_vel_xy = -0.4
-            orientation = -6.0
+            orientation = -4.0
             torques = -0.0015
-            dof_vel = -0.001
+            dof_vel = -0.0005
             dof_acc = -2.5e-7
             action_rate = -0.05
             feet_air_time = 0.0
             dof_pos_limits = 0.0
             collision = -1.0
-            trot_symmetry = 0.0
-            no_stuck_feet = 0.0
-            symmetric_gait = 0.0
-            feet_clearance = 0.0
-            trot_contact = 0.5
-            tracking_ik = 1.0
+            trot_contact = 0.1
+            tracking_ik = 0.25
             stand_still = -0.5
+            residual_action = 0.0
+            base_height = -0.8
         soft_dof_pos_limit = 0.9
-        base_height_target = 0.206
+        base_height_target = 0.216
         tracking_sigma = 0.1
         tracking_sigma_ang_vel = 0.05
 
@@ -83,7 +81,7 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             height_measurements = 5.0
 
     class noise(LeggedRobotCfg.noise):
-        add_noise = True 
+        add_noise = True
         noise_level = 1.0
         class noise_scales:
             dof_pos = 0.01
@@ -100,9 +98,9 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         resampling_time = 10.0
         heading_command = False
         class ranges:
-            lin_vel_x = [0.0, 0.4]
+            lin_vel_x = [0.0, 0.25]
             lin_vel_y = [0.0, 0.0]
-            ang_vel_yaw = [-0.4, 0.4]
+            ang_vel_yaw = [-0.2, 0.2]
             heading = [-3.14, 3.14]
 
     class domain_rand(LeggedRobotCfg.domain_rand):
@@ -123,7 +121,7 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v3_3_2_torque_improve'
+        run_name = 'spotmicro_v4_6_lin_range_desc'
         experiment_name = 'spotmicro_test'
         max_iterations = 1500
         save_interval = 100
