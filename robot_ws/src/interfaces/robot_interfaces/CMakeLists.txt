@@ -15,6 +15,11 @@ find_package(std_msgs REQUIRED)
 # find_package(<dependency> REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/ObstacleCluster.msg"
+  "msg/ObstacleClusters.msg"	
+  "msg/ObstacleModel.msg"
+  "msg/FreeSpaceGap.msg"
+  "msg/FreeSpaceModel.msg"
   "msg/VictimDetection.msg"
   "msg/RobotLocalization.msg"
 	DEPENDENCIES std_msgs
