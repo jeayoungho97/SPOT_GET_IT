@@ -1,0 +1,4 @@
+global_path_manager_node:
+  ros__parameters:
+    frame_id:        "map"
+    map_config_path: ""    # 비워두면 패키지 기본값 (config/map.yaml) 사용
