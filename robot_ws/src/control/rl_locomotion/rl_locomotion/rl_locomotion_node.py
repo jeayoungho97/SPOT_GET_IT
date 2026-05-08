@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import os
 import time
 from typing import List
 
@@ -7,6 +8,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Imu
+from ament_index_python.packages import get_package_share_directory
 
 from robot_interfaces.msg import JointTarget, RlDebug, JointFeedback, RobotStatus
 
@@ -14,6 +16,7 @@ from rl_locomotion.gait_phase import GaitPhaseGenerator
 from rl_locomotion.ik_reference import TrotIkReference
 from rl_locomotion.obs_builder import ObsBuilder
 from rl_locomotion.imu_utils import projected_gravity_from_ros_quat_xyzw
+from rl_locomotion.policy_runner import PolicyRunner
 
 def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
@@ -29,6 +32,11 @@ class RlLocomotionNode(Node):
         self.declare_parameter('action_dim', 12)
         self.declare_parameter('action_scale', 0.25)
         self.declare_parameter('action_clip', 0.5)
+
+        self.declare_parameter('policy_backend', 'dummy')
+        self.declare_parameter('model_path', '')
+        self.declare_parameter('require_model', False)
+        self.declare_parameter('obs_clip', 100.0)
 
         self.declare_parameter('gait_period', 0.6)
         self.declare_parameter('duty_factor', 0.5)
@@ -83,6 +91,11 @@ class RlLocomotionNode(Node):
         self.action_dim = int(self.get_parameter('action_dim').value)
         self.action_scale = float(self.get_parameter('action_scale').value)
         self.action_clip = float(self.get_parameter('action_clip').value)
+
+        self.policy_backend = str(self.get_parameter('policy_backend').value)
+        self.model_path = str(self.get_parameter('model_path').value)
+        self.require_model = bool(self.get_parameter('require_model').value)
+        self.obs_clip = float(self.get_parameter('obs_clip').value)
 
         self.gait_period = float(self.get_parameter('gait_period').value)
         self.duty_factor = float(self.get_parameter('duty_factor').value)
@@ -154,6 +167,17 @@ class RlLocomotionNode(Node):
         self.last_loop_time = time.perf_counter()
         self.last_debug_pub_time = 0.0
 
+        resolved_model_path = self.resolve_model_path(self.model_path)
+
+        self.policy_runner = PolicyRunner(
+            backend=self.policy_backend,
+            model_path=resolved_model_path,
+            obs_dim=self.obs_dim,
+            action_dim=self.action_dim,
+            obs_clip=self.obs_clip,
+            require_model=self.require_model,
+        )
+
         # ---- ROS IO ----
         self.cmd_sub = self.create_subscription(
             Twist,
@@ -201,6 +225,8 @@ class RlLocomotionNode(Node):
             f'rl_locomotion_node started: {self.policy_rate_hz:.1f} Hz, '
             f'obs_dim={self.obs_dim}, action_dim={self.action_dim}, '
             f'gait_period={self.gait_period:.3f}s'
+            f'policy runner: backend={self.policy_runner.backend_name()}, '
+            f'model_path="{resolved_model_path}"'
         )
 
     def cmd_vel_callback(self, msg: Twist):
@@ -271,14 +297,27 @@ class RlLocomotionNode(Node):
             return 9999.0
         return (time.perf_counter() - self.last_feedback_time) * 1000.0
 
-    def run_dummy_policy(self, obs: List[float]) -> List[float]:
+    def resolve_model_path(self, model_path: str) -> str:
         """
-        Step 3에서는 아직 실제 policy를 쓰지 않는다.
-        raw_action은 0으로 유지한다.
+        model_path가 절대경로면 그대로 사용.
+        상대경로면 rl_locomotion package share 기준으로 해석.
+        예:
+          models/policy.onnx
+          /home/jetson/robot_ws/src/control/rl_locomotion/models/policy.onnx
+        """
+        if not model_path:
+            return ""
 
-        따라서 target_rad = ik_ref + 0 * action_scale = ik_ref
-        """
-        return [0.0] * 12
+        expanded = os.path.expanduser(model_path)
+
+        if os.path.isabs(expanded):
+            return expanded
+
+        pkg_share = get_package_share_directory('rl_locomotion')
+        return os.path.join(pkg_share, expanded)
+
+    def run_policy(self, obs: List[float]) -> List[float]:
+        return self.policy_runner.infer(obs)
 
     def postprocess_action(self, raw_action: List[float], ik_ref: List[float]) -> List[float]:
         clipped_action = [
@@ -331,7 +370,7 @@ class RlLocomotionNode(Node):
         obs = self.build_observation(ik_ref)
         t1 = time.perf_counter()
 
-        raw_action = self.run_dummy_policy(obs)
+        raw_action = self.run_policy(obs)
         t2 = time.perf_counter()
 
         target_rad = self.postprocess_action(raw_action, ik_ref)
