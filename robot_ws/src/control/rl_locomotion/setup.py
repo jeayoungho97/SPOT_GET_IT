@@ -30,6 +30,7 @@ setup(
     entry_points={
         'console_scripts': [
             'rl_locomotion_node = rl_locomotion.rl_locomotion_node:main',
+            'fake_feedback_node = rl_locomotion.fake_feedback_node:main',
         ],
     },
 )

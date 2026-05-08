@@ -6,12 +6,14 @@ from typing import List
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
+from sensor_msgs.msg import Imu
 
-from robot_interfaces.msg import JointTarget, RlDebug
+from robot_interfaces.msg import JointTarget, RlDebug, JointFeedback, RobotStatus
 
 from rl_locomotion.gait_phase import GaitPhaseGenerator
 from rl_locomotion.ik_reference import TrotIkReference
-
+from rl_locomotion.obs_builder import ObsBuilder
+from rl_locomotion.imu_utils import projected_gravity_from_ros_quat_xyzw
 
 def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
@@ -136,6 +138,17 @@ class RlLocomotionNode(Node):
 
         self.prev_actions = [0.0] * 12
         self.prev_target_rad = list(self.default_joint_angles)
+        
+        self.joint_position = list(self.default_joint_angles)
+        self.joint_velocity = [0.0] * 12
+
+        self.base_ang_vel = [0.0, 0.0, 0.0]
+        self.projected_gravity = [0.0, 0.0, -1.0]
+
+        self.last_feedback_time = None
+        self.last_status_ok = True
+
+        self.obs_builder = ObsBuilder(obs_dim=self.obs_dim)
 
         self.missed_deadline_count = 0
         self.last_loop_time = time.perf_counter()
@@ -146,6 +159,27 @@ class RlLocomotionNode(Node):
             Twist,
             '/cmd_vel',
             self.cmd_vel_callback,
+            10
+        )
+
+        self.joint_feedback_sub = self.create_subscription(
+            JointFeedback,
+            '/control/actuator/joint_feedback',
+            self.joint_feedback_callback,
+            10
+        )
+
+        self.imu_sub = self.create_subscription(
+            Imu,
+            '/control/actuator/imu',
+            self.imu_callback,
+            10
+        )
+
+        self.status_sub = self.create_subscription(
+            RobotStatus,
+            '/control/actuator/status',
+            self.status_callback,
             10
         )
 
@@ -174,6 +208,42 @@ class RlLocomotionNode(Node):
         self.cmd_vy = clamp(msg.linear.y, self.vy_min, self.vy_max)
         self.cmd_wz = clamp(msg.angular.z, self.wz_min, self.wz_max)
 
+    def joint_feedback_callback(self, msg: JointFeedback):
+        if len(msg.position_rad) == 12:
+            self.joint_position = list(msg.position_rad)
+        else:
+            self.get_logger().warn('JointFeedback.position_rad length is not 12')
+
+        if len(msg.velocity_rad_s) == 12:
+            self.joint_velocity = list(msg.velocity_rad_s)
+        else:
+            self.get_logger().warn('JointFeedback.velocity_rad_s length is not 12')
+
+        self.last_feedback_time = time.perf_counter()
+
+    def imu_callback(self, msg: Imu):
+        self.base_ang_vel = [
+            float(msg.angular_velocity.x),
+            float(msg.angular_velocity.y),
+            float(msg.angular_velocity.z),
+        ]
+
+        self.projected_gravity = list(
+            projected_gravity_from_ros_quat_xyzw(
+                qx=float(msg.orientation.x),
+                qy=float(msg.orientation.y),
+                qz=float(msg.orientation.z),
+                qw=float(msg.orientation.w),
+            )
+        )
+
+    def status_callback(self, msg: RobotStatus):
+        self.last_status_ok = (
+            msg.status == RobotStatus.STATUS_OK
+            and msg.torque_enabled
+            and msg.servo_connected
+        )
+
     def update_gait_phase(self):
         self.gait_phase = self.gait_phase_gen.update(
             dt=self.dt,
@@ -182,44 +252,24 @@ class RlLocomotionNode(Node):
             cmd_wz=self.cmd_wz,
         )
 
-    def build_dummy_observation(self, ik_ref: List[float]) -> List[float]:
-        """
-        Step 3에서도 feedback은 아직 dummy다.
-
-        가정:
-          - base_ang_vel = 0
-          - projected_gravity = [0, 0, -1]
-          - 실제 dof_pos가 ik_ref를 완벽히 따라간다고 가정해서 dof_pos - ik_ref = 0
-          - dof_vel = 0
-        """
-
-        base_ang_vel_scaled = [0.0, 0.0, 0.0]
-        projected_gravity = [0.0, 0.0, -1.0]
-        commands_scaled = [
-            self.cmd_vx * 2.0,
-            self.cmd_vy * 2.0,
-            self.cmd_wz * 0.25,
-        ]
-
-        dof_pos_minus_ref = [0.0] * 12
-        dof_vel_scaled = [0.0] * 12
-
-        phase_sin, phase_cos = self.gait_phase_gen.sin_cos()
-
-        obs = (
-            base_ang_vel_scaled
-            + projected_gravity
-            + commands_scaled
-            + dof_pos_minus_ref
-            + dof_vel_scaled
-            + self.prev_actions
-            + [phase_sin, phase_cos]
+    def build_observation(self, ik_ref: List[float]) -> List[float]:
+        return self.obs_builder.build(
+            base_ang_vel=self.base_ang_vel,
+            projected_gravity=self.projected_gravity,
+            cmd_vx=self.cmd_vx,
+            cmd_vy=self.cmd_vy,
+            cmd_wz=self.cmd_wz,
+            dof_pos=self.joint_position,
+            dof_vel=self.joint_velocity,
+            ik_ref=ik_ref,
+            prev_actions=self.prev_actions,
+            gait_phase=self.gait_phase,
         )
 
-        if len(obs) != 47:
-            raise RuntimeError(f'observation size mismatch: {len(obs)} != 47')
-
-        return obs
+    def get_feedback_age_ms(self) -> float:
+        if self.last_feedback_time is None:
+            return 9999.0
+        return (time.perf_counter() - self.last_feedback_time) * 1000.0
 
     def run_dummy_policy(self, obs: List[float]) -> List[float]:
         """
@@ -278,7 +328,7 @@ class RlLocomotionNode(Node):
             cmd_vy=self.cmd_vy,
             cmd_wz=self.cmd_wz,
         )
-        obs = self.build_dummy_observation(ik_ref)
+        obs = self.build_observation(ik_ref)
         t1 = time.perf_counter()
 
         raw_action = self.run_dummy_policy(obs)
@@ -316,7 +366,7 @@ class RlLocomotionNode(Node):
             dbg.cmd_vx = float(self.cmd_vx)
             dbg.cmd_vy = float(self.cmd_vy)
             dbg.cmd_wz = float(self.cmd_wz)
-            dbg.feedback_age_ms = 0.0
+            dbg.feedback_age_ms = float(self.get_feedback_age_ms())
             dbg.obs_build_ms = float((t1 - t0) * 1000.0)
             dbg.inference_ms = float((t2 - t1) * 1000.0)
             dbg.postprocess_ms = float((t3 - t2) * 1000.0)
@@ -324,7 +374,7 @@ class RlLocomotionNode(Node):
             dbg.timer_elapsed_ms = float(timer_elapsed_ms)
             dbg.timer_jitter_ms = float(timer_jitter_ms)
             dbg.missed_deadline_count = self.missed_deadline_count
-            dbg.emergency_stop = False
+            dbg.emergency_stop = not self.last_status_ok
             self.debug_pub.publish(dbg)
             self.last_debug_pub_time = now
 
