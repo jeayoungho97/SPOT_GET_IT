@@ -43,4 +43,4 @@ rl_locomotion_node:
       - 1.1
 
     max_joint_speed_rad_s: 1.5
-    debug_publish_rate_hz: 10.0
+    debug_publish_rate_hz: 2.0
