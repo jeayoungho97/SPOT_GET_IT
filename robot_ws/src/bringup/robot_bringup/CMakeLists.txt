@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(robot_interfaces)
+project(robot_bringup)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
@@ -7,29 +7,7 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
-find_package(rosidl_default_generators REQUIRED)
-find_package(std_msgs REQUIRED)
-
-# uncomment the following section in order to fill in
-# further dependencies manually.
-# find_package(<dependency> REQUIRED)
-
-rosidl_generate_interfaces(${PROJECT_NAME}
-  "msg/ObstacleCluster.msg"
-  "msg/ObstacleClusters.msg"	
-  "msg/ObstacleModel.msg"
-  "msg/FreeSpaceGap.msg"
-  "msg/FreeSpaceModel.msg"
-  "msg/VictimDetection.msg"
-  "msg/RobotLocalization.msg"
-  "msg/JointTarget.msg"
-  "msg/JointFeedback.msg"
-  "msg/RobotStatus.msg"
-  "msg/RlDebug.msg"
-	DEPENDENCIES std_msgs
-)
-
-ament_export_dependencies(rosidl_default_runtime)
+find_package(rclcpp REQUIRED)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
