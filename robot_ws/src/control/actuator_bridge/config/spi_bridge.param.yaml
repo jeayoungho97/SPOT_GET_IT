@@ -1,0 +1,21 @@
+actuator_bridge_node:
+  ros__parameters:
+    control_rate_hz: 50.0
+    simulated_transport: true
+    feedback_alpha: 1.0
+    max_target_age_ms: 200.0
+    bus_voltage: 12.0
+
+    default_joint_angles:
+      - 0.0
+      - -0.6
+      - 1.1
+      - 0.0
+      - -0.6
+      - 1.1
+      - 0.0
+      - -0.6
+      - 1.1
+      - 0.0
+      - -0.6
+      - 1.1
