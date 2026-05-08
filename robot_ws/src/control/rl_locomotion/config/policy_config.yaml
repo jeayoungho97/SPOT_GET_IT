@@ -6,6 +6,11 @@ rl_locomotion_node:
     action_scale: 0.25
     action_clip: 0.5
 
+    policy_backend: dummy
+    model_path: ""
+    require_model: false
+    obs_clip: 100.0
+
     gait_period: 0.6
     duty_factor: 0.5
     step_height: 0.03
