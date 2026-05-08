@@ -6,9 +6,9 @@ rl_locomotion_node:
     action_scale: 0.25
     action_clip: 0.5
 
-    policy_backend: dummy
-    model_path: ""
-    require_model: false
+    policy_backend: onnx
+    model_path: models/exp043_policy.onnx
+    require_model: true
     obs_clip: 100.0
 
     gait_period: 0.6
