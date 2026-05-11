@@ -306,11 +306,9 @@ private:
     msg.angular_velocity.y = feedback.gyro_rad_s[1];
     msg.angular_velocity.z = feedback.gyro_rad_s[2];
 
-    // 현재 FeedbackPacket에는 linear acceleration이 없으므로 unknown으로 표시.
-    msg.linear_acceleration.x = 0.0;
-    msg.linear_acceleration.y = 0.0;
-    msg.linear_acceleration.z = 0.0;
-    msg.linear_acceleration_covariance[0] = -1.0;
+    msg.linear_acceleration.x = feedback.accel_m_s2[0];
+    msg.linear_acceleration.y = feedback.accel_m_s2[1];
+    msg.linear_acceleration.z = feedback.accel_m_s2[2];
 
     imu_pub_->publish(msg);
   }
