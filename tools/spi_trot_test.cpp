@@ -492,6 +492,20 @@ int main(int argc, char **argv)
         }
     }
 
+    /* ── Phase 1.5: Dwell at standing (1.5초) ──
+     *   "자세 잡고 → 걷기 시작" 의 자연스러운 pause.
+     *   STM 자체 trot 의 stand_at_height 후 잠시 대기와 동일한 효과.
+     */
+    if (!g_stop) {
+        const double DWELL_BEFORE_TROT = 1.5;
+        printf("[Phase 1.5] Hold standing (%.1fs)\n", DWELL_BEFORE_TROT);
+        double t_end = now_sec() + DWELL_BEFORE_TROT;
+        while (now_sec() < t_end && !g_stop) {
+            send(MODE_POSITION, FLAG_TORQUE_EN, stand_target, delta_smooth);
+            sleep_until(now_sec() + TICK);
+        }
+    }
+
     /* ── Phase 2: Trot walking ──
      *   loop 안 printf 절대 없음. 진단 데이터는 메모리 버퍼에만 저장.
      *   Phase 1 → 2 사이도 printf 없으므로 STM32 stale 안 일어남.
