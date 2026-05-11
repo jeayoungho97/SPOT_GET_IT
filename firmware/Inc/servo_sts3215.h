@@ -26,8 +26,19 @@ typedef struct {
 #define STS_REG_GOAL_POSITION       0x2A
 #define STS_REG_PRESENT_POSITION    0x38
 
+/* 0x38부터 8 byte read: position, speed, load, voltage, temperature */
+typedef struct {
+    bool ok;
+    uint16_t position;        /* raw 0~4095 */
+    int16_t  speed;           /* raw, signed */
+    int16_t  load;            /* signed (sts_load_to_signed 적용 완료) */
+    uint8_t  voltage_dV;      /* 0.1V 단위 */
+    uint8_t  temperature_C;   /* 섭씨 */
+} sts_full_state_t;
+
 bool                  sts_ping(UART_HandleTypeDef *huart, uint8_t id);
 sts_read_result_t     sts_read_state(UART_HandleTypeDef *huart, uint8_t id);
+sts_full_state_t      sts_read_full_state(UART_HandleTypeDef *huart, uint8_t id);
 sts_write_result_t    sts_write_byte(UART_HandleTypeDef *huart, uint8_t id, uint8_t addr, uint8_t val);
 bool                  sts_sync_write_goal(UART_HandleTypeDef *huart,
                                           const uint8_t *ids, const uint16_t *goals, uint8_t count);

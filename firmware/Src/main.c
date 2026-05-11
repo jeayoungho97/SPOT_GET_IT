@@ -4,6 +4,8 @@
 #include "robot.h"
 #include "imu_bno055.h"
 #include "gait.h"
+#include "robot_state.h"
+#include "telemetry.h"
 #include <stdio.h>
 #include <math.h>
 
@@ -20,6 +22,8 @@ int main(void) {
     printf("  Demo: TROT  (%d cycles)\r\n", N_CYCLES);
 #elif DEMO_MODE == MODE_STAND_ONLY
     printf("  Demo: STAND-ONLY  (ESC to exit)\r\n");
+#elif DEMO_MODE == MODE_TELEMETRY_TEST
+    printf("  Demo: TELEMETRY-TEST  (ESC to exit)\r\n");
 #endif
 #if IN_HAND_MODE
     printf("  Safety: IN-HAND  (비활성, 손에 들고 시연)\r\n");
@@ -126,6 +130,50 @@ int main(void) {
             last_print = HAL_GetTick();
         }
         HAL_Delay(POLL_PERIOD_MS);
+    }
+
+#elif DEMO_MODE == MODE_TELEMETRY_TEST
+    robot_state_init();
+    printf("\r\n========== TELEMETRY TEST (50Hz) ==========\r\n");
+    printf("ESC to exit. Torque OFF — 다리 자유 상태에서 검증.\r\n");
+    robot_torque_off_all();
+
+    while (1) {
+        uint32_t t_start = HAL_GetTick();
+        if (check_esc()) emergency_stop();
+
+        telemetry_update_all();
+
+        static uint32_t last_tel_print = 0;
+        if (t_start - last_tel_print >= 250) {
+            last_tel_print = t_start;
+
+            printf("pos(rad): ");
+            for (int i = 0; i < NUM_JOINTS; i++)
+                printf("%+5.2f ", (double)g_robot_state.position_rad[i]);
+            printf("\r\n");
+
+            printf("vel(r/s): ");
+            for (int i = 0; i < NUM_JOINTS; i++)
+                printf("%+5.2f ", (double)g_robot_state.velocity_rad_s[i]);
+            printf("\r\n");
+
+            printf("tmp( C ): ");
+            for (int i = 0; i < NUM_JOINTS; i++)
+                printf("%4.0f ", (double)g_robot_state.temperature[i]);
+            printf("\r\n");
+
+            printf("IMU yaw=%+5.1f gyro_z=%+6.3f Vbus=%.1fV\r\n",
+                   (double)g_robot_state.imu.yaw,
+                   (double)g_robot_state.imu.gyro[2],
+                   (double)g_robot_state.bus_voltage);
+
+            uint32_t dt = HAL_GetTick() - t_start;
+            printf("dt=%lums\r\n\r\n", (unsigned long)dt);
+        }
+
+        uint32_t elapsed = HAL_GetTick() - t_start;
+        if (elapsed < 20) HAL_Delay(20 - elapsed);
     }
 #endif
 

@@ -74,6 +74,40 @@ sts_read_result_t sts_read_state(UART_HandleTypeDef *huart, uint8_t id) {
     return r;
 }
 
+sts_full_state_t sts_read_full_state(UART_HandleTypeDef *huart, uint8_t id) {
+    sts_full_state_t r = {0};
+    uint8_t req[8];
+    req[0] = HEADER1; req[1] = HEADER2; req[2] = id;
+    req[3] = 4; req[4] = INST_READ;
+    req[5] = STS_REG_PRESENT_POSITION; req[6] = READ_BYTES;
+    req[7] = calc_checksum(req, 8);
+
+    if (HAL_UART_Transmit(huart, req, 8, 50) != HAL_OK) return r;
+
+    uint8_t raw[15] = {0};
+    HAL_UART_Receive(huart, raw, 15, TIMEOUT_MS);
+    uint16_t received = 15 - huart->RxXferCount;
+    if (received < 14) return r;
+
+    for (int off = 0; off + 13 < received; off++) {
+        if (raw[off] == HEADER1 && raw[off+1] == HEADER2
+            && raw[off+2] == id && raw[off+3] == READ_RESP_LEN_BYTE) {
+            uint8_t resp[14];
+            memcpy(resp, &raw[off], 14);
+            if (resp[13] == calc_checksum(resp, 14)) {
+                r.position      = resp[5]  | ((uint16_t)resp[6]  << 8);
+                r.speed         = (int16_t)(resp[7]  | ((uint16_t)resp[8]  << 8));
+                r.load          = sts_load_to_signed(resp[9] | ((uint16_t)resp[10] << 8));
+                r.voltage_dV    = resp[11];
+                r.temperature_C = resp[12];
+                r.ok            = (resp[4] == 0);
+                return r;
+            }
+        }
+    }
+    return r;
+}
+
 sts_write_result_t sts_write_byte(UART_HandleTypeDef *huart, uint8_t id, uint8_t addr, uint8_t val) {
     sts_write_result_t r = {0};
     uint8_t req[8];

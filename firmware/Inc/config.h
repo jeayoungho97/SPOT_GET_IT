@@ -15,6 +15,7 @@
  */
 #define MODE_STAND_ONLY     0       /* 일정 높이 정자세만 유지, trot 안 함 */
 #define MODE_TROT           1       /* trot 보행 실행 */
+#define MODE_TELEMETRY_TEST 2       /* telemetry 50Hz read 검증 */
 #define DEMO_MODE           MODE_TROT
 
 /* ===== Body / IK 파라미터 ===== */
