@@ -13,10 +13,10 @@ const uint16_t JOINT_ZERO_POS[NUM_JOINTS] = {
 };
 
 const int8_t JOINT_SIGN[NUM_JOINTS] = {
-    +1, +1, +1,
-    -1, +1, +1,
-    +1, +1, +1,
-    -1, +1, +1,
+    +1, +1, +1,  /* FL: sign=+1 (robot.c legs[0]) */
+    -1, -1, -1,  /* FR: sign=-1 (robot.c legs[1]) */
+    +1, +1, +1,  /* RL: sign=+1 (robot.c legs[2]) */
+    -1, -1, -1,  /* RR: sign=-1 (robot.c legs[3]) */
 };
 
 const float JOINT_MIN_RAD[NUM_JOINTS] = {

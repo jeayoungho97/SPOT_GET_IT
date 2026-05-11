@@ -1,12 +1,10 @@
 #include "system_hal.h"
+#include "spi.h"
 
 /* === Global handle definitions === */
 UART_HandleTypeDef huart3, huart4, huart5, huart6;
 UART_HandleTypeDef huart2;
 I2C_HandleTypeDef hi2c1;
-SPI_HandleTypeDef hspi1;
-DMA_HandleTypeDef hdma_spi1_tx;
-DMA_HandleTypeDef hdma_spi1_rx;
 
 /* === printf retarget — 모든 printf 출력은 USART2 (ST-Link VCP) === */
 int _write(int file, char *ptr, int len) {
@@ -160,69 +158,6 @@ static void MX_DATA_READY_GPIO_Init(void) {
     HAL_GPIO_Init(GPIOB, &gp);
 }
 
-static void MX_SPI1_Slave_Init(void) {
-    hspi1.Instance = SPI1;
-    hspi1.Init.Mode = SPI_MODE_SLAVE;
-    hspi1.Init.Direction = SPI_DIRECTION_2LINES;
-    hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
-    hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
-    hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
-    hspi1.Init.NSS = SPI_NSS_HARD_INPUT;
-    hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
-    hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
-    hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-    hspi1.Init.CRCPolynomial = 7;
-    if (HAL_SPI_Init(&hspi1) != HAL_OK) Error_Handler();
-}
-
-void HAL_SPI_MspInit(SPI_HandleTypeDef *hspi) {
-    if (hspi->Instance != SPI1) return;
-
-    __HAL_RCC_SPI1_CLK_ENABLE();
-    __HAL_RCC_DMA2_CLK_ENABLE();
-
-    GPIO_InitTypeDef gp = {0};
-    gp.Pin = GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7;
-    gp.Mode = GPIO_MODE_AF_PP;
-    gp.Pull = GPIO_NOPULL;
-    gp.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    gp.Alternate = GPIO_AF5_SPI1;
-    HAL_GPIO_Init(GPIOA, &gp);
-
-    hdma_spi1_tx.Instance = DMA2_Stream3;
-    hdma_spi1_tx.Init.Channel = DMA_CHANNEL_3;
-    hdma_spi1_tx.Init.Direction = DMA_MEMORY_TO_PERIPH;
-    hdma_spi1_tx.Init.PeriphInc = DMA_PINC_DISABLE;
-    hdma_spi1_tx.Init.MemInc = DMA_MINC_ENABLE;
-    hdma_spi1_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
-    hdma_spi1_tx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
-    hdma_spi1_tx.Init.Mode = DMA_NORMAL;
-    hdma_spi1_tx.Init.Priority = DMA_PRIORITY_HIGH;
-    hdma_spi1_tx.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
-    if (HAL_DMA_Init(&hdma_spi1_tx) != HAL_OK) Error_Handler();
-    __HAL_LINKDMA(hspi, hdmatx, hdma_spi1_tx);
-
-    hdma_spi1_rx.Instance = DMA2_Stream0;
-    hdma_spi1_rx.Init.Channel = DMA_CHANNEL_3;
-    hdma_spi1_rx.Init.Direction = DMA_PERIPH_TO_MEMORY;
-    hdma_spi1_rx.Init.PeriphInc = DMA_PINC_DISABLE;
-    hdma_spi1_rx.Init.MemInc = DMA_MINC_ENABLE;
-    hdma_spi1_rx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
-    hdma_spi1_rx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
-    hdma_spi1_rx.Init.Mode = DMA_NORMAL;
-    hdma_spi1_rx.Init.Priority = DMA_PRIORITY_HIGH;
-    hdma_spi1_rx.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
-    if (HAL_DMA_Init(&hdma_spi1_rx) != HAL_OK) Error_Handler();
-    __HAL_LINKDMA(hspi, hdmarx, hdma_spi1_rx);
-
-    HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 5, 0);
-    HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
-    HAL_NVIC_SetPriority(DMA2_Stream3_IRQn, 5, 0);
-    HAL_NVIC_EnableIRQ(DMA2_Stream3_IRQn);
-    HAL_NVIC_SetPriority(SPI1_IRQn, 5, 0);
-    HAL_NVIC_EnableIRQ(SPI1_IRQn);
-}
-
 void system_hal_init_all(void) {
     SystemClock_Config();
     MX_GPIO_Init();
@@ -233,6 +168,6 @@ void system_hal_init_all(void) {
     MX_UART5_HDSEL_Init();
     MX_I2C1_Init();
     MX_DATA_READY_GPIO_Init();
-    MX_SPI1_Slave_Init();
+    MX_SPI1_Init();
     HAL_Delay(200);
 }

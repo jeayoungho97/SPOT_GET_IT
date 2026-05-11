@@ -1,6 +1,8 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+#include <stdint.h>
+
 /*
  * 사용자가 만지는 모든 매크로 한 곳.
  * 코드 로직 변경 없이 여기 값만 바꿔서 동작 조정.
@@ -17,12 +19,12 @@
 #define MODE_TROT           1       /* trot 보행 실행 */
 #define MODE_TELEMETRY_TEST 2       /* telemetry 50Hz read 검증 */
 #define MODE_JOINT_TEST     3       /* joint_control rad→raw 검증 */
-#define MODE_CALIBRATION    4       /* 캘리브레이션 (토크 OFF + raw 출력) */
+#define MODE_CAL_MEASURE    4       /* 캘리브레이션 (토크 OFF + raw 출력) */
 #define MODE_SPI_TEST       5       /* SPI slave DMA echo 검증 */
-#define DEMO_MODE           MODE_TROT
+#define DEMO_MODE           MODE_CAL_MEASURE
 
 /* ===== Body / IK 파라미터 ===== */
-#define BODY_HEIGHT_MM      165.0f      /* default 정자세 몸체 높이 (mm) */
+#define BODY_HEIGHT_MM      170.0f      /* default 정자세 몸체 높이 (mm) */
 #define BODY_HEIGHT_MIN_MM   60.0f      /* knee 거의 다 접힘 한계 */
 #define BODY_HEIGHT_MAX_MM  210.0f      /* leg 거의 다 펴짐 한계 */
 

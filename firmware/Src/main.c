@@ -9,6 +9,7 @@
 #include "joint_control.h"
 #include "calibration.h"
 #include "spi_protocol.h"
+#include "spi.h"
 #include <stdio.h>
 #include <math.h>
 
@@ -29,7 +30,7 @@ int main(void) {
     printf("  Demo: TELEMETRY-TEST  (ESC to exit)\r\n");
 #elif DEMO_MODE == MODE_JOINT_TEST
     printf("  Demo: JOINT-TEST  (ESC to exit)\r\n");
-#elif DEMO_MODE == MODE_CALIBRATION
+#elif DEMO_MODE == MODE_CAL_MEASURE
     printf("  Demo: CALIBRATION  (ESC to exit)\r\n");
 #elif DEMO_MODE == MODE_SPI_TEST
     printf("  Demo: SPI-TEST  (ESC to exit)\r\n");
@@ -70,7 +71,7 @@ int main(void) {
     printf("\r\n[3] Torque OFF (current pose 읽기 위해)...\r\n");
     robot_torque_off_all();
 
-#if DEMO_MODE == MODE_CALIBRATION
+#if DEMO_MODE == MODE_CAL_MEASURE
     calibration_mode();
 #endif
 
