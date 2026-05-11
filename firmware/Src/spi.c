@@ -67,7 +67,7 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* spiHandle)
   if(spiHandle->Instance==SPI1)
   {
   /* USER CODE BEGIN SPI1_MspInit 0 */
-
+    __HAL_RCC_DMA2_CLK_ENABLE();   /* DMA2 클럭을 DMA Init보다 먼저! */
   /* USER CODE END SPI1_MspInit 0 */
     /* SPI1 clock enable */
     __HAL_RCC_SPI1_CLK_ENABLE();
@@ -124,8 +124,6 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* spiHandle)
     __HAL_LINKDMA(spiHandle,hdmatx,hdma_spi1_tx);
 
   /* USER CODE BEGIN SPI1_MspInit 1 */
-    __HAL_RCC_DMA2_CLK_ENABLE();
-
     HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 5, 0);
     HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
     HAL_NVIC_SetPriority(DMA2_Stream3_IRQn, 5, 0);
