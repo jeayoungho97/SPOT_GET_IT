@@ -7,6 +7,7 @@
 #include "robot_state.h"
 #include "telemetry.h"
 #include "joint_control.h"
+#include "calibration.h"
 #include <stdio.h>
 #include <math.h>
 
@@ -27,6 +28,8 @@ int main(void) {
     printf("  Demo: TELEMETRY-TEST  (ESC to exit)\r\n");
 #elif DEMO_MODE == MODE_JOINT_TEST
     printf("  Demo: JOINT-TEST  (ESC to exit)\r\n");
+#elif DEMO_MODE == MODE_CALIBRATION
+    printf("  Demo: CALIBRATION  (ESC to exit)\r\n");
 #endif
 #if IN_HAND_MODE
     printf("  Safety: IN-HAND  (비활성, 손에 들고 시연)\r\n");
@@ -63,6 +66,10 @@ int main(void) {
 
     printf("\r\n[3] Torque OFF (current pose 읽기 위해)...\r\n");
     robot_torque_off_all();
+
+#if DEMO_MODE == MODE_CALIBRATION
+    calibration_mode();
+#endif
 
     printf("\r\n[4] Starting in %d s...\r\n", COUNTDOWN_SEC);
     for (int i = COUNTDOWN_SEC; i > 0; i--) {

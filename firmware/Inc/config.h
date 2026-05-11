@@ -17,6 +17,7 @@
 #define MODE_TROT           1       /* trot 보행 실행 */
 #define MODE_TELEMETRY_TEST 2       /* telemetry 50Hz read 검증 */
 #define MODE_JOINT_TEST     3       /* joint_control rad→raw 검증 */
+#define MODE_CALIBRATION    4       /* 캘리브레이션 (토크 OFF + raw 출력) */
 #define DEMO_MODE           MODE_TROT
 
 /* ===== Body / IK 파라미터 ===== */
