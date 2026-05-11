@@ -1,0 +1,221 @@
+#include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <optional>
+#include <string>
+
+#include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/string.hpp"
+#include "robot_interfaces/msg/joint_target.hpp"
+
+namespace
+{
+
+using JointTarget = robot_interfaces::msg::JointTarget;
+
+constexpr uint8_t MODE_STAND = 1;
+constexpr uint8_t MODE_RL = 2;
+
+std::string toUpper(std::string value)
+{
+  std::transform(
+    value.begin(),
+    value.end(),
+    value.begin(),
+    [](unsigned char c) {
+      return static_cast<char>(std::toupper(c));
+    });
+  return value;
+}
+
+}  // namespace
+
+class JointTargetMuxNode : public rclcpp::Node
+{
+public:
+  JointTargetMuxNode()
+  : Node("joint_target_mux_node")
+  {
+    rate_hz_ = this->declare_parameter<double>("rate_hz", 50.0);
+    rl_timeout_ms_ = this->declare_parameter<double>("rl_timeout_ms", 100.0);
+    stand_timeout_ms_ = this->declare_parameter<double>("stand_timeout_ms", 100.0);
+    behavior_mode_ = toUpper(this->declare_parameter<std::string>("default_mode", "STAND"));
+
+    mode_sub_ = this->create_subscription<std_msgs::msg::String>(
+      "/control/behavior/mode",
+      rclcpp::QoS(10),
+      std::bind(&JointTargetMuxNode::modeCallback, this, std::placeholders::_1));
+
+    rl_sub_ = this->create_subscription<JointTarget>(
+      "/control/rl/joint_target",
+      rclcpp::QoS(rclcpp::KeepLast(1)).best_effort(),
+      std::bind(&JointTargetMuxNode::rlCallback, this, std::placeholders::_1));
+
+    stand_sub_ = this->create_subscription<JointTarget>(
+      "/control/stand/joint_target",
+      rclcpp::QoS(rclcpp::KeepLast(1)).best_effort(),
+      std::bind(&JointTargetMuxNode::standCallback, this, std::placeholders::_1));
+
+    selected_pub_ = this->create_publisher<JointTarget>(
+      "/control/selected/joint_target",
+      rclcpp::QoS(rclcpp::KeepLast(1)).best_effort());
+
+    const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration<double>(1.0 / rate_hz_));
+
+    timer_ = this->create_wall_timer(
+      period,
+      std::bind(&JointTargetMuxNode::timerCallback, this));
+
+    RCLCPP_INFO(
+      this->get_logger(),
+      "joint_target_mux_node started. rate=%.1f Hz, default_mode=%s",
+      rate_hz_,
+      behavior_mode_.c_str());
+  }
+
+private:
+  void modeCallback(const std_msgs::msg::String::SharedPtr msg)
+  {
+    const std::string new_mode = toUpper(msg->data);
+
+    if (new_mode.empty()) {
+      return;
+    }
+
+    if (new_mode != "RL" && new_mode != "STAND") {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "unsupported mode '%s'. Allowed modes: RL, STAND. Keeping current mode=%s",
+        msg->data.c_str(),
+        behavior_mode_.c_str());
+      return;
+    }
+
+    if (new_mode != behavior_mode_) {
+      RCLCPP_INFO(
+        this->get_logger(),
+        "behavior mode changed: %s -> %s",
+        behavior_mode_.c_str(),
+        new_mode.c_str());
+      behavior_mode_ = new_mode;
+    }
+  }
+
+  void rlCallback(const JointTarget::SharedPtr msg)
+  {
+    latest_rl_ = *msg;
+    latest_rl_time_ = this->now();
+  }
+
+  void standCallback(const JointTarget::SharedPtr msg)
+  {
+    latest_stand_ = *msg;
+    latest_stand_time_ = this->now();
+  }
+
+  void timerCallback()
+  {
+    JointTarget selected;
+
+    if (!selectTarget(selected)) {
+      return;
+    }
+
+    // 최종 seq는 mux가 다시 매긴다.
+    // actuator_bridge와 STM32는 selected target 기준 seq만 보면 된다.
+    selected.seq = static_cast<uint16_t>(seq_ & 0xFFFFU);
+
+    selected_pub_->publish(selected);
+    seq_++;
+  }
+
+  bool selectTarget(JointTarget & selected)
+  {
+    if (behavior_mode_ == "RL") {
+      if (isRlFresh()) {
+        selected = latest_rl_.value();
+        selected.mode = MODE_RL;
+        return true;
+      }
+
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(),
+        *this->get_clock(),
+        1000,
+        "RL target stale. Falling back to STAND.");
+
+      if (isStandFresh()) {
+        selected = latest_stand_.value();
+        selected.mode = MODE_STAND;
+        return true;
+      }
+
+      return false;
+    }
+
+    // default: STAND
+    if (isStandFresh()) {
+      selected = latest_stand_.value();
+      selected.mode = MODE_STAND;
+      return true;
+    }
+
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(),
+      *this->get_clock(),
+      1000,
+      "STAND target stale. No selected target published.");
+
+    return false;
+  }
+
+  bool isRlFresh() const
+  {
+    if (!latest_rl_.has_value()) {
+      return false;
+    }
+
+    const double age_ms = (this->now() - latest_rl_time_).seconds() * 1000.0;
+    return age_ms <= rl_timeout_ms_;
+  }
+
+  bool isStandFresh() const
+  {
+    if (!latest_stand_.has_value()) {
+      return false;
+    }
+
+    const double age_ms = (this->now() - latest_stand_time_).seconds() * 1000.0;
+    return age_ms <= stand_timeout_ms_;
+  }
+
+private:
+  double rate_hz_{50.0};
+  double rl_timeout_ms_{100.0};
+  double stand_timeout_ms_{100.0};
+
+  std::string behavior_mode_{"STAND"};
+
+  std::optional<JointTarget> latest_rl_;
+  std::optional<JointTarget> latest_stand_;
+
+  rclcpp::Time latest_rl_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time latest_stand_time_{0, 0, RCL_ROS_TIME};
+
+  uint32_t seq_{0};
+
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mode_sub_;
+  rclcpp::Subscription<JointTarget>::SharedPtr rl_sub_;
+  rclcpp::Subscription<JointTarget>::SharedPtr stand_sub_;
+  rclcpp::Publisher<JointTarget>::SharedPtr selected_pub_;
+  rclcpp::TimerBase::SharedPtr timer_;
+};
+
+int main(int argc, char ** argv)
+{
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared<JointTargetMuxNode>());
+  rclcpp::shutdown();
+  return 0;
+}
