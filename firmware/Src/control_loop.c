@@ -60,31 +60,58 @@ static void check_stale(uint32_t now_ms) {
     }
 }
 
-/* === Helper: 안전 검사 === */
+/* === Helper: 안전 검사 ===
+ *
+ * Fault 처리 정책:
+ *  - Transient fault (SAFETY, TEMP, VOLTAGE, IMU, STALE, SERVO_TIMEOUT):
+ *    매 cycle 재평가. 조건 해소되면 자동 FAULT_OK로 복귀.
+ *  - Sticky fault (CRC_ERROR, NAN_IN_TARGET): 한 번 set 되면 유지.
+ *    명시적 reset 또는 다음 transient fault 가 더 우선시되면 변경 가능.
+ *
+ * Priority (높은 게 우선): SAFETY > NAN > TEMP > VOLTAGE > IMU > STALE > SERVO_TMO > CRC
+ */
 static void check_safety(void) {
-    /* 1. 자세 한계 (pitch/roll) */
+    fault_code_t new_fault = FAULT_OK;
+
+    /* 1. 자세 한계 (pitch/roll) — 가장 위험, 즉시 torque OFF */
     if (!safety_check(g_robot_state.imu.pitch, g_robot_state.imu.roll)) {
-        g_robot_state.fault_code = FAULT_SAFETY_LIMIT;
+        new_fault = FAULT_SAFETY_LIMIT;
         g_robot_state.status |= STATUS_BIT_IN_SAFE_STATE;
         robot_torque_off_all();
         g_robot_state.torque_enabled = false;
         g_robot_state.status &= ~STATUS_BIT_TORQUE_ON;
         g_robot_state.mode = MODE_IDLE;
-        return;   /* pitch/roll 초과 시 즉시 torque OFF — 추가 검사 불필요 */
+        g_robot_state.fault_code = new_fault;
+        return;
+    } else {
+        g_robot_state.status &= ~STATUS_BIT_IN_SAFE_STATE;
     }
 
     /* 2. 서보 온도 한계 */
-    for (int i = 0; i < NUM_JOINTS; i++) {
-        if (g_robot_state.temperature[i] > TEMP_LIMIT_C) {
-            g_robot_state.fault_code = FAULT_TEMP_HIGH;
-            break;
+    if (new_fault == FAULT_OK) {
+        for (int i = 0; i < NUM_JOINTS; i++) {
+            if (g_robot_state.temperature[i] > TEMP_LIMIT_C) {
+                new_fault = FAULT_TEMP_HIGH;
+                break;
+            }
         }
     }
 
     /* 3. 전압 한계 (ADC가 유효한 경우만) */
-    if (g_robot_state.bus_voltage > VOLTAGE_VALID_V
+    if (new_fault == FAULT_OK
+        && g_robot_state.bus_voltage > VOLTAGE_VALID_V
         && g_robot_state.bus_voltage < VOLTAGE_LOW_V) {
-        g_robot_state.fault_code = FAULT_VOLTAGE_LOW;
+        new_fault = FAULT_VOLTAGE_LOW;
+    }
+
+    /* Sticky fault (CRC, NAN) 는 보존 — transient 조건 다 해소돼도 OK로 안 돌림.
+     * 다만 새 transient fault 가 생기면 그게 우선. */
+    fault_code_t cur = g_robot_state.fault_code;
+    bool cur_is_sticky = (cur == FAULT_CRC_ERROR || cur == FAULT_NAN_IN_TARGET);
+    if (cur_is_sticky && new_fault == FAULT_OK) {
+        /* sticky 유지 */
+    } else {
+        g_robot_state.fault_code = new_fault;
     }
 }
 
@@ -203,16 +230,27 @@ void control_loop_run(void) {
             DATA_READY_HIGH();
         }
 
-        /* 7. 디버그 출력 (1초마다) */
+        /* 7. 디버그 출력 (1초마다) — 실제 max temp 도 함께 출력해서 fault=5 진위 확인 */
         if (t_start - last_print >= DEBUG_PRINT_MS) {
             last_print = t_start;
-            printf("[%lu] mode=%u st=0x%02X fault=%u torque=%u seq=%u\r\n",
+            float max_temp = 0.0f;
+            int   max_temp_idx = 0;
+            for (int i = 0; i < NUM_JOINTS; i++) {
+                if (g_robot_state.temperature[i] > max_temp) {
+                    max_temp = g_robot_state.temperature[i];
+                    max_temp_idx = i;
+                }
+            }
+            printf("[%lu] mode=%u st=0x%02X fault=%u torque=%u seq=%u "
+                   "maxT=%.0fC(j%d) Vbus=%.1fV\r\n",
                    (unsigned long)t_start,
                    (unsigned)g_robot_state.mode,
                    (unsigned)g_robot_state.status,
                    (unsigned)g_robot_state.fault_code,
                    (unsigned)g_robot_state.torque_enabled,
-                   (unsigned)g_robot_state.cmd_seq);
+                   (unsigned)g_robot_state.cmd_seq,
+                   (double)max_temp, max_temp_idx,
+                   (double)g_robot_state.bus_voltage);
         }
 
         /* 8. 주기 유지 (50Hz = 20ms) */
