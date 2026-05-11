@@ -50,6 +50,8 @@ typedef struct {
     uint8_t flags;
     uint16_t cmd_seq;
     uint32_t last_cmd_time_ms;
+    float gait_phase;           /* Jetson에서 수신 → echo */
+    uint32_t gait_cycle_count;  /* Jetson에서 수신 → echo */
 
     /* 내부 추적 */
     float prev_target_rad[NUM_JOINTS];
