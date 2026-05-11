@@ -38,6 +38,9 @@ constexpr std::size_t FEEDBACK_PACKET_SIZE =
   4 +               // bus_voltage
   2;                // crc16
 
+// SPI full-duplex에서는 tx/rx 길이가 같아야 하므로 실제 transfer는 feedback 크기에 맞춘다.
+constexpr std::size_t SPI_FRAME_SIZE = FEEDBACK_PACKET_SIZE;
+
 struct CommandPacket
 {
   uint16_t seq{0};
@@ -61,7 +64,7 @@ struct FeedbackPacket
   std::array<float, NUM_JOINTS> temperature{};
 
   std::array<float, 3> gyro_rad_s{};
-  std::array<float, 4> quat_wxyz{1.0F, 0.0F, 0.0F, 0.0F};
+  std::array<float, 4> quat_wxyz{1.0F, 0.0F, 0.0F, 0.0F};  // w, x, y, z
 
   float bus_voltage{0.0F};
 };
@@ -80,6 +83,8 @@ std::vector<uint8_t> encode_command_packet(const CommandPacket & packet);
 DecodeResult decode_command_packet(
   const std::vector<uint8_t> & bytes,
   CommandPacket & packet);
+
+std::vector<uint8_t> make_spi_tx_frame(const CommandPacket & packet);
 
 std::vector<uint8_t> encode_feedback_packet(const FeedbackPacket & packet);
 DecodeResult decode_feedback_packet(

@@ -21,9 +21,19 @@ target_include_directories(packet_codec PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
+add_library(spi_transport
+  src/spi_transport.cpp
+)
+
+target_compile_features(spi_transport PUBLIC cxx_std_17)
+
+target_include_directories(spi_transport PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
 add_executable(actuator_bridge_node
   src/actuator_bridge_node.cpp
-  src/spi_transport.cpp
 )
 
 target_compile_features(actuator_bridge_node PUBLIC cxx_std_17)
@@ -35,6 +45,7 @@ target_include_directories(actuator_bridge_node PUBLIC
 
 target_link_libraries(actuator_bridge_node
   packet_codec
+  spi_transport
 )
 
 ament_target_dependencies(actuator_bridge_node
@@ -43,25 +54,10 @@ ament_target_dependencies(actuator_bridge_node
   robot_interfaces
 )
 
-add_executable(packet_codec_test
-  src/packet_codec_test.cpp
-)
-
-target_compile_features(packet_codec_test PUBLIC cxx_std_17)
-
-target_include_directories(packet_codec_test PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>
-)
-
-target_link_libraries(packet_codec_test
-  packet_codec
-)
-
 install(TARGETS
   packet_codec
+  spi_transport
   actuator_bridge_node
-  packet_codec_test
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}

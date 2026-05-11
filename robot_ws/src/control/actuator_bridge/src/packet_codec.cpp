@@ -15,16 +15,16 @@ void write_u8(std::vector<uint8_t> & out, uint8_t value)
 
 void write_u16_le(std::vector<uint8_t> & out, uint16_t value)
 {
-  out.push_back(static_cast<uint8_t>(value & 0xFF));
-  out.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
+  out.push_back(static_cast<uint8_t>(value & 0xFFU));
+  out.push_back(static_cast<uint8_t>((value >> 8U) & 0xFFU));
 }
 
 void write_u32_le(std::vector<uint8_t> & out, uint32_t value)
 {
-  out.push_back(static_cast<uint8_t>(value & 0xFF));
-  out.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
-  out.push_back(static_cast<uint8_t>((value >> 16) & 0xFF));
-  out.push_back(static_cast<uint8_t>((value >> 24) & 0xFF));
+  out.push_back(static_cast<uint8_t>(value & 0xFFU));
+  out.push_back(static_cast<uint8_t>((value >> 8U) & 0xFFU));
+  out.push_back(static_cast<uint8_t>((value >> 16U) & 0xFFU));
+  out.push_back(static_cast<uint8_t>((value >> 24U) & 0xFFU));
 }
 
 void write_f32_le(std::vector<uint8_t> & out, float value)
@@ -53,7 +53,7 @@ uint16_t read_u16_le(const std::vector<uint8_t> & in, std::size_t & offset)
 
   const uint16_t value =
     static_cast<uint16_t>(in[offset]) |
-    static_cast<uint16_t>(in[offset + 1] << 8);
+    static_cast<uint16_t>(static_cast<uint16_t>(in[offset + 1]) << 8U);
 
   offset += 2;
   return value;
@@ -67,9 +67,9 @@ uint32_t read_u32_le(const std::vector<uint8_t> & in, std::size_t & offset)
 
   const uint32_t value =
     static_cast<uint32_t>(in[offset]) |
-    (static_cast<uint32_t>(in[offset + 1]) << 8) |
-    (static_cast<uint32_t>(in[offset + 2]) << 16) |
-    (static_cast<uint32_t>(in[offset + 3]) << 24);
+    (static_cast<uint32_t>(in[offset + 1]) << 8U) |
+    (static_cast<uint32_t>(in[offset + 2]) << 16U) |
+    (static_cast<uint32_t>(in[offset + 3]) << 24U);
 
   offset += 4;
   return value;
@@ -122,16 +122,16 @@ bool verify_crc(const std::vector<uint8_t> & bytes)
 
 uint16_t crc16_ccitt_false(const uint8_t * data, std::size_t length)
 {
-  uint16_t crc = 0xFFFF;
+  uint16_t crc = 0xFFFFU;
 
   for (std::size_t i = 0; i < length; ++i) {
-    crc ^= static_cast<uint16_t>(data[i]) << 8;
+    crc ^= static_cast<uint16_t>(data[i]) << 8U;
 
     for (int bit = 0; bit < 8; ++bit) {
       if ((crc & 0x8000U) != 0U) {
-        crc = static_cast<uint16_t>((crc << 1) ^ 0x1021U);
+        crc = static_cast<uint16_t>((crc << 1U) ^ 0x1021U);
       } else {
-        crc = static_cast<uint16_t>(crc << 1);
+        crc = static_cast<uint16_t>(crc << 1U);
       }
     }
   }
@@ -159,6 +159,13 @@ std::vector<uint8_t> encode_command_packet(const CommandPacket & packet)
   return out;
 }
 
+std::vector<uint8_t> make_spi_tx_frame(const CommandPacket & packet)
+{
+  std::vector<uint8_t> frame = encode_command_packet(packet);
+  frame.resize(SPI_FRAME_SIZE, 0x00);
+  return frame;
+}
+
 DecodeResult decode_command_packet(
   const std::vector<uint8_t> & bytes,
   CommandPacket & packet)
@@ -167,17 +174,18 @@ DecodeResult decode_command_packet(
     return DecodeResult::SIZE_MISMATCH;
   }
 
-  if (!verify_crc(bytes)) {
-    return DecodeResult::BAD_CRC;
-  }
-
   try {
-    std::size_t offset = 0;
-
-    const uint16_t magic = read_u16_le(bytes, offset);
+    std::size_t magic_offset = 0;
+    const uint16_t magic = read_u16_le(bytes, magic_offset);
     if (magic != COMMAND_MAGIC) {
       return DecodeResult::BAD_MAGIC;
     }
+
+    if (!verify_crc(bytes)) {
+      return DecodeResult::BAD_CRC;
+    }
+
+    std::size_t offset = 2;
 
     packet.seq = read_u16_le(bytes, offset);
     packet.timestamp_us = read_u32_le(bytes, offset);
@@ -187,7 +195,6 @@ DecodeResult decode_command_packet(
     read_float_array(bytes, offset, packet.target_rad);
     read_float_array(bytes, offset, packet.max_delta_rad);
 
-    // 마지막 2바이트 CRC는 verify_crc에서 이미 확인했으므로 skip
     return DecodeResult::OK;
   } catch (...) {
     return DecodeResult::SIZE_MISMATCH;
@@ -229,17 +236,18 @@ DecodeResult decode_feedback_packet(
     return DecodeResult::SIZE_MISMATCH;
   }
 
-  if (!verify_crc(bytes)) {
-    return DecodeResult::BAD_CRC;
-  }
-
   try {
-    std::size_t offset = 0;
-
-    const uint16_t magic = read_u16_le(bytes, offset);
+    std::size_t magic_offset = 0;
+    const uint16_t magic = read_u16_le(bytes, magic_offset);
     if (magic != FEEDBACK_MAGIC) {
       return DecodeResult::BAD_MAGIC;
     }
+
+    if (!verify_crc(bytes)) {
+      return DecodeResult::BAD_CRC;
+    }
+
+    std::size_t offset = 2;
 
     packet.seq_echo = read_u16_le(bytes, offset);
     packet.timestamp_us = read_u32_le(bytes, offset);
@@ -256,7 +264,6 @@ DecodeResult decode_feedback_packet(
 
     packet.bus_voltage = read_f32_le(bytes, offset);
 
-    // 마지막 2바이트 CRC는 verify_crc에서 이미 확인했으므로 skip
     return DecodeResult::OK;
   } catch (...) {
     return DecodeResult::SIZE_MISMATCH;
