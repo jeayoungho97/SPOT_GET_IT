@@ -160,7 +160,7 @@ echo "[3/4] 최종 Diagnostic 실행 (풀)..."
 echo "----------------------------------------------"
 
 cd "$LEGGED_GYM_DIR"
-python legged_gym/scripts/play_diagnostic.py --task="$TASK" 2>&1 | tee /tmp/diagnostic_output.txt
+python legged_gym/scripts/play_diagnostic.py --with_dr --task="$TASK" 2>&1 | tee /tmp/diagnostic_output.txt
 
 echo ""
 echo "  ✅ Diagnostic 완료!"

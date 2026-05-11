@@ -21,10 +21,9 @@ class SpotmicroTest(LeggedRobot):
         self.robot_width = 0.15 
 
         self.gait_period = 0.6
-        self.duty_factor = 0.75
-        self.step_height = 0.02
-        self.body_height = 0.216
-        self.stride_scale = 0.3
+        self.duty_factor = 0.5
+        self.step_height = 0.03
+        self.body_height = 0.206
 
         self.gait_phase = torch.zeros(self.num_envs, 1, dtype=torch.float, device=self.device)
         self.commands_scale = torch.tensor(
@@ -49,39 +48,7 @@ class SpotmicroTest(LeggedRobot):
             print(f"[Action Delay] 활성화: "
                   f"substep 단위, dt={dt_ms:.1f}ms, "
                   f"range={delay_range[0]*dt_ms:.0f}~{delay_range[1]*dt_ms:.0f}ms")
-                  
-                  
-        # leg origin in base frame: FL, FR, RL, RR
-        self.leg_origin_x = torch.tensor(
-            [0.093, 0.093, -0.093, -0.093],
-            device=self.device,
-            dtype=torch.float,
-        )
 
-        self.leg_origin_y = torch.tensor(
-            [0.036, -0.036, 0.036, -0.036],
-            device=self.device,
-            dtype=torch.float,
-        )
-
-        # shoulder joint numeric sign.
-        # 먼저 [1, 1, 1, 1]로 시작 추천.
-        # 실제 좌우 부호가 반대로 나가면 [1, -1, 1, -1]로 바꿔서 검증.
-        self.shoulder_sign = torch.tensor(
-            [1.0, 1.0, 1.0, 1.0],
-            device=self.device,
-            dtype=torch.float,
-        )
-
-        self.shoulder_ref_limit = 0.15
-        self.shoulder_y_gain = 2.0
-    '''
-    def step(self, actions):
-        # 모든 액션을 0으로 강제 → 순수 default_joint_angles만 적용
-        zero_actions = torch.zeros_like(actions)
-        return super().step(zero_actions)
-   
-    '''
     def step(self, actions):
         """서보 응답 지연을 substep 단위로 적용
         
@@ -119,7 +86,7 @@ class SpotmicroTest(LeggedRobot):
         if self.privileged_obs_buf is not None:
             self.privileged_obs_buf = torch.clip(self.privileged_obs_buf, -clip_obs, clip_obs)
         return self.obs_buf, self.privileged_obs_buf, self.rew_buf, self.reset_buf, self.extras
-    
+
     def post_physics_step(self):
         self.gym.refresh_rigid_body_state_tensor(self.sim)
 
@@ -132,9 +99,8 @@ class SpotmicroTest(LeggedRobot):
         super().post_physics_step()
               
     def _reset_dofs(self, env_ids):
-        #self.dof_pos[env_ids] = self.default_dof_pos
         self.dof_pos[env_ids] = self.default_dof_pos * torch_rand_float(
-            0.6, 1.4, (len(env_ids), self.num_dof), device=self.device)
+            0.5, 1.5, (len(env_ids), self.num_dof), device=self.device)
         self.dof_vel[env_ids] = 0.
 
         env_ids_int32 = env_ids.to(dtype=torch.int32)
@@ -159,9 +125,8 @@ class SpotmicroTest(LeggedRobot):
         """base 속도를 0으로 리셋"""
         self.root_states[env_ids] = self.base_init_state
         self.root_states[env_ids, :3] += self.env_origins[env_ids]
-        #self.root_states[env_ids, 7:13] = 0.
         self.root_states[env_ids, 7:13] = torch_rand_float(
-            -0.2, 0.2, (len(env_ids), 6), device=self.device)
+            -0.3, 0.3, (len(env_ids), 6), device=self.device)
 
         env_ids_int32 = env_ids.to(dtype=torch.int32)
         self.gym.set_actor_root_state_tensor_indexed(
@@ -307,17 +272,8 @@ class SpotmicroTest(LeggedRobot):
         
     def _reward_stand_still(self):
         cmd_norm = torch.norm(self.commands[:, :3], dim=1)
-        is_stand = (cmd_norm < 0.08).float()
+        return torch.sum(torch.abs(self.dof_pos - self.default_dof_pos), dim=1) * (cmd_norm < 0.1)
 
-        lin_penalty = torch.sum(torch.square(self.base_lin_vel[:, :2]), dim=1)
-        yaw_penalty = torch.square(self.base_ang_vel[:, 2])
-        pose_penalty = 0.2 * torch.sum(
-            torch.square(self.dof_pos - self.default_dof_pos), dim=1
-        )
-
-        return (lin_penalty + 0.5 * yaw_penalty + pose_penalty) * is_stand
-
-    '''
     def _get_ik_target(self):
         vx = self.commands[:, 0]
         wz = self.commands[:, 2] 
@@ -358,168 +314,14 @@ class SpotmicroTest(LeggedRobot):
         ref_dof_pos = blend * ref_dof_pos + (1.0 - blend) * self.default_dof_pos
     
         return ref_dof_pos
-        '''
-
-    def _get_leg_height_targets(self):
-        # body frame에서 world-up normal 추정
-        # projected_gravity는 body frame 기준 gravity direction, 보통 [0, 0, -1] 근처
-        n = -self.projected_gravity  # ground normal/up direction in body frame
-
-        nx = n[:, 0].unsqueeze(1)  # [N, 1]
-        ny = n[:, 1].unsqueeze(1)
-        nz = torch.clamp(n[:, 2].unsqueeze(1), min=0.3)
-
-        leg_x = self.leg_origin_x.unsqueeze(0)  # [1, 4]
-        leg_y = self.leg_origin_y.unsqueeze(0)  # [1, 4]
-
-        # 수평 지면이 body frame에서 기울어져 보이는 것을 보정
-        # flat이면 nx=0, ny=0, nz=1 -> z = -body_height
-        z_stance = (-self.body_height - nx * leg_x - ny * leg_y) / nz
-
-        return z_stance
         
-    def _get_ik_target(self):
-        vx = self.commands[:, 0]  # [num_envs]
-        vy = self.commands[:, 1]  # 현재는 0이지만 future-proof
-        wz = self.commands[:, 2]
-
-        # ------------------------------------------------------------
-        # 1. 각 발 위치 기준으로 body twist -> foot velocity 계산
-        # ------------------------------------------------------------
-        leg_x = self.leg_origin_x.unsqueeze(0)  # [1, 4]
-        leg_y = self.leg_origin_y.unsqueeze(0)  # [1, 4]
-
-        vx_b = vx.unsqueeze(1)  # [N, 1]
-        vy_b = vy.unsqueeze(1)
-        wz_b = wz.unsqueeze(1)
-
-        # body point velocity at each foot:
-        # v_point = [vx - wz*y_i, vy + wz*x_i]
-        foot_vx = vx_b - wz_b * leg_y      # [N, 4]
-        foot_vy = vy_b + wz_b * leg_x      # [N, 4]
-
-        stance_time = self.gait_period * self.duty_factor
-
-        stride_x = foot_vx * stance_time * self.stride_scale
-        stride_y = foot_vy * stance_time * self.stride_scale
-
-        # ------------------------------------------------------------
-        # 2. phase 생성
-        # ------------------------------------------------------------
-        offsets = torch.tensor([0.0, 0.5, 0.5, 0.0], device=self.device)
-        phases = (self.gait_phase + offsets) % 1.0
-
-        x = torch.zeros((self.num_envs, 4), device=self.device)
-        y = torch.zeros((self.num_envs, 4), device=self.device)
-        z_stance = self._get_leg_height_targets()
-        #z_stance = torch.full(
-        #    (self.num_envs, 4),
-        #    -self.body_height,
-        #    device=self.device,
-        #)
-        z = z_stance.clone()
-
-        is_stance = phases < self.duty_factor
-        is_swing = ~is_stance
-
-        t_stance = phases / self.duty_factor
-        t_swing = (phases - self.duty_factor) / (1.0 - self.duty_factor)
-
-        # stance: foot moves backward relative to body
-        x[is_stance] = stride_x[is_stance] * (0.5 - t_stance[is_stance])
-        y[is_stance] = stride_y[is_stance] * (0.5 - t_stance[is_stance])
-
-        # swing: foot returns forward
-        x[is_swing] = stride_x[is_swing] * (-0.5 + t_swing[is_swing])
-        y[is_swing] = stride_y[is_swing] * (-0.5 + t_swing[is_swing])
-
-        z[is_swing] = (
-            z_stance[is_swing]
-            + self.step_height * torch.sin(torch.pi * t_swing[is_swing])
-        )
-
-        # ------------------------------------------------------------
-        # 3. y target -> shoulder_ref 생성
-        # ------------------------------------------------------------
-        # y가 클수록 shoulder abduction/adduction으로 일부 따라가게 함.
-        # 너무 크게 벌어지지 않게 clamp.
-        shoulder_raw = self.shoulder_y_gain * torch.atan2(y, -z)
-        shoulder_ref = torch.clamp(
-            shoulder_raw,
-            -self.shoulder_ref_limit,
-            self.shoulder_ref_limit,
-        )
-
-        shoulder_ref = shoulder_ref * self.shoulder_sign.unsqueeze(0)
-
-        # ------------------------------------------------------------
-        # 4. leg/foot은 기존 2D IK 유지하되,
-        #    lateral y를 반영해 유효 z 길이 계산
-        # ------------------------------------------------------------
-        # quasi-3D: lateral target이 있으면 실제 leg plane에서 필요한 길이가 늘어남.
-        z_eff = -torch.sqrt(torch.clamp(z * z + y * y, min=1e-6))
-
-        d = torch.sqrt(x**2 + z_eff**2)
-
-        cos_q2 = (d**2 - self.L1_EFF**2 - self.L2**2) / (
-            2 * self.L1_EFF * self.L2
-        )
-        cos_q2 = torch.clamp(cos_q2, -0.999, 0.999)
-
-        q2 = torch.acos(cos_q2)
-
-        beta = torch.atan2(x, -z_eff)
-        alpha_k = torch.atan2(
-            self.L2 * torch.sin(q2),
-            self.L1_EFF + self.L2 * torch.cos(q2),
-        )
-
-        q1 = beta - alpha_k
-
-        theta_leg = q1 - self.ALPHA
-        theta_foot = q2 + self.ALPHA
-
-        # ------------------------------------------------------------
-        # 5. ref_dof_pos 구성
-        # ------------------------------------------------------------
-        ref_dof_pos = torch.zeros((self.num_envs, 12), device=self.device)
-        ref_dof_pos[:, 0::3] = shoulder_ref
-        ref_dof_pos[:, 1::3] = theta_leg
-        ref_dof_pos[:, 2::3] = theta_foot
-
-        # ------------------------------------------------------------
-        # 6. 정지 근처에서는 default pose로 blend
-        # ------------------------------------------------------------
-        cmd_norm = torch.norm(self.commands[:, :3], dim=1, keepdim=True)
-        
-        blend = torch.clamp(cmd_norm / 0.1, 0.0, 1.0)
-
-        ref_dof_pos = blend * ref_dof_pos + (1.0 - blend) * self.default_dof_pos
-
-        return ref_dof_pos
-     
     def _compute_torques(self, actions):
         actions_scaled = actions * self.cfg.control.action_scale
         ref_dof_pos = self._get_ik_target()
         torques = self.p_gains * (actions_scaled + ref_dof_pos - self.dof_pos) - self.d_gains * self.dof_vel
         return torch.clip(torques, -self.torque_limits, self.torque_limits)
-
+        
     def _reward_tracking_ik(self):
-        ref_dof_pos = self._get_ik_target()
-
-        # shoulder는 yaw/균형 보정 자유도를 남김
-        weights = torch.tensor([0.7, 1.0, 1.0] * 4, device=self.device)
-
-        joint_error = (self.dof_pos - ref_dof_pos) * weights
-        error = torch.sum(torch.square(joint_error), dim=1)
-
-        cmd_norm = torch.norm(self.commands[:, :3], dim=1)
-        is_moving = (cmd_norm > 0.08).float()
-
-        sigma = 0.15
-        return torch.exp(-error / sigma) * is_moving
-    
-    def _reward_residual_action(self):
         # 관절별 페널티 가중치: [Shoulder, Leg, Foot] 순서
         # 어깨(0.1)는 자유롭게 움직이도록 허용하고, Leg와 Foot(1.0)은 IK를 잘 따르도록 강제함
         weights = torch.tensor([1.0, 1.0, 1.0] * 4, device=self.device)
@@ -527,7 +329,7 @@ class SpotmicroTest(LeggedRobot):
         # action에 가중치를 곱해서 에러 계산
         weighted_actions = self.actions * weights
         error = torch.sum(torch.square(weighted_actions), dim=1)
-        sigma = 3.0
+        sigma = 2.0
         return torch.exp(-error / sigma)
         
     def _reward_tracking_ang_vel(self):
