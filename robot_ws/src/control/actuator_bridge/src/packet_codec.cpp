@@ -218,7 +218,6 @@ std::vector<uint8_t> encode_feedback_packet(const FeedbackPacket & packet)
   write_float_array(out, packet.temperature);
 
   write_float_array(out, packet.gyro_rad_s);
-  write_float_array(out, packet.accel_m_s2);
   write_float_array(out, packet.quat_wxyz);
 
   write_f32_le(out, packet.bus_voltage);
@@ -261,7 +260,6 @@ DecodeResult decode_feedback_packet(
     read_float_array(bytes, offset, packet.temperature);
 
     read_float_array(bytes, offset, packet.gyro_rad_s);
-    read_float_array(bytes, offset, packet.accel_m_s2);
     read_float_array(bytes, offset, packet.quat_wxyz);
 
     packet.bus_voltage = read_f32_le(bytes, offset);

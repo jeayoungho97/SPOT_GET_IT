@@ -34,7 +34,6 @@ constexpr std::size_t FEEDBACK_PACKET_SIZE =
   4 * NUM_JOINTS +  // load_or_current[12]
   4 * NUM_JOINTS +  // temperature[12]
   4 * 3 +           // gyro_rad_s[3]
-  4 * 3 +           // accel_m_s2[3]
   4 * 4 +           // quat_wxyz[4]
   4 +               // bus_voltage
   2;                // crc16
@@ -65,7 +64,6 @@ struct FeedbackPacket
   std::array<float, NUM_JOINTS> temperature{};
 
   std::array<float, 3> gyro_rad_s{};
-  std::array<float, 3> accel_m_s2{};
   std::array<float, 4> quat_wxyz{1.0F, 0.0F, 0.0F, 0.0F};  // w, x, y, z
 
   float bus_voltage{0.0F};
