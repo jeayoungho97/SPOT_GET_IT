@@ -1,13 +1,21 @@
 #include "imu_bno055.h"
+#include <math.h>
 
 #define BNO055_I2C_ADDR_DEFAULT   0x28
 #define BNO055_I2C_ADDR_ALT       0x29
 #define BNO055_CHIP_ID            0x00
+#define BNO055_GYR_DATA_X_LSB     0x14
 #define BNO055_EUL_HEADING_LSB    0x1A
+#define BNO055_QUA_DATA_W_LSB     0x20
 #define BNO055_OPR_MODE           0x3D
 #define BNO055_OPR_CONFIG         0x00
 #define BNO055_OPR_IMUPLUS        0x08
 #define BNO055_CHIP_ID_EXPECTED   0xA0
+
+#define BNO055_GYRO_SCALE         (1.0f / 16.0f * ((float)M_PI / 180.0f))
+#define BNO055_QUAT_SCALE         (1.0f / 16384.0f)
+#define BNO055_EULER_SCALE        (1.0f / 16.0f)
+#define QUAT_NORM_MIN             0.5f
 
 /* init에서 결정된 주소를 read_body가 사용 */
 static uint8_t bno_addr = BNO055_I2C_ADDR_DEFAULT;
@@ -48,14 +56,67 @@ bool bno055_init_imuplus(I2C_HandleTypeDef *hi2c) {
 }
 
 bool bno055_read_body(I2C_HandleTypeDef *hi2c, body_attitude_t *body) {
-    uint8_t buf[6];
-    if (!bno_read_bytes(hi2c, BNO055_EUL_HEADING_LSB, buf, 6)) return false;
-    int16_t h_raw = (int16_t)((uint16_t)buf[0] | ((uint16_t)buf[1] << 8));
-    int16_t r_raw = (int16_t)((uint16_t)buf[2] | ((uint16_t)buf[3] << 8));
-    int16_t p_raw = (int16_t)((uint16_t)buf[4] | ((uint16_t)buf[5] << 8));
-    /* 본체 마운팅 기준: BNO055 roll↔body pitch, BNO055 pitch↔body roll, 둘 다 부호 반전 */
-    body->yaw   = h_raw / 16.0f;
-    body->pitch = -(r_raw / 16.0f);
-    body->roll  = -(p_raw / 16.0f);
+    /* 0x14~0x27: gyro(6) + euler(6) + quat(8) = 20 byte burst read */
+    uint8_t buf[20];
+    if (!bno_read_bytes(hi2c, BNO055_GYR_DATA_X_LSB, buf, 20)) {
+        body->data_valid = false;
+        return false;
+    }
+
+    /* --- Gyro (0x14~0x19) → buf[0..5] --- */
+    int16_t gx_raw = (int16_t)((uint16_t)buf[0]  | ((uint16_t)buf[1]  << 8));
+    int16_t gy_raw = (int16_t)((uint16_t)buf[2]  | ((uint16_t)buf[3]  << 8));
+    int16_t gz_raw = (int16_t)((uint16_t)buf[4]  | ((uint16_t)buf[5]  << 8));
+
+    /* --- Euler (0x1A~0x1F) → buf[6..11] --- */
+    int16_t h_raw  = (int16_t)((uint16_t)buf[6]  | ((uint16_t)buf[7]  << 8));
+    int16_t r_raw  = (int16_t)((uint16_t)buf[8]  | ((uint16_t)buf[9]  << 8));
+    int16_t p_raw  = (int16_t)((uint16_t)buf[10] | ((uint16_t)buf[11] << 8));
+
+    /* --- Quaternion (0x20~0x27) → buf[12..19] --- */
+    int16_t qw_raw = (int16_t)((uint16_t)buf[12] | ((uint16_t)buf[13] << 8));
+    int16_t qx_raw = (int16_t)((uint16_t)buf[14] | ((uint16_t)buf[15] << 8));
+    int16_t qy_raw = (int16_t)((uint16_t)buf[16] | ((uint16_t)buf[17] << 8));
+    int16_t qz_raw = (int16_t)((uint16_t)buf[18] | ((uint16_t)buf[19] << 8));
+
+    /* Euler — 기존 본체 마운팅 보정 유지 */
+    body->yaw   =  h_raw * BNO055_EULER_SCALE;
+    body->pitch = -(r_raw * BNO055_EULER_SCALE);
+    body->roll  = -(p_raw * BNO055_EULER_SCALE);
+
+    /* Gyro → rad/s, 본체 마운팅 보정 (Euler와 동일: X↔X, Y↔Z swap, 부호 반전) */
+    float gx = gx_raw * BNO055_GYRO_SCALE;
+    float gy = gy_raw * BNO055_GYRO_SCALE;
+    float gz = gz_raw * BNO055_GYRO_SCALE;
+    body->gyro[0] =  gx;       /* body X (forward) */
+    body->gyro[1] = -gz;       /* body Y (left) — BNO Z → body Y, 부호 반전 */
+    body->gyro[2] = -gy;       /* body Z (up)   — BNO Y → body Z, 부호 반전 */
+
+    /* Quaternion → normalized, 본체 마운팅 보정 (gyro와 동일 축 매핑) */
+    float qw = qw_raw * BNO055_QUAT_SCALE;
+    float qx = qx_raw * BNO055_QUAT_SCALE;
+    float qy = qy_raw * BNO055_QUAT_SCALE;
+    float qz = qz_raw * BNO055_QUAT_SCALE;
+
+    /* 축 swap: BNO(x,y,z) → body(x,-z,-y) */
+    float bqx =  qx;
+    float bqy = -qz;
+    float bqz = -qy;
+
+    float norm = sqrtf(qw * qw + bqx * bqx + bqy * bqy + bqz * bqz);
+    if (norm < QUAT_NORM_MIN) {
+        body->quat[0] = 1.0f;
+        body->quat[1] = 0.0f;
+        body->quat[2] = 0.0f;
+        body->quat[3] = 0.0f;
+    } else {
+        float inv = 1.0f / norm;
+        body->quat[0] = qw  * inv;
+        body->quat[1] = bqx * inv;
+        body->quat[2] = bqy * inv;
+        body->quat[3] = bqz * inv;
+    }
+
+    body->data_valid = true;
     return true;
 }

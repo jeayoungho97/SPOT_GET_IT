@@ -5,6 +5,7 @@
 #include "imu_bno055.h"
 #include "gait.h"
 #include <stdio.h>
+#include <math.h>
 
 int main(void) {
     HAL_Init();
@@ -108,10 +109,17 @@ int main(void) {
     while (1) {
         if (check_esc()) emergency_stop();
         if (HAL_GetTick() - last_print >= 1000) {
-            body_attitude_t b;
+            body_attitude_t b = {0};
             if (bno055_read_body(&hi2c1, &b)) {
-                printf("[stand] y=%+5.1f p=%+5.1f r=%+5.1f\r\n",
+                float qn = sqrtf(b.quat[0]*b.quat[0] + b.quat[1]*b.quat[1]
+                                + b.quat[2]*b.quat[2] + b.quat[3]*b.quat[3]);
+                printf("[stand] eul y=%+5.1f p=%+5.1f r=%+5.1f\r\n",
                        (double)b.yaw, (double)b.pitch, (double)b.roll);
+                printf("        gyr x=%+6.3f y=%+6.3f z=%+6.3f rad/s\r\n",
+                       (double)b.gyro[0], (double)b.gyro[1], (double)b.gyro[2]);
+                printf("        quat w=%+5.3f x=%+5.3f y=%+5.3f z=%+5.3f |q|=%.3f\r\n",
+                       (double)b.quat[0], (double)b.quat[1],
+                       (double)b.quat[2], (double)b.quat[3], (double)qn);
             }
             last_print = HAL_GetTick();
         }

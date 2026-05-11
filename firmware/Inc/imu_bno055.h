@@ -10,9 +10,18 @@
  */
 
 typedef struct {
+    /* 기존 — safety_check, debug print용 (deg) */
     float yaw;
     float pitch;
     float roll;
+
+    /* SPI 패킷용 — gyro rad/s, body frame, ROS 컨벤션 (+CCW) */
+    float gyro[3];   /* [0]=X(forward), [1]=Y(left), [2]=Z(up) */
+
+    /* SPI 패킷용 — quaternion wxyz, normalized, body frame */
+    float quat[4];   /* [0]=w, [1]=x, [2]=y, [3]=z */
+
+    bool data_valid;
 } body_attitude_t;
 
 /*
