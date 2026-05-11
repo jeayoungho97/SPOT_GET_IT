@@ -1,20 +1,21 @@
 import os
-import math
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 import numpy as np
 
 
 class PolicyRunner:
     """
-    RL policy inference wrapper.
+    Final RL policy inference wrapper.
 
-    backend:
-      - dummy: action 0 반환
-      - onnx: onnxruntime으로 policy.onnx 실행
+    Supported backend:
+      - onnx
 
-    이 파일의 목적:
-      rl_locomotion_node가 ONNX/TensorRT/TorchScript 세부 구현을 몰라도 되게 한다.
+    Dummy backend is intentionally removed.
+    ONNX Runtime provider priority:
+      1. TensorrtExecutionProvider
+      2. CUDAExecutionProvider
+      3. CPUExecutionProvider
     """
 
     def __init__(
@@ -24,53 +25,68 @@ class PolicyRunner:
         obs_dim: int,
         action_dim: int,
         obs_clip: float = 100.0,
-        require_model: bool = False,
+        require_model: bool = True,
+        preferred_providers: Optional[Sequence[str]] = None,
     ):
         self.backend = backend.lower().strip()
         self.model_path = model_path
-        self.obs_dim = obs_dim
-        self.action_dim = action_dim
-        self.obs_clip = obs_clip
-        self.require_model = require_model
+        self.obs_dim = int(obs_dim)
+        self.action_dim = int(action_dim)
+        self.obs_clip = float(obs_clip)
+        self.require_model = bool(require_model)
 
         self.session = None
         self.input_name: Optional[str] = None
         self.output_name: Optional[str] = None
+        self.providers: List[str] = []
 
-        if self.backend == "dummy":
-            return
+        if self.backend != "onnx":
+            raise ValueError(
+                f"Final PolicyRunner supports only backend='onnx', got '{backend}'"
+            )
 
-        if self.backend == "onnx":
-            self._load_onnx()
-            return
+        if not self.require_model:
+            raise ValueError("Final PolicyRunner requires require_model=True")
 
-        raise ValueError(f"Unsupported policy backend: {backend}")
+        self._load_onnx(preferred_providers)
 
-    def _load_onnx(self):
+    def _load_onnx(self, preferred_providers: Optional[Sequence[str]]):
         if not self.model_path:
-            if self.require_model:
-                raise FileNotFoundError("model_path is empty but require_model=true")
-            self.backend = "dummy"
-            return
+            raise FileNotFoundError("model_path is empty")
 
         if not os.path.exists(self.model_path):
-            if self.require_model:
-                raise FileNotFoundError(f"Policy model not found: {self.model_path}")
-            self.backend = "dummy"
-            return
+            raise FileNotFoundError(f"Policy model not found: {self.model_path}")
 
         try:
             import onnxruntime as ort
         except ImportError as exc:
             raise ImportError(
                 "onnxruntime is not installed. "
-                "Install it or set policy_backend=dummy."
+                "Install onnxruntime-gpu on Jetson if TensorRT/CUDA acceleration is needed."
             ) from exc
+
+        available = set(ort.get_available_providers())
+
+        if preferred_providers is None:
+            preferred_providers = [
+                "TensorrtExecutionProvider",
+                "CUDAExecutionProvider",
+                "CPUExecutionProvider",
+            ]
+
+        providers = [p for p in preferred_providers if p in available]
+
+        if not providers:
+            raise RuntimeError(
+                f"No usable ONNX Runtime provider. available={sorted(available)}"
+            )
 
         self.session = ort.InferenceSession(
             self.model_path,
-            providers=["CPUExecutionProvider"],
+            providers=providers,
         )
+
+        self.providers = list(self.session.get_providers())
 
         inputs = self.session.get_inputs()
         outputs = self.session.get_outputs()
@@ -94,23 +110,9 @@ class PolicyRunner:
 
         obs_np = np.clip(obs_np, -self.obs_clip, self.obs_clip)
 
-        if self.backend == "dummy":
-            return [0.0] * self.action_dim
-
-        if self.backend == "onnx":
-            return self._infer_onnx(obs_np)
-
-        raise RuntimeError(f"Invalid policy backend state: {self.backend}")
-
-    def _infer_onnx(self, obs_np: np.ndarray) -> List[float]:
-        if self.session is None:
-            raise RuntimeError("ONNX session is not loaded")
-
-        input_tensor = obs_np.reshape(1, self.obs_dim)
-
         outputs = self.session.run(
             [self.output_name],
-            {self.input_name: input_tensor},
+            {self.input_name: obs_np.reshape(1, self.obs_dim)},
         )
 
         action = np.asarray(outputs[0], dtype=np.float32).reshape(-1)
@@ -127,3 +129,6 @@ class PolicyRunner:
 
     def backend_name(self) -> str:
         return self.backend
+
+    def provider_names(self) -> List[str]:
+        return list(self.providers)
