@@ -10,8 +10,15 @@ extern UART_HandleTypeDef huart5;   /* RL servo bus  (UART5,  PC12, HDSEL 1Mbps)
 extern UART_HandleTypeDef huart6;   /* FL servo bus  (USART6, PC6,  HDSEL 1Mbps) */
 extern UART_HandleTypeDef huart2;   /* ST-Link VCP debug + ESC input (PA2/PA3, 115200) */
 extern I2C_HandleTypeDef  hi2c1;    /* BNO055 (PB6/PB7, Fast-Mode 400kHz) */
+extern SPI_HandleTypeDef  hspi1;    /* SPI1 slave to Jetson (PA4~PA7, DMA) */
 
-/* HAL_Init() 후 한 번만 호출. 시스템 클럭 + 모든 GPIO/UART/I2C 초기화. */
+extern DMA_HandleTypeDef  hdma_spi1_tx;
+extern DMA_HandleTypeDef  hdma_spi1_rx;
+
+#define DATA_READY_HIGH()  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET)
+#define DATA_READY_LOW()   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET)
+
+/* HAL_Init() 후 한 번만 호출. 시스템 클럭 + 모든 GPIO/UART/I2C/SPI 초기화. */
 void system_hal_init_all(void);
 
 void Error_Handler(void);

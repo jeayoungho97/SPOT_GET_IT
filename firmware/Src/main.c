@@ -8,6 +8,7 @@
 #include "telemetry.h"
 #include "joint_control.h"
 #include "calibration.h"
+#include "spi_protocol.h"
 #include <stdio.h>
 #include <math.h>
 
@@ -30,6 +31,8 @@ int main(void) {
     printf("  Demo: JOINT-TEST  (ESC to exit)\r\n");
 #elif DEMO_MODE == MODE_CALIBRATION
     printf("  Demo: CALIBRATION  (ESC to exit)\r\n");
+#elif DEMO_MODE == MODE_SPI_TEST
+    printf("  Demo: SPI-TEST  (ESC to exit)\r\n");
 #endif
 #if IN_HAND_MODE
     printf("  Safety: IN-HAND  (비활성, 손에 들고 시연)\r\n");
@@ -238,6 +241,40 @@ int main(void) {
 
         uint32_t elapsed = HAL_GetTick() - t_start;
         if (elapsed < 20) HAL_Delay(20 - elapsed);
+    }
+
+#elif DEMO_MODE == MODE_SPI_TEST
+    printf("\r\n========== SPI SLAVE TEST ==========\r\n");
+    printf("Waiting for Jetson SPI master (%d byte frames).\r\n", SPI_FRAME_SIZE);
+    robot_torque_off_all();
+
+    static uint8_t spi_tx_buf[SPI_FRAME_SIZE];
+    static uint8_t spi_rx_buf[SPI_FRAME_SIZE];
+
+    for (int i = 0; i < SPI_FRAME_SIZE; i++)
+        spi_tx_buf[i] = (uint8_t)(0xA0 + (i & 0x0F));
+
+    HAL_SPI_TransmitReceive_DMA(&hspi1, spi_tx_buf, spi_rx_buf, SPI_FRAME_SIZE);
+    DATA_READY_HIGH();
+
+    uint32_t spi_frame_count = 0;
+    while (1) {
+        if (check_esc()) emergency_stop();
+
+        if (HAL_SPI_GetState(&hspi1) == HAL_SPI_STATE_READY) {
+            DATA_READY_LOW();
+            spi_frame_count++;
+
+            printf("[%lu] RX: %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+                   (unsigned long)spi_frame_count,
+                   spi_rx_buf[0], spi_rx_buf[1], spi_rx_buf[2], spi_rx_buf[3],
+                   spi_rx_buf[4], spi_rx_buf[5], spi_rx_buf[6], spi_rx_buf[7]);
+
+            HAL_SPI_TransmitReceive_DMA(&hspi1, spi_tx_buf, spi_rx_buf, SPI_FRAME_SIZE);
+            DATA_READY_HIGH();
+        }
+
+        HAL_Delay(POLL_PERIOD_MS);
     }
 #endif
 

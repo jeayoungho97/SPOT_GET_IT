@@ -18,6 +18,7 @@
 #define MODE_TELEMETRY_TEST 2       /* telemetry 50Hz read 검증 */
 #define MODE_JOINT_TEST     3       /* joint_control rad→raw 검증 */
 #define MODE_CALIBRATION    4       /* 캘리브레이션 (토크 OFF + raw 출력) */
+#define MODE_SPI_TEST       5       /* SPI slave DMA echo 검증 */
 #define DEMO_MODE           MODE_TROT
 
 /* ===== Body / IK 파라미터 ===== */
