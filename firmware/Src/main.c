@@ -10,6 +10,7 @@
 #include "calibration.h"
 #include "spi_protocol.h"
 #include "spi.h"
+#include "control_loop.h"
 #include <stdio.h>
 #include <math.h>
 
@@ -34,6 +35,8 @@ int main(void) {
     printf("  Demo: CALIBRATION  (ESC to exit)\r\n");
 #elif DEMO_MODE == MODE_SPI_TEST
     printf("  Demo: SPI-TEST  (ESC to exit)\r\n");
+#elif DEMO_MODE == MODE_RL_CONTROL
+    printf("  Demo: RL-CONTROL  (Jetson 50Hz control loop)\r\n");
 #endif
 #if IN_HAND_MODE
     printf("  Safety: IN-HAND  (비활성, 손에 들고 시연)\r\n");
@@ -73,6 +76,15 @@ int main(void) {
 
 #if DEMO_MODE == MODE_CAL_MEASURE
     calibration_mode();
+#endif
+
+#if DEMO_MODE == MODE_RL_CONTROL
+    /* RL control: boot 직후 control_loop 진입 — torque/pose는 Jetson이 제어 */
+    printf("\r\n[4] Entering RL control loop (50Hz)...\r\n");
+    printf("    Torque/pose는 Jetson 명령에 의해 제어됩니다.\r\n");
+    printf("    Jetson 연결 전까지 IDLE (torque OFF) 상태.\r\n");
+    control_loop_run();
+    /* 도달 안 함 */
 #endif
 
     printf("\r\n[4] Starting in %d s...\r\n", COUNTDOWN_SEC);

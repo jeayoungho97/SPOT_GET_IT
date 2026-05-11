@@ -21,7 +21,8 @@
 #define MODE_JOINT_TEST     3       /* joint_control rad→raw 검증 */
 #define MODE_CAL_MEASURE    4       /* 캘리브레이션 (토크 OFF + raw 출력) */
 #define MODE_SPI_TEST       5       /* SPI slave DMA echo 검증 */
-#define DEMO_MODE           MODE_CAL_MEASURE
+#define MODE_RL_CONTROL     6       /* Jetson RL 50Hz control loop */
+#define DEMO_MODE           MODE_RL_CONTROL
 
 /* ===== Body / IK 파라미터 ===== */
 #define BODY_HEIGHT_MM      170.0f      /* default 정자세 몸체 높이 (mm) */
@@ -35,16 +36,16 @@
 #define L2_SHIN_MM          130.0f
 
 /* ===== Trot 파라미터 ===== */
-#define GAIT_PERIOD_MS      1500        /* 한 cycle 시간 */
+#define GAIT_PERIOD_MS      1000        /* 한 cycle 시간 */
 #define DUTY_FACTOR         0.6f       /* stance 비율 (0.5=pure trot, 0.55+=4-leg overlap) */
-#define N_CYCLES            5
+#define N_CYCLES            1
 #define LOOP_PERIOD_MS      20          /* 50Hz */
 #define MONITOR_PERIOD_MS   100         /* 10Hz 모니터 출력 (ENABLE_MONITOR=1일 때만) */
 
 #define ENABLE_MONITOR      0           /* 1 = 모니터 활성 (run_trot 안 #if로 게이팅) */
 
-#define STRIDE_X            80.0f       /* 발끝 전후 sweep 폭 (mm) */
-#define LIFT_Z              10.0f       /* swing peak 높이 (대칭 arch + 4/3 보정으로 실제 peak = LIFT_Z) */
+#define STRIDE_X            50.0f       /* 발끝 전후 sweep 폭 (mm) */
+#define LIFT_Z              13.0f       /* swing peak 높이 (대칭 arch + 4/3 보정으로 실제 peak = LIFT_Z) */
 
 /* Safety 임계 — IN_HAND_MODE에 따라 자동 결정 */
 #if IN_HAND_MODE
