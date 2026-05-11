@@ -9,7 +9,7 @@
  */
 
 /* ===== 모드 선택 ===== */
-#define IN_HAND_MODE        0       /* 1 = 손에 들고 (safety 비활성), 0 = 바닥 */
+#define IN_HAND_MODE        1       /* 1 = 손에 들고 (safety 비활성), 0 = 바닥 */
 
 /*
  * 데모 모드 — compile-time 선택. 향후 state machine 진입 시 runtime 변수
@@ -36,15 +36,15 @@
 #define L2_SHIN_MM          130.0f
 
 /* ===== Trot 파라미터 ===== */
-#define GAIT_PERIOD_MS      1000        /* 한 cycle 시간 */
-#define DUTY_FACTOR         0.6f       /* stance 비율 (0.5=pure trot, 0.55+=4-leg overlap) */
-#define N_CYCLES            1
+#define GAIT_PERIOD_MS      1500        /* 한 cycle 시간 */
+#define DUTY_FACTOR         0.55f       /* stance 비율 (0.5=pure trot, 0.55+=4-leg overlap) */
+#define N_CYCLES            5
 #define LOOP_PERIOD_MS      20          /* 50Hz */
 #define MONITOR_PERIOD_MS   100         /* 10Hz 모니터 출력 (ENABLE_MONITOR=1일 때만) */
 
 #define ENABLE_MONITOR      0           /* 1 = 모니터 활성 (run_trot 안 #if로 게이팅) */
 
-#define STRIDE_X            50.0f       /* 발끝 전후 sweep 폭 (mm) */
+#define STRIDE_X            70.0f       /* 발끝 전후 sweep 폭 (mm) */
 #define LIFT_Z              13.0f       /* swing peak 높이 (대칭 arch + 4/3 보정으로 실제 peak = LIFT_Z) */
 
 /* Safety 임계 — IN_HAND_MODE에 따라 자동 결정 */
