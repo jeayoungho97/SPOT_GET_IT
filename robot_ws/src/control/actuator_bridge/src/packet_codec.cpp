@@ -84,15 +84,17 @@ float read_f32_le(const std::vector<uint8_t> & in, std::size_t & offset)
   return value;
 }
 
-template <std::size_t N>
-void write_float_array(std::vector<uint8_t> & out, const std::array<float, N> & values)
+template<std::size_t N>
+void write_float_array(
+  std::vector<uint8_t> & out,
+  const std::array<float, N> & values)
 {
   for (const float value : values) {
     write_f32_le(out, value);
   }
 }
 
-template <std::size_t N>
+template<std::size_t N>
 void read_float_array(
   const std::vector<uint8_t> & in,
   std::size_t & offset,
@@ -149,7 +151,6 @@ std::vector<uint8_t> encode_command_packet(const CommandPacket & packet)
   write_u32_le(out, packet.timestamp_us);
   write_u8(out, packet.mode);
   write_u8(out, packet.flags);
-
   write_float_array(out, packet.target_rad);
   write_float_array(out, packet.max_delta_rad);
 
@@ -177,6 +178,7 @@ DecodeResult decode_command_packet(
   try {
     std::size_t magic_offset = 0;
     const uint16_t magic = read_u16_le(bytes, magic_offset);
+
     if (magic != COMMAND_MAGIC) {
       return DecodeResult::BAD_MAGIC;
     }
@@ -186,12 +188,10 @@ DecodeResult decode_command_packet(
     }
 
     std::size_t offset = 2;
-
     packet.seq = read_u16_le(bytes, offset);
     packet.timestamp_us = read_u32_le(bytes, offset);
     packet.mode = read_u8(bytes, offset);
     packet.flags = read_u8(bytes, offset);
-
     read_float_array(bytes, offset, packet.target_rad);
     read_float_array(bytes, offset, packet.max_delta_rad);
 
@@ -211,15 +211,13 @@ std::vector<uint8_t> encode_feedback_packet(const FeedbackPacket & packet)
   write_u32_le(out, packet.timestamp_us);
   write_u8(out, packet.status);
   write_u8(out, packet.fault_code);
-
   write_float_array(out, packet.position_rad);
   write_float_array(out, packet.velocity_rad_s);
   write_float_array(out, packet.load_or_current);
   write_float_array(out, packet.temperature);
-
   write_float_array(out, packet.gyro_rad_s);
+  write_float_array(out, packet.accel_m_s2);
   write_float_array(out, packet.quat_wxyz);
-
   write_f32_le(out, packet.bus_voltage);
 
   const uint16_t crc = crc16_ccitt_false(out.data(), out.size());
@@ -239,6 +237,7 @@ DecodeResult decode_feedback_packet(
   try {
     std::size_t magic_offset = 0;
     const uint16_t magic = read_u16_le(bytes, magic_offset);
+
     if (magic != FEEDBACK_MAGIC) {
       return DecodeResult::BAD_MAGIC;
     }
@@ -248,20 +247,17 @@ DecodeResult decode_feedback_packet(
     }
 
     std::size_t offset = 2;
-
     packet.seq_echo = read_u16_le(bytes, offset);
     packet.timestamp_us = read_u32_le(bytes, offset);
     packet.status = read_u8(bytes, offset);
     packet.fault_code = read_u8(bytes, offset);
-
     read_float_array(bytes, offset, packet.position_rad);
     read_float_array(bytes, offset, packet.velocity_rad_s);
     read_float_array(bytes, offset, packet.load_or_current);
     read_float_array(bytes, offset, packet.temperature);
-
     read_float_array(bytes, offset, packet.gyro_rad_s);
+    read_float_array(bytes, offset, packet.accel_m_s2);
     read_float_array(bytes, offset, packet.quat_wxyz);
-
     packet.bus_voltage = read_f32_le(bytes, offset);
 
     return DecodeResult::OK;
