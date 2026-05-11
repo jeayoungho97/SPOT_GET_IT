@@ -1,23 +1,40 @@
 rl_locomotion_node:
   ros__parameters:
     policy_rate_hz: 50.0
+
     obs_dim: 47
     action_dim: 12
+
+    # dry-run에서는 실제 모델 없이 raw_action=0을 반환한다.
+    # 즉 target_rad = ik_ref + 0 * action_scale 이 된다.
+    policy_backend: dummy
+    model_path: ""
+    require_model: false
+
+    obs_clip: 100.0
     action_scale: 0.25
     action_clip: 0.5
-
-    policy_backend: onnx
-    model_path: models/exp043_policy.onnx
-    require_model: true
-    obs_clip: 100.0
 
     gait_period: 0.6
     duty_factor: 0.5
     step_height: 0.03
     body_height: 0.206
     robot_width: 0.15
+
+    # cmd_norm / phase_cmd_norm 만큼 gait phase가 진행된다.
+    # vx=0.05이면 phase_scale=0.5, vx=0.10이면 phase_scale=1.0
     phase_cmd_norm: 0.1
     blend_cmd_norm: 0.1
+
+    debug_publish_rate_hz: 10.0
+
+    # 실기체 초기 제한. dry-run에서도 동일하게 둔다.
+    vx_min: 0.0
+    vx_max: 0.10
+    vy_min: 0.0
+    vy_max: 0.0
+    wz_min: -0.05
+    wz_max: 0.05
 
     joint_names:
       - front_left_shoulder
@@ -46,7 +63,7 @@ rl_locomotion_node:
       - 0.0
       - -0.6
       - 1.1
-      
+
     joint_min_rad:
       - -0.548
       - -2.666
@@ -75,5 +92,5 @@ rl_locomotion_node:
       - 1.548
       - 2.590
 
+    # 50Hz 기준 1.5 rad/s → 0.03 rad/step
     max_joint_speed_rad_s: 1.5
-    debug_publish_rate_hz: 2.0

@@ -5,21 +5,78 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-# find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
-find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(robot_interfaces REQUIRED)
 
+add_library(packet_codec
+  src/packet_codec.cpp
+)
+
+target_compile_features(packet_codec PUBLIC cxx_std_17)
+
+target_include_directories(packet_codec PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+add_library(spi_transport
+  src/spi_transport.cpp
+)
+
+target_compile_features(spi_transport PUBLIC cxx_std_17)
+
+target_include_directories(spi_transport PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+add_executable(actuator_bridge_node
+  src/actuator_bridge_node.cpp
+)
+
+target_compile_features(actuator_bridge_node PUBLIC cxx_std_17)
+
+target_include_directories(actuator_bridge_node PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+target_link_libraries(actuator_bridge_node
+  packet_codec
+  spi_transport
+)
+
+ament_target_dependencies(actuator_bridge_node
+  rclcpp
+  sensor_msgs
+  robot_interfaces
+)
+
+install(TARGETS
+  packet_codec
+  spi_transport
+  actuator_bridge_node
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY
+  include/
+  DESTINATION include
+)
+
+install(DIRECTORY
+  launch
+  config
+  DESTINATION share/${PROJECT_NAME}
+)
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
-  # the following line skips the linter which checks for copyrights
-  # comment the line when a copyright and license is added to all source files
   set(ament_cmake_copyright_FOUND TRUE)
-  # the following line skips cpplint (only works in a git repo)
-  # comment the line when this package is in a git repo and when
-  # a copyright and license is added to all source files
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
 endif()

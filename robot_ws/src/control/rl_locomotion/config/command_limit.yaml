@@ -4,5 +4,5 @@ rl_locomotion_node:
     vx_max: 0.20
     vy_min: 0.0
     vy_max: 0.0
-    wz_min: -0.05
-    wz_max: 0.05
+    wz_min: -0.10
+    wz_max: 0.10
