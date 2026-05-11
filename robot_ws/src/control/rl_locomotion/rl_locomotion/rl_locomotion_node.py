@@ -219,6 +219,7 @@ class RlLocomotionNode(Node):
 
         self.seq = 0
         self.gait_phase = 0.0
+        self.gait_cycle_count = 0
 
         self.cmd_vx = 0.0
         self.cmd_vy = 0.0
@@ -484,12 +485,15 @@ class RlLocomotionNode(Node):
     # Policy pipeline
     # -------------------------------------------------------------------------
     def update_gait_phase(self, cmd_vx: float, cmd_vy: float, cmd_wz: float):
+        prev_phase = self.gait_phase
         self.gait_phase = self.gait_phase_gen.update(
             dt=self.dt,
             cmd_vx=cmd_vx,
             cmd_vy=cmd_vy,
             cmd_wz=cmd_wz,
         )
+        if self.gait_phase < prev_phase:
+            self.gait_cycle_count += 1
 
     def build_observation(self, snapshot, ik_ref: List[float]) -> List[float]:
         return self.obs_builder.build(
@@ -553,6 +557,8 @@ class RlLocomotionNode(Node):
         msg.flags = 0
         msg.target_rad = list(target_rad)
         msg.max_delta_rad = list(self.max_delta_rad)
+        msg.gait_phase = float(self.gait_phase)
+        msg.gait_cycle_count = int(self.gait_cycle_count)
         self.target_pub.publish(msg)
 
     def publish_safe_target(self, reason: str, stamp_msg):

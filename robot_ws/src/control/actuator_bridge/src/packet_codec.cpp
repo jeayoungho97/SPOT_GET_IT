@@ -153,6 +153,8 @@ std::vector<uint8_t> encode_command_packet(const CommandPacket & packet)
   write_u8(out, packet.flags);
   write_float_array(out, packet.target_rad);
   write_float_array(out, packet.max_delta_rad);
+  write_f32_le(out, packet.gait_phase);
+  write_u32_le(out, packet.gait_cycle_count);
 
   const uint16_t crc = crc16_ccitt_false(out.data(), out.size());
   write_u16_le(out, crc);
@@ -194,6 +196,8 @@ DecodeResult decode_command_packet(
     packet.flags = read_u8(bytes, offset);
     read_float_array(bytes, offset, packet.target_rad);
     read_float_array(bytes, offset, packet.max_delta_rad);
+    packet.gait_phase = read_f32_le(bytes, offset);
+    packet.gait_cycle_count = read_u32_le(bytes, offset);
 
     return DecodeResult::OK;
   } catch (...) {
@@ -211,6 +215,10 @@ std::vector<uint8_t> encode_feedback_packet(const FeedbackPacket & packet)
   write_u32_le(out, packet.timestamp_us);
   write_u8(out, packet.status);
   write_u8(out, packet.fault_code);
+  write_u8(out, packet.motion_state);
+  write_f32_le(out, packet.gait_phase);
+  write_u32_le(out, packet.gait_cycle_count);
+  write_f32_le(out, packet.imu_yaw_rad);
   write_float_array(out, packet.position_rad);
   write_float_array(out, packet.velocity_rad_s);
   write_float_array(out, packet.load_or_current);
@@ -251,6 +259,10 @@ DecodeResult decode_feedback_packet(
     packet.timestamp_us = read_u32_le(bytes, offset);
     packet.status = read_u8(bytes, offset);
     packet.fault_code = read_u8(bytes, offset);
+    packet.motion_state = read_u8(bytes, offset);
+    packet.gait_phase = read_f32_le(bytes, offset);
+    packet.gait_cycle_count = read_u32_le(bytes, offset);
+    packet.imu_yaw_rad = read_f32_le(bytes, offset);
     read_float_array(bytes, offset, packet.position_rad);
     read_float_array(bytes, offset, packet.velocity_rad_s);
     read_float_array(bytes, offset, packet.load_or_current);

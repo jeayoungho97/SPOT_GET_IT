@@ -12,6 +12,7 @@
 #include "robot_interfaces/msg/joint_feedback.hpp"
 #include "robot_interfaces/msg/joint_target.hpp"
 #include "robot_interfaces/msg/robot_status.hpp"
+#include "robot_interfaces/msg/stm_motion.hpp"
 
 #include "actuator_bridge/packet_codec.hpp"
 #include "actuator_bridge/spi_transport.hpp"
@@ -117,6 +118,11 @@ public:
       "/control/actuator/status",
       control_qos());
 
+    odom_source_pub_ =
+      this->create_publisher<robot_interfaces::msg::StmMotion>(
+        "/localization/spot_motion",
+        rclcpp::QoS(rclcpp::KeepLast(1)).best_effort());
+
     const bool spi_ok = spi_.open_device(
       spi_device_,
       static_cast<uint32_t>(spi_speed_hz_),
@@ -182,6 +188,9 @@ private:
       latest_target_rad_[i] = msg->target_rad[i];
       latest_max_delta_rad_[i] = msg->max_delta_rad[i];
     }
+
+    latest_gait_phase_ = msg->gait_phase;
+    latest_gait_cycle_count_ = msg->gait_cycle_count;
   }
 
   void controlLoop()
@@ -246,6 +255,7 @@ private:
     publishJointFeedbackFromPacket(feedback);
     publishImuFromPacket(feedback);
     publishStatusFromPacket(feedback, stale, loop_start, spi_latency_ms);
+    publishOdomSourceFromPacket(feedback);
   }
 
   bool fillCommandPacket(actuator_bridge::CommandPacket & command)
@@ -258,6 +268,8 @@ private:
 
     if (stale) {
       command.seq = freeze_seq_when_stale_ ? last_sent_seq_ : latest_seq_;
+      command.gait_phase = latest_gait_phase_;
+      command.gait_cycle_count = latest_gait_cycle_count_;
       command.mode = MODE_DISABLE;
       command.flags = 0;
 
@@ -274,6 +286,9 @@ private:
         command.target_rad[i] = latest_target_rad_[i];
         command.max_delta_rad[i] = latest_max_delta_rad_[i];
       }
+
+      command.gait_phase = latest_gait_phase_;
+      command.gait_cycle_count = latest_gait_cycle_count_;
     }
 
     command.timestamp_us = static_cast<uint32_t>(
@@ -386,6 +401,25 @@ private:
     status_pub_->publish(msg);
   }
 
+  void publishOdomSourceFromPacket(const actuator_bridge::FeedbackPacket & feedback)
+  {
+    robot_interfaces::msg::StmMotion msg;
+
+    msg.header.stamp = this->now();
+    msg.header.frame_id = "base_link";
+
+    msg.timestamp_ms = feedback.timestamp_us / 1000U;
+    msg.seq = feedback.seq_echo;
+
+    msg.motion_state = feedback.motion_state;
+    msg.gait_phase = feedback.gait_phase;
+    msg.gait_cycle_count = feedback.gait_cycle_count;
+
+    msg.imu_yaw_rad = feedback.imu_yaw_rad;
+    msg.gyro_z_rad_s = feedback.gyro_rad_s[2];
+
+    odom_source_pub_->publish(msg);
+  }
   void publishBridgeFaultStatus(
     uint16_t seq_echo,
     uint8_t fault_code,
@@ -450,6 +484,9 @@ private:
   std::array<float, actuator_bridge::NUM_JOINTS> latest_target_rad_{};
   std::array<float, actuator_bridge::NUM_JOINTS> latest_max_delta_rad_{};
 
+  float latest_gait_phase_{0.0F};
+  uint32_t latest_gait_cycle_count_{0};
+
   uint32_t packet_drop_count_{0};
   uint32_t crc_error_count_{0};
   uint32_t missed_deadline_count_{0};
@@ -458,6 +495,7 @@ private:
   rclcpp::Publisher<robot_interfaces::msg::JointFeedback>::SharedPtr joint_feedback_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;
   rclcpp::Publisher<robot_interfaces::msg::RobotStatus>::SharedPtr status_pub_;
+  rclcpp::Publisher<robot_interfaces::msg::StmMotion>::SharedPtr odom_source_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
 
