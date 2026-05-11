@@ -18,6 +18,9 @@ typedef struct {
     /* SPI 패킷용 — gyro rad/s, body frame, ROS 컨벤션 (+CCW) */
     float gyro[3];   /* [0]=X(forward), [1]=Y(left), [2]=Z(up) */
 
+    /* SPI 패킷용 — accel m/s², body frame */
+    float accel[3];  /* [0]=X(forward), [1]=Y(left), [2]=Z(up) */
+
     /* SPI 패킷용 — quaternion wxyz, normalized, body frame */
     float quat[4];   /* [0]=w, [1]=x, [2]=y, [3]=z */
 

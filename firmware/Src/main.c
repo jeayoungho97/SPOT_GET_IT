@@ -117,6 +117,8 @@ int main(void) {
                        (double)b.yaw, (double)b.pitch, (double)b.roll);
                 printf("        gyr x=%+6.3f y=%+6.3f z=%+6.3f rad/s\r\n",
                        (double)b.gyro[0], (double)b.gyro[1], (double)b.gyro[2]);
+                printf("        acc x=%+6.2f y=%+6.2f z=%+6.2f m/s2\r\n",
+                       (double)b.accel[0], (double)b.accel[1], (double)b.accel[2]);
                 printf("        quat w=%+5.3f x=%+5.3f y=%+5.3f z=%+5.3f |q|=%.3f\r\n",
                        (double)b.quat[0], (double)b.quat[1],
                        (double)b.quat[2], (double)b.quat[3], (double)qn);
