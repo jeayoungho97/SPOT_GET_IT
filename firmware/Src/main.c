@@ -244,15 +244,17 @@ int main(void) {
     }
 
 #elif DEMO_MODE == MODE_SPI_TEST
-    printf("\r\n========== SPI SLAVE TEST ==========\r\n");
+    robot_state_init();
+    printf("\r\n========== SPI PROTOCOL TEST ==========\r\n");
     printf("Waiting for Jetson SPI master (%d byte frames).\r\n", SPI_FRAME_SIZE);
+    printf("Torque OFF. Telemetry + encode/decode verification.\r\n");
     robot_torque_off_all();
 
     static uint8_t spi_tx_buf[SPI_FRAME_SIZE];
     static uint8_t spi_rx_buf[SPI_FRAME_SIZE];
 
-    for (int i = 0; i < SPI_FRAME_SIZE; i++)
-        spi_tx_buf[i] = (uint8_t)(0xA0 + (i & 0x0F));
+    telemetry_update_all();
+    spi_encode_feedback(spi_tx_buf);
 
     HAL_SPI_TransmitReceive_DMA(&hspi1, spi_tx_buf, spi_rx_buf, SPI_FRAME_SIZE);
     DATA_READY_HIGH();
@@ -265,13 +267,24 @@ int main(void) {
             DATA_READY_LOW();
             spi_frame_count++;
 
-            printf("[%lu] RX: %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
-                   (unsigned long)spi_frame_count,
-                   spi_rx_buf[0], spi_rx_buf[1], spi_rx_buf[2], spi_rx_buf[3],
-                   spi_rx_buf[4], spi_rx_buf[5], spi_rx_buf[6], spi_rx_buf[7]);
+            decode_result_t dr = spi_decode_command(spi_rx_buf);
+
+            telemetry_update_all();
+            spi_encode_feedback(spi_tx_buf);
 
             HAL_SPI_TransmitReceive_DMA(&hspi1, spi_tx_buf, spi_rx_buf, SPI_FRAME_SIZE);
             DATA_READY_HIGH();
+
+            static uint32_t last_spi_print = 0;
+            uint32_t now = HAL_GetTick();
+            if (now - last_spi_print >= 250) {
+                last_spi_print = now;
+                printf("[%lu] decode=%d seq=%u mode=%u tgt[0]=%+.3f\r\n",
+                       (unsigned long)spi_frame_count,
+                       (int)dr, g_robot_state.cmd_seq,
+                       (unsigned)g_robot_state.mode,
+                       (double)g_robot_state.target_rad[0]);
+            }
         }
 
         HAL_Delay(POLL_PERIOD_MS);
