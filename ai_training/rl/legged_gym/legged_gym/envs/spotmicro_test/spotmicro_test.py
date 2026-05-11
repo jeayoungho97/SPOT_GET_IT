@@ -18,11 +18,11 @@ class SpotmicroTest(LeggedRobot):
         self.L2 = 0.115
         self.L1_EFF = (0.01**2 + 0.12**2)**0.5
         self.ALPHA = torch.atan2(torch.tensor(0.01), torch.tensor(0.12)).item()
-        self.robot_width = 0.15 
+        self.robot_width = 0.15
 
-        self.gait_period = 0.6
-        self.duty_factor = 0.5
-        self.step_height = 0.03
+        self.gait_period = 1.0
+        self.duty_factor = 0.6
+        self.step_height = 0.015
         self.body_height = 0.206
 
         self.gait_phase = torch.zeros(self.num_envs, 1, dtype=torch.float, device=self.device)
