@@ -6,6 +6,7 @@
 #include "gait.h"
 #include "robot_state.h"
 #include "telemetry.h"
+#include "joint_control.h"
 #include <stdio.h>
 #include <math.h>
 
@@ -24,6 +25,8 @@ int main(void) {
     printf("  Demo: STAND-ONLY  (ESC to exit)\r\n");
 #elif DEMO_MODE == MODE_TELEMETRY_TEST
     printf("  Demo: TELEMETRY-TEST  (ESC to exit)\r\n");
+#elif DEMO_MODE == MODE_JOINT_TEST
+    printf("  Demo: JOINT-TEST  (ESC to exit)\r\n");
 #endif
 #if IN_HAND_MODE
     printf("  Safety: IN-HAND  (비활성, 손에 들고 시연)\r\n");
@@ -170,6 +173,60 @@ int main(void) {
 
             uint32_t dt = HAL_GetTick() - t_start;
             printf("dt=%lums\r\n\r\n", (unsigned long)dt);
+        }
+
+        uint32_t elapsed = HAL_GetTick() - t_start;
+        if (elapsed < 20) HAL_Delay(20 - elapsed);
+    }
+
+#elif DEMO_MODE == MODE_JOINT_TEST
+    robot_state_init();
+    printf("\r\n========== JOINT CONTROL TEST (50Hz) ==========\r\n");
+    printf("Torque ON. Slew-limited move to default angles.\r\n");
+
+    telemetry_update_all();
+    joint_control_capture_current_as_prev();
+
+    float default_angles[NUM_JOINTS] = {
+        0.0f, -0.6f, 1.1f,
+        0.0f, -0.6f, 1.1f,
+        0.0f, -0.6f, 1.1f,
+        0.0f, -0.6f, 1.1f,
+    };
+    for (int i = 0; i < NUM_JOINTS; i++) {
+        g_robot_state.target_rad[i] = default_angles[i];
+        g_robot_state.max_delta_rad[i] = 0.02f;
+    }
+
+    while (1) {
+        uint32_t t_start = HAL_GetTick();
+        if (check_esc()) emergency_stop();
+
+        telemetry_update_all();
+        joint_control_apply_target();
+
+        static uint32_t last_jt_print = 0;
+        if (t_start - last_jt_print >= 250) {
+            last_jt_print = t_start;
+
+            printf("target: ");
+            for (int i = 0; i < NUM_JOINTS; i++)
+                printf("%+5.2f ", (double)g_robot_state.target_rad[i]);
+            printf("\r\n");
+
+            printf("actual: ");
+            for (int i = 0; i < NUM_JOINTS; i++)
+                printf("%+5.2f ", (double)g_robot_state.position_rad[i]);
+            printf("\r\n");
+
+            printf("prev:   ");
+            for (int i = 0; i < NUM_JOINTS; i++)
+                printf("%+5.2f ", (double)g_robot_state.prev_target_rad[i]);
+            printf("\r\n");
+
+            printf("fault=%d dt=%lums\r\n\r\n",
+                   (int)g_robot_state.fault_code,
+                   (unsigned long)(HAL_GetTick() - t_start));
         }
 
         uint32_t elapsed = HAL_GetTick() - t_start;

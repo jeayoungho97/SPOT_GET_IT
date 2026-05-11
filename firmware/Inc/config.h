@@ -16,6 +16,7 @@
 #define MODE_STAND_ONLY     0       /* 일정 높이 정자세만 유지, trot 안 함 */
 #define MODE_TROT           1       /* trot 보행 실행 */
 #define MODE_TELEMETRY_TEST 2       /* telemetry 50Hz read 검증 */
+#define MODE_JOINT_TEST     3       /* joint_control rad→raw 검증 */
 #define DEMO_MODE           MODE_TROT
 
 /* ===== Body / IK 파라미터 ===== */
@@ -61,5 +62,12 @@
 #define INITIAL_SETTLE_MS      2000
 #define POLL_PERIOD_MS         10
 #define ESC_KEY                0x1B
+
+/* ===== Per-joint calibration (A4에서 실측 값으로 교체) ===== */
+#define NUM_JOINTS_CFG         12
+extern const uint16_t JOINT_ZERO_POS[NUM_JOINTS_CFG];
+extern const int8_t   JOINT_SIGN[NUM_JOINTS_CFG];
+extern const float    JOINT_MIN_RAD[NUM_JOINTS_CFG];
+extern const float    JOINT_MAX_RAD[NUM_JOINTS_CFG];
 
 #endif /* CONFIG_H */
