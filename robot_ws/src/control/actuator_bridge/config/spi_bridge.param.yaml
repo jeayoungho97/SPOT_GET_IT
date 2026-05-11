@@ -9,6 +9,8 @@ actuator_bridge_node:
 
     max_target_age_ms: 200.0
 
+    target_topic: "/control/selected/joint_target"
+
     default_joint_angles:
       - 0.0
       - -0.6

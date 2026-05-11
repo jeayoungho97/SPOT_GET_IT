@@ -81,10 +81,19 @@ public:
       latest_max_delta_rad_[i] = static_cast<float>(default_max_delta_rad[i]);
     }
 
+    target_topic_ = this->declare_parameter<std::string>(
+      "target_topic",
+      "/control/selected/joint_target");
+
     target_sub_ = this->create_subscription<robot_interfaces::msg::JointTarget>(
-      "/control/rl/joint_target",
+      target_topic_,
       rclcpp::QoS(rclcpp::KeepLast(1)).best_effort(),
       std::bind(&ActuatorBridgeNode::targetCallback, this, std::placeholders::_1));
+
+    RCLCPP_INFO(
+      this->get_logger(),
+      "subscribing joint target topic: %s",
+      target_topic_.c_str());
 
     joint_feedback_pub_ = this->create_publisher<robot_interfaces::msg::JointFeedback>(
       "/control/actuator/joint_feedback",
@@ -406,6 +415,8 @@ private:
   uint8_t latest_flags_{0};
 
   rclcpp::Time last_target_time_;
+
+  std::string target_topic_{"/control/selected/joint_target"};
 
   std::array<float, actuator_bridge::NUM_JOINTS> latest_target_rad_{};
   std::array<float, actuator_bridge::NUM_JOINTS> latest_max_delta_rad_{};

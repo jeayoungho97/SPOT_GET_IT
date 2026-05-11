@@ -1,0 +1,31 @@
+stand_motion_node:
+  ros__parameters:
+    rate_hz: 50.0
+
+    # 0.03 rad/step at 50Hz = 1.5 rad/s
+    max_delta_rad: 0.03
+
+    # 현재 학습/dry-run 기준 기본 자세
+    stand_pose:
+      - 0.0
+      - -0.6
+      - 1.1
+      - 0.0
+      - -0.6
+      - 1.1
+      - 0.0
+      - -0.6
+      - 1.1
+      - 0.0
+      - -0.6
+      - 1.1
+
+joint_target_mux_node:
+  ros__parameters:
+    rate_hz: 50.0
+
+    # 기본은 안전하게 STAND
+    default_mode: "STAND"
+
+    rl_timeout_ms: 100.0
+    stand_timeout_ms: 100.0
