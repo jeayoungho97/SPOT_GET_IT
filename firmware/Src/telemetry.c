@@ -4,20 +4,29 @@
 #include "robot.h"
 #include "imu_bno055.h"
 #include "system_hal.h"
+#include "config.h"
 #include <math.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846f
 #endif
 
-/* raw position (0~4095) → rad. per-joint sign/ZERO_POS는 A4에서 적용 */
-static inline float position_raw_to_rad(uint16_t raw) {
-    return ((float)raw - 2048.0f) * (2.0f * (float)M_PI / 4096.0f);
+/*
+ * raw position (0~4095) → rad (canonical convention).
+ * JOINT_SIGN/JOINT_ZERO_POS 적용 — target_rad와 같은 부호 체계로 통일.
+ * (안 그러면 capture_current_as_prev 시점에 FR/RR (sign=-1) prev가 반대 부호로
+ *  잡혀서 첫 명령이 잘못된 방향으로 튐 → "기지개" 현상 발생)
+ */
+static inline float position_raw_to_rad(uint16_t raw, int joint_idx) {
+    return (float)JOINT_SIGN[joint_idx]
+         * ((float)raw - (float)JOINT_ZERO_POS[joint_idx])
+         * (2.0f * (float)M_PI / 4096.0f);
 }
 
-/* STS3215 speed: sign-magnitude, 0.732 RPM/LSB → rad/s */
-static inline float speed_raw_to_rad_s(int16_t raw) {
-    return (float)raw * 0.732f * (2.0f * (float)M_PI / 60.0f);
+/* STS3215 speed: sign-magnitude, 0.732 RPM/LSB → rad/s. JOINT_SIGN 적용. */
+static inline float speed_raw_to_rad_s(int16_t raw, int joint_idx) {
+    return (float)JOINT_SIGN[joint_idx]
+         * (float)raw * 0.732f * (2.0f * (float)M_PI / 60.0f);
 }
 
 /* load raw → -1.0 ~ +1.0 정규화 */
@@ -42,8 +51,8 @@ bool telemetry_read_all_servos(void) {
                 continue;
             }
 
-            g_robot_state.position_rad[idx]   = position_raw_to_rad(s.position);
-            g_robot_state.velocity_rad_s[idx] = speed_raw_to_rad_s(s.speed);
+            g_robot_state.position_rad[idx]   = position_raw_to_rad(s.position, idx);
+            g_robot_state.velocity_rad_s[idx] = speed_raw_to_rad_s(s.speed, idx);
             g_robot_state.load[idx]           = load_raw_to_normalized(s.load);
             g_robot_state.temperature[idx]    = (float)s.temperature_C;
 
