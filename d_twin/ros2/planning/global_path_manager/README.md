@@ -116,3 +116,7 @@ ROS2 환경을 구동하지 않고 단독으로 경로 생성 로직을 테스�
 python3 visualize_paths.py
 
 ```
+
+## 경로 시각화 예시
+
+![경로 시각화 결과물](path_result_01_05.png)
