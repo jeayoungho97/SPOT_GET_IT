@@ -10,7 +10,7 @@
 #include <stdio.h>
 #include <math.h>
 
-#define STALE_TIMEOUT_MS       60      /* 3 cycle 이상 패킷 없으면 stale */
+#define STALE_TIMEOUT_MS       200     /* 10 cycle 이상 패킷 없으면 stale (Linux non-RT jitter 흡수) */
 #define TEMP_LIMIT_C           70.0f   /* 서보 온도 한계 */
 #define VOLTAGE_LOW_V          10.0f   /* 3S LiPo 저전압 한계 */
 #define VOLTAGE_VALID_V        0.1f    /* ADC 유효 판별 최소값 */
