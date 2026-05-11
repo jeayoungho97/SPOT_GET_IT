@@ -359,11 +359,14 @@ int main(int argc, char **argv)
     for (int i = 0; i < 12; i++) printf("%.3f%s", stand_target[i], i<11?", ":"");
     printf("]\n\n");
 
-    float delta_standup[12], delta_walk[12], delta_settle[12];
+    /*
+     * delta_smooth: standup/settle용 (smoothstep 보간 사용 → slew limit 사실상 무력화)
+     * delta_walk:   trot용 (안전상 slew limit 유지)
+     */
+    float delta_smooth[12], delta_walk[12];
     for (int i = 0; i < 12; i++) {
-        delta_standup[i] = 0.02f;
-        delta_walk[i]    = 0.08f;
-        delta_settle[i]  = 0.03f;
+        delta_smooth[i] = 10.0f;   /* effectively no limit */
+        delta_walk[i]   = 0.08f;
     }
 
     uint8_t tx[SPI_FRAME_SIZE], rx[SPI_FRAME_SIZE];
@@ -384,7 +387,29 @@ int main(int argc, char **argv)
         return send(MODE_IDLE, 0, z, z);
     };
 
-    /* ── SPI 진단 ── */
+    /*
+     * 진단 데이터 버퍼 (제어 루프 안에서 printf 절대 금지)
+     * Phase 2 끝나고 settle 끝나고 한 번에 출력
+     */
+    struct DiagSnap {
+        int      tick, cycle;
+        float    phase, fl_lp, fl_fx, fl_fz;
+        float    tgt[3], fb_pos[3];
+        uint8_t  fault, mst;
+    };
+    struct FaultEvent {
+        int      tick;
+        float    phase;
+        uint8_t  from, to;
+    };
+    static DiagSnap   snaps[64];   int snap_count = 0;
+    static FaultEvent fevents[32]; int fevent_count = 0;
+    int total_ticks = 0;
+    int valid_ticks = 0;
+    int safety_count = 0;
+    int idle_count = 0;
+
+    /* ── SPI 진단 (Phase 진입 전, 한 번만) ── */
     {
         printf("[Diag] SPI check... ");
         float zt[12] = {}, zd[12] = {};
@@ -404,55 +429,80 @@ int main(int argc, char **argv)
     }
     printf("\n");
 
-    /* ── Phase 0: 카운트다운 ── */
+    /* ── Phase 0: 카운트다운 + 초기 자세 read ──
+     *   IDLE 모드로 (torque OFF 유지) feedback 받아 현재 다리 자세 캡처.
+     *   smooth standup의 from-pose로 사용.
+     */
     printf(">>> 3초 후 시작 — 로봇을 잡을 준비! <<<\n");
+    float initial_pose[12] = {0};
+    bool got_initial = false;
     for (int i = 3; i > 0 && !g_stop; i--) {
         printf("  %d...\n", i);
         double t_end = now_sec() + 1.0;
         while (now_sec() < t_end && !g_stop) {
-            send_idle();
+            FeedbackPacket fb = send_idle();
+            if (fb.valid) {
+                memcpy(initial_pose, fb.pos, sizeof(initial_pose));
+                got_initial = true;
+            }
             sleep_until(now_sec() + TICK);
         }
     }
     printf("\n");
-
-    /* ── Phase 1: Stand-up (2초) ── */
-    if (!g_stop) {
-        printf("[Phase 1] Standing up... (2s)\n");
-        double t_end = now_sec() + 2.0;
-        double t_next = now_sec();
-        while (now_sec() < t_end && !g_stop) {
-            send(MODE_POSITION, FLAG_TORQUE_EN, stand_target, delta_standup);
-            t_next += TICK;
-            sleep_until(t_next);
-        }
-        FeedbackPacket fb = send(MODE_POSITION, FLAG_TORQUE_EN,
-                                 stand_target, delta_standup);
-        if (fb.valid) {
-            printf("  pos[FL]: [%.3f, %.3f, %.3f]  Vbus=%.1fV  fault=%s(%u)  mst=%u\n",
-                   fb.pos[0], fb.pos[1], fb.pos[2],
-                   fb.bus_voltage, fault_name(fb.fault), fb.fault, fb.motion_state);
-            printf("  pos[FR]: [%.3f, %.3f, %.3f]\n", fb.pos[3], fb.pos[4], fb.pos[5]);
-            printf("  pos[RL]: [%.3f, %.3f, %.3f]\n", fb.pos[6], fb.pos[7], fb.pos[8]);
-            printf("  pos[RR]: [%.3f, %.3f, %.3f]\n", fb.pos[9], fb.pos[10], fb.pos[11]);
-        }
-        printf("\n");
+    if (got_initial) {
+        printf("[Init pose] FL=(%+.2f,%+.2f,%+.2f) FR=(%+.2f,%+.2f,%+.2f) "
+               "RL=(%+.2f,%+.2f,%+.2f) RR=(%+.2f,%+.2f,%+.2f)\n\n",
+               initial_pose[0], initial_pose[1], initial_pose[2],
+               initial_pose[3], initial_pose[4], initial_pose[5],
+               initial_pose[6], initial_pose[7], initial_pose[8],
+               initial_pose[9], initial_pose[10], initial_pose[11]);
+    } else {
+        memcpy(initial_pose, stand_target, sizeof(initial_pose));
+        printf("[Init pose] feedback 못 받음 — standing pose로 가정\n\n");
     }
 
-    /* ── Phase 2: Trot walking (진단 출력 강화) ── */
+    /* ── Phase 1: Smooth standup (smoothstep 보간) ──
+     *   STM의 robot_transition과 동일한 방식.
+     *   adaptive duration: max delta * 1초/rad, [1, 3]초 클램프
+     *   loop 안에서 printf 없음 — 50Hz 정확히 유지
+     */
+    if (!g_stop) {
+        float max_delta = 0.0f;
+        for (int i = 0; i < 12; i++) {
+            float d = fabsf(stand_target[i] - initial_pose[i]);
+            if (d > max_delta) max_delta = d;
+        }
+        double dur = (double)max_delta;       /* 1 rad/s */
+        if (dur < 1.0) dur = 1.0;
+        if (dur > 3.0) dur = 3.0;
+        int n_steps = (int)(dur / TICK);
+
+        printf("[Phase 1] Smooth standup (%.1fs, max delta %.2f rad)\n", dur, max_delta);
+
+        for (int t = 0; t <= n_steps && !g_stop; t++) {
+            float r = (float)t / (float)n_steps;
+            float s = r * r * (3.0f - 2.0f * r);   /* smoothstep */
+            float interp[12];
+            for (int i = 0; i < 12; i++) {
+                interp[i] = initial_pose[i]
+                          + (stand_target[i] - initial_pose[i]) * s;
+            }
+            send(MODE_POSITION, FLAG_TORQUE_EN, interp, delta_smooth);
+            sleep_until(now_sec() + TICK);
+        }
+    }
+
+    /* ── Phase 2: Trot walking ──
+     *   loop 안 printf 절대 없음. 진단 데이터는 메모리 버퍼에만 저장.
+     *   Phase 1 → 2 사이도 printf 없으므로 STM32 stale 안 일어남.
+     */
     if (!g_stop) {
         double total_walk = n_cycles * period_s;
         printf("[Phase 2] Trot walking — %d cycles (%.1fs)\n", n_cycles, total_walk);
-        printf("  (진단: 0.2초마다 FL target vs feedback, fault 변화 추적)\n\n");
 
         double t_walk_start = now_sec();
-        double t_next = t_walk_start;
         int tick_count = 0;
-        uint8_t last_fault = 255;   /* 불가능 값 → 첫 출력 강제 */
-        int fault_change_count = 0;
-        int safety_count = 0;       /* fault=7 (SAFETY) 횟수 */
-        int idle_count = 0;         /* motion_state=0 (IDLE) 횟수 */
-        int total_ticks = 0;
+        uint8_t last_fault = 255;
 
         while (!g_stop) {
             double elapsed = now_sec() - t_walk_start;
@@ -463,104 +513,164 @@ int main(int argc, char **argv)
 
             compute_targets(phase, stride_x, lift_z, duty, target);
 
-            /* FL 다리 진단용 foot position 계산 */
-            float fl_lp = phase + TROT_PHASE_OFFSET[0];
-            if (fl_lp >= 1.0f) fl_lp -= 1.0f;
-            float fl_fx, fl_fz;
-            compute_trot_offset(fl_lp, stride_x, lift_z, duty, fl_fx, fl_fz);
-
             FeedbackPacket fb = send(MODE_POSITION, FLAG_TORQUE_EN,
                                      target, delta_walk, phase, (uint32_t)cycle);
 
             if (fb.valid) {
-                total_ticks++;
-
-                /* fault 변화 감지 → 즉시 출력 */
-                if (fb.fault != last_fault) {
-                    printf("  *** FAULT: %s(%u) -> %s(%u)  [tick=%d ph=%.2f mst=%u] ***\n",
-                           fault_name(last_fault), last_fault,
-                           fault_name(fb.fault), fb.fault,
-                           tick_count, phase, fb.motion_state);
-                    last_fault = fb.fault;
-                    fault_change_count++;
-                }
-
-                /* SAFETY / IDLE 카운트 */
+                valid_ticks++;
                 if (fb.fault == 7) safety_count++;
                 if (fb.motion_state == 0) idle_count++;
 
-                /* 10 tick (0.2s) 마다 상세 진단 */
-                if (tick_count % 10 == 0) {
-                    printf("  [c%d/%d ph=%.2f] "
-                           "FL(lp=%.2f foot=%+.0f,%+.0f) "
-                           "tgt=(%+.3f,%+.3f,%+.3f) "
-                           "fb=(%+.3f,%+.3f,%+.3f) "
-                           "f=%s mst=%u\n",
-                           cycle+1, n_cycles, phase,
-                           fl_lp,
-                           DEFAULT_FOOT_X + fl_fx,
-                           DEFAULT_FOOT_Z + fl_fz,
-                           target[0], target[1], target[2],
-                           fb.pos[0], fb.pos[1], fb.pos[2],
-                           fault_name(fb.fault), fb.motion_state);
+                if (fb.fault != last_fault && fevent_count < 32) {
+                    fevents[fevent_count++] = {tick_count, phase, last_fault, fb.fault};
+                    last_fault = fb.fault;
+                }
+
+                if (tick_count % 10 == 0 && snap_count < 64) {
+                    float fl_lp = phase + TROT_PHASE_OFFSET[0];
+                    if (fl_lp >= 1.0f) fl_lp -= 1.0f;
+                    float fl_fx, fl_fz;
+                    compute_trot_offset(fl_lp, stride_x, lift_z, duty, fl_fx, fl_fz);
+
+                    DiagSnap& s = snaps[snap_count++];
+                    s.tick = tick_count;
+                    s.cycle = cycle + 1;
+                    s.phase = phase;
+                    s.fl_lp = fl_lp;
+                    s.fl_fx = DEFAULT_FOOT_X + fl_fx;
+                    s.fl_fz = DEFAULT_FOOT_Z + fl_fz;
+                    s.tgt[0] = target[0]; s.tgt[1] = target[1]; s.tgt[2] = target[2];
+                    s.fb_pos[0] = fb.pos[0]; s.fb_pos[1] = fb.pos[1]; s.fb_pos[2] = fb.pos[2];
+                    s.fault = fb.fault;
+                    s.mst   = fb.motion_state;
                 }
             }
 
             tick_count++;
-            t_next = t_walk_start + tick_count * TICK;
-            sleep_until(t_next);
+            sleep_until(t_walk_start + tick_count * TICK);
         }
-
-        printf("\n  ─── Phase 2 요약 ───\n");
-        printf("  총 tick: %d (valid: %d)\n", tick_count, total_ticks);
-        printf("  fault 변화 횟수: %d\n", fault_change_count);
-        printf("  SAFETY(7) fault tick: %d / %d (%.0f%%)\n",
-               safety_count, total_ticks,
-               total_ticks > 0 ? 100.0*safety_count/total_ticks : 0.0);
-        printf("  IDLE motion_state tick: %d / %d (%.0f%%)\n",
-               idle_count, total_ticks,
-               total_ticks > 0 ? 100.0*idle_count/total_ticks : 0.0);
-        if (safety_count > 0) {
-            printf("\n  *** SAFETY_LIMIT 발생! ***\n");
-            printf("  원인: IN_HAND_MODE=0 → MAX_PITCH=35 / MAX_ROLL=40\n");
-            printf("  해결: firmware config.h에서 IN_HAND_MODE=1로 변경 후 빌드/플래시\n");
-        }
-        printf("\n");
+        total_ticks = tick_count;
     }
 
-    /* ── Phase 3: Settle (2초) ── */
+    /* save last trot target → settle interp의 from-pose */
+    float last_target[12];
+    memcpy(last_target, target, sizeof(last_target));
+
+    /* ── Phase 3: Smooth settle back to standing ──
+     *   trot 마지막 자세에서 standing으로 부드럽게 보간.
+     *   loop 안 printf 없음.
+     */
     if (!g_stop) {
-        printf("[Phase 3] Settling to stand... (2s)\n");
-        double t_end = now_sec() + 2.0;
-        double t_next = now_sec();
-        while (now_sec() < t_end && !g_stop) {
-            send(MODE_POSITION, FLAG_TORQUE_EN, stand_target, delta_settle);
-            t_next += TICK;
-            sleep_until(t_next);
+        float max_delta = 0.0f;
+        for (int i = 0; i < 12; i++) {
+            float d = fabsf(stand_target[i] - last_target[i]);
+            if (d > max_delta) max_delta = d;
         }
-        printf("\n");
+        double dur = (double)max_delta;
+        if (dur < 1.0) dur = 1.0;
+        if (dur > 3.0) dur = 3.0;
+        int n_steps = (int)(dur / TICK);
+
+        printf("[Phase 3] Smooth settle to standing (%.1fs)\n", dur);
+
+        for (int t = 0; t <= n_steps && !g_stop; t++) {
+            float r = (float)t / (float)n_steps;
+            float s = r * r * (3.0f - 2.0f * r);
+            float interp[12];
+            for (int i = 0; i < 12; i++) {
+                interp[i] = last_target[i]
+                          + (stand_target[i] - last_target[i]) * s;
+            }
+            send(MODE_POSITION, FLAG_TORQUE_EN, interp, delta_smooth);
+            sleep_until(now_sec() + TICK);
+        }
     }
 
-    /* ── Phase 4: HOLD → IDLE ── */
+    /* ── Phase 4: Smooth return to initial pose ──
+     *   Standing → 처음 시작했던 자세 (Phase 0에서 read한 initial_pose)
+     *   "올라간 만큼 다시 천천히 내려간다" — STM 자체 trot 마지막 흐름과 동일.
+     */
+    if (!g_stop && got_initial) {
+        float max_delta = 0.0f;
+        for (int i = 0; i < 12; i++) {
+            float d = fabsf(initial_pose[i] - stand_target[i]);
+            if (d > max_delta) max_delta = d;
+        }
+        double dur = (double)max_delta;
+        if (dur < 1.0) dur = 1.0;
+        if (dur > 3.0) dur = 3.0;
+        int n_steps = (int)(dur / TICK);
+
+        printf("[Phase 4] Smooth return to initial pose (%.1fs)\n", dur);
+
+        for (int t = 0; t <= n_steps && !g_stop; t++) {
+            float r = (float)t / (float)n_steps;
+            float s = r * r * (3.0f - 2.0f * r);
+            float interp[12];
+            for (int i = 0; i < 12; i++) {
+                interp[i] = stand_target[i]
+                          + (initial_pose[i] - stand_target[i]) * s;
+            }
+            send(MODE_POSITION, FLAG_TORQUE_EN, interp, delta_smooth);
+            sleep_until(now_sec() + TICK);
+        }
+    }
+
+    /* ── 진단 출력 (제어 루프 모두 끝난 후) ── */
+    printf("\n══ Phase 2 진단 결과 ══\n");
+    printf("  총 tick: %d (valid: %d, %.0f%% loss)\n",
+           total_ticks, valid_ticks,
+           total_ticks > 0 ? 100.0*(total_ticks-valid_ticks)/total_ticks : 0.0);
+    printf("  SAFETY(7) tick: %d / %d (%.0f%%)\n",
+           safety_count, valid_ticks,
+           valid_ticks > 0 ? 100.0*safety_count/valid_ticks : 0.0);
+    printf("  IDLE mst tick: %d / %d (%.0f%%)\n",
+           idle_count, valid_ticks,
+           valid_ticks > 0 ? 100.0*idle_count/valid_ticks : 0.0);
+    if (fevent_count > 0) {
+        printf("  fault transitions:\n");
+        for (int i = 0; i < fevent_count; i++) {
+            printf("    [tick=%d ph=%.2f] %s(%u) -> %s(%u)\n",
+                   fevents[i].tick, fevents[i].phase,
+                   fault_name(fevents[i].from), fevents[i].from,
+                   fault_name(fevents[i].to), fevents[i].to);
+        }
+    }
+    if (snap_count > 0) {
+        printf("  snapshots (every 10 tick):\n");
+        for (int i = 0; i < snap_count; i++) {
+            DiagSnap& s = snaps[i];
+            printf("    [c%d ph=%.2f] FL(lp=%.2f foot=%+.0f,%+.0f) "
+                   "tgt=(%+.3f,%+.3f,%+.3f) fb=(%+.3f,%+.3f,%+.3f) f=%s mst=%u\n",
+                   s.cycle, s.phase, s.fl_lp, s.fl_fx, s.fl_fz,
+                   s.tgt[0], s.tgt[1], s.tgt[2],
+                   s.fb_pos[0], s.fb_pos[1], s.fb_pos[2],
+                   fault_name(s.fault), s.mst);
+        }
+    }
+    printf("\n");
+
+    /* ── Phase 5: HOLD at initial pose until Ctrl+C ──
+     *   처음 자세 유지 (이미 낮게 내려와 있어서 토크 풀어도 위험 없음).
+     *   자동으로 토크 OFF 안 함 — 사용자가 결정.
+     *   진단 출력 동안 STM32가 잠시 stale → HOLD가 돼도, 어차피 같은 자세 유지라 무관.
+     */
     if (!g_stop) {
-        printf("[Phase 4] HOLD (1s) -> IDLE\n");
-        double t_end = now_sec() + 1.0;
-        double t_next = now_sec();
-        while (now_sec() < t_end && !g_stop) {
-            send(MODE_HOLD, FLAG_TORQUE_EN, stand_target, delta_settle);
-            t_next += TICK;
-            sleep_until(t_next);
+        printf("[Phase 5] Holding initial pose. Press Ctrl+C to release torque.\n");
+        while (!g_stop) {
+            send(MODE_HOLD, FLAG_TORQUE_EN, initial_pose, delta_smooth);
+            sleep_until(now_sec() + TICK);
         }
     }
 
-    /* IDLE 전송 */
-    printf("Sending IDLE (torque OFF)...\n");
+    /* ── Ctrl+C 받음 → IDLE (안전한 토크 OFF) ── */
+    printf("\n토크 OFF (IDLE) 전송 중...\n");
     for (int i = 0; i < 25; i++) {
         send_idle();
         sleep_until(now_sec() + TICK);
     }
 
     close(spi_fd);
-    printf("\n=== %s ===\n", g_stop ? "Ctrl+C: 긴급 정지 완료" : "Trot test complete!");
+    printf("\n=== %s ===\n", g_stop ? "Ctrl+C: 종료" : "Trot test complete!");
     return 0;
 }
