@@ -21,7 +21,8 @@ static uint8_t spi_tx_buffer[SPI_FRAME_SIZE];
 static uint8_t spi_rx_buffer[SPI_FRAME_SIZE];
 
 /* SPI 통신 상태 */
-static volatile bool spi_transfer_done = false;
+static volatile bool     spi_transfer_done = false;
+static volatile uint32_t spi_rx_count      = 0;   /* DMA RX 완료 횟수 (1초 카운트, 진단용) */
 
 /* DMA 완료 콜백 (HAL weak override)
  * ISR context: DMA 끝나는 즉시 DATA_READY_LOW 로 떨어뜨려서
@@ -32,6 +33,7 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi) {
     if (hspi->Instance == SPI1) {
         DATA_READY_LOW();
         spi_transfer_done = true;
+        spi_rx_count++;
     }
 }
 
@@ -259,7 +261,19 @@ void control_loop_run(void) {
                     max_temp_idx = i;
                 }
             }
+            /* === SPI 수신 진단 ===
+             *   rx/s    : 지난 1초간 SPI DMA RX 완료 횟수 (Jetson 이 정확히 보낸 횟수와 같음)
+             *   crc_err : 지난 1초간 CRC 불일치 횟수 (rx 했지만 디코드 실패)
+             * 50Hz 정상이면 rx ~50, crc_err 0. rx 가 0 이면 Jetson 송신 자체가 도달 안 함.
+             */
+            static uint32_t prev_crc_err = 0;
+            uint32_t cur_rx_count   = spi_rx_count;
+            spi_rx_count = 0;
+            uint32_t crc_err_delta  = g_robot_state.crc_error_count - prev_crc_err;
+            prev_crc_err = g_robot_state.crc_error_count;
+
             printf("[%lu] mode=%u st=0x%02X fault=%u torque=%u seq=%u "
+                   "rx=%lu/s crc_err=%lu/s "
                    "maxT=%.0fC(j%d) Vbus=%.1fV "
                    "worst_cyc=%lums over20=%lu/%lu\r\n",
                    (unsigned long)t_start,
@@ -268,6 +282,8 @@ void control_loop_run(void) {
                    (unsigned)g_robot_state.fault_code,
                    (unsigned)g_robot_state.torque_enabled,
                    (unsigned)g_robot_state.cmd_seq,
+                   (unsigned long)cur_rx_count,
+                   (unsigned long)crc_err_delta,
                    (double)max_temp, max_temp_idx,
                    (double)g_robot_state.bus_voltage,
                    (unsigned long)worst_cycle_ms,
