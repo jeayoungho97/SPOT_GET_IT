@@ -628,7 +628,16 @@ int main(int argc, char **argv)
 
             tick_count++;
             double t_before_sleep = now_sec();
-            sleep_until(t_walk_start + tick_count * TICK);
+            /*
+             * RELATIVE timing (Phase 5 와 동일):
+             * 절대 시간 기준 catch-up 안 함. Jetson 송신 주기가 STM32 의 자연 주기
+             * (~47Hz, body 13~17ms + delay 4~7ms) 와 자연스럽게 sync.
+             *
+             * 이전 (absolute timing) 은 Jetson 을 정확 50Hz 로 강제해서 STM32 47Hz
+             * 와 3Hz beat → 매 1/3 초마다 Jetson frame 이 STM32 의 body 처리 중
+             * (DMA 안 armed) 시점에 도착해서 frame 사라짐.
+             */
+            sleep_until(t_before_sleep + TICK);
             double sleep_ms = (now_sec() - t_before_sleep) * 1000.0;
             if (sleep_ms > max_sleep_ms) max_sleep_ms = sleep_ms;
             if (sleep_ms > 30.0) sleep_over_30++;
