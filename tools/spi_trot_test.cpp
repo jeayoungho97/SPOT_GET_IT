@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cerrno>
 #include <cmath>
 #include <csignal>
 #include <unistd.h>
@@ -23,6 +24,8 @@
 #include <getopt.h>
 #include <time.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <sched.h>
 #include <linux/spi/spidev.h>
 
 /* ─── 프로토콜 상수 ─── */
@@ -303,6 +306,23 @@ static void compute_targets(float phase, float stride_x, float lift_z,
 
 int main(int argc, char **argv)
 {
+    /* ─── RT 친화 설정 (sudo 로 실행 시 자동 적용) ───
+     * 매번 chrt 안 쳐도 sudo 로 실행만 하면 SCHED_FIFO + memory lock 됨.
+     * 권한 없으면 (sudo X) 경고 후 일반 priority 로 계속 진행.
+     */
+    if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
+        fprintf(stderr, "[warn] mlockall 실패 (sudo 권한 필요): %s\n", strerror(errno));
+    }
+    {
+        struct sched_param sp = {};
+        sp.sched_priority = 50;
+        if (sched_setscheduler(0, SCHED_FIFO, &sp) != 0) {
+            fprintf(stderr, "[warn] SCHED_FIFO 설정 실패 (sudo 권한 필요): %s\n", strerror(errno));
+        } else {
+            printf("[RT] SCHED_FIFO priority 50 + mlockall 적용\n");
+        }
+    }
+
     /* 기본값 */
     int   n_cycles  = 3;
     float stride_x  = 70.0f;
@@ -311,23 +331,23 @@ int main(int argc, char **argv)
     float duty      = 0.55f;
     int   spi_bus   = 0;
     int   spi_dev   = 0;
-    uint32_t spi_speed_hz = 2000000;    /* 기본 2MHz (5MHz 보다 EMI 강건) */
+    bool  idle_test = false;     /* --idle-test: 모터 안 움직이고 SPI loss 측정 */
 
     /* 인자 파싱 */
     static struct option long_opts[] = {
-        {"cycles",  required_argument, 0, 'c'},
-        {"stride",  required_argument, 0, 's'},
-        {"lift",    required_argument, 0, 'l'},
-        {"period",  required_argument, 0, 'p'},
-        {"duty",    required_argument, 0, 'd'},
-        {"bus",     required_argument, 0, 'b'},
-        {"dev",     required_argument, 0, 'D'},
-        {"speed",   required_argument, 0, 'S'},
-        {"help",    no_argument,       0, 'h'},
+        {"cycles",     required_argument, 0, 'c'},
+        {"stride",     required_argument, 0, 's'},
+        {"lift",       required_argument, 0, 'l'},
+        {"period",     required_argument, 0, 'p'},
+        {"duty",       required_argument, 0, 'd'},
+        {"bus",        required_argument, 0, 'b'},
+        {"dev",        required_argument, 0, 'D'},
+        {"idle-test",  no_argument,       0, 'I'},
+        {"help",       no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
     int opt;
-    while ((opt = getopt_long(argc, argv, "c:s:l:p:d:b:D:S:h", long_opts, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "c:s:l:p:d:b:D:Ih", long_opts, nullptr)) != -1) {
         switch (opt) {
             case 'c': n_cycles = atoi(optarg); break;
             case 's': stride_x = strtof(optarg, nullptr); break;
@@ -336,11 +356,11 @@ int main(int argc, char **argv)
             case 'd': duty     = strtof(optarg, nullptr); break;
             case 'b': spi_bus  = atoi(optarg); break;
             case 'D': spi_dev  = atoi(optarg); break;
-            case 'S': spi_speed_hz = (uint32_t)strtoul(optarg, nullptr, 10); break;
+            case 'I': idle_test = true; break;
             case 'h':
                 printf("Usage: sudo %s [--cycles N] [--stride MM] [--lift MM] "
-                       "[--period S] [--duty F] [--bus N] [--dev N] [--speed HZ]\n"
-                       "  --speed: SPI clock in Hz (default 2000000 = 2MHz)\n",
+                       "[--period S] [--duty F] [--bus N] [--dev N] [--idle-test]\n"
+                       "  --idle-test : 모터 안 움직이고 IDLE 명령만 보내서 SPI loss 측정\n",
                        argv[0]);
                 return 0;
         }
@@ -410,8 +430,28 @@ int main(int argc, char **argv)
         float    phase;
         uint8_t  from, to;
     };
-    static DiagSnap   snaps[64];   int snap_count = 0;
-    static FaultEvent fevents[32]; int fevent_count = 0;
+    /*
+     * Pause 진단 — 어떤 iteration 이 비정상적으로 길었는지 추적.
+     *   send_ms : SPI ioctl 시간 (정상 1~2ms)
+     *   sleep_ms: sleep_until 시간 (정상 ~18ms)
+     *   iter_ms : 전체 iteration 시간 (정상 ~20ms)
+     */
+    struct PauseEvent {
+        int    tick;
+        double iter_ms;
+        double send_ms;
+        double sleep_ms;
+    };
+    static DiagSnap   snaps[64];     int snap_count = 0;
+    static FaultEvent fevents[32];   int fevent_count = 0;
+    static PauseEvent pauses[64];    int pause_count = 0;
+    double max_iter_ms = 0;
+    double max_send_ms = 0;
+    double max_sleep_ms = 0;
+    int    iter_over_30 = 0;     /* iter > 30ms 횟수 */
+    int    send_over_5  = 0;     /* send > 5ms 횟수 */
+    int    sleep_over_30 = 0;    /* sleep > 30ms 횟수 */
+
     int total_ticks = 0;
     int valid_ticks = 0;
     int safety_count = 0;
@@ -473,8 +513,10 @@ int main(int argc, char **argv)
      *   STM의 robot_transition과 동일한 방식.
      *   adaptive duration: max delta * 1초/rad, [1, 3]초 클램프
      *   loop 안에서 printf 없음 — 50Hz 정확히 유지
+     *
+     *   --idle-test 모드면 Phase 1 / 1.5 / 3 / 4 모두 skip (모터 안 움직임)
      */
-    if (!g_stop) {
+    if (!g_stop && !idle_test) {
         float max_delta = 0.0f;
         for (int i = 0; i < 12; i++) {
             float d = fabsf(stand_target[i] - initial_pose[i]);
@@ -504,7 +546,7 @@ int main(int argc, char **argv)
      *   "자세 잡고 → 걷기 시작" 의 자연스러운 pause.
      *   STM 자체 trot 의 stand_at_height 후 잠시 대기와 동일한 효과.
      */
-    if (!g_stop) {
+    if (!g_stop && !idle_test) {
         const double DWELL_BEFORE_TROT = 1.5;
         printf("[Phase 1.5] Hold standing (%.1fs)\n", DWELL_BEFORE_TROT);
         double t_end = now_sec() + DWELL_BEFORE_TROT;
@@ -517,17 +559,24 @@ int main(int argc, char **argv)
     /* ── Phase 2: Trot walking ──
      *   loop 안 printf 절대 없음. 진단 데이터는 메모리 버퍼에만 저장.
      *   Phase 1 → 2 사이도 printf 없으므로 STM32 stale 안 일어남.
+     *
+     *   --idle-test 모드면 trot 안 하고 IDLE 명령 N*period 초 동안 송신.
      */
     if (!g_stop) {
         double total_walk = n_cycles * period_s;
-        printf("[Phase 2] Trot walking — %d cycles (%.1fs)\n", n_cycles, total_walk);
+        if (idle_test) {
+            printf("[Phase 2] IDLE-only SPI test — %.1fs (모터 안 움직임)\n", total_walk);
+        } else {
+            printf("[Phase 2] Trot walking — %d cycles (%.1fs)\n", n_cycles, total_walk);
+        }
 
         double t_walk_start = now_sec();
         int tick_count = 0;
         uint8_t last_fault = 255;
 
         while (!g_stop) {
-            double elapsed = now_sec() - t_walk_start;
+            double t_iter_start = now_sec();    /* === pause 진단 시작 === */
+            double elapsed = t_iter_start - t_walk_start;
             if (elapsed >= total_walk) break;
 
             float phase = fmodf((float)elapsed, period_s) / period_s;
@@ -535,8 +584,20 @@ int main(int argc, char **argv)
 
             compute_targets(phase, stride_x, lift_z, duty, target);
 
-            FeedbackPacket fb = send(MODE_POSITION, FLAG_TORQUE_EN,
-                                     target, delta_walk, phase, (uint32_t)cycle);
+            /* --idle-test: 모터 안 움직이고 IDLE 명령만 보냄 (순수 SPI 검증) */
+            float zero_target[12] = {0};
+            float zero_delta[12]  = {0};
+            FeedbackPacket fb;
+            double t_before_send = now_sec();
+            if (idle_test) {
+                fb = send(MODE_IDLE, 0, zero_target, zero_delta, 0.0f, 0);
+            } else {
+                fb = send(MODE_POSITION, FLAG_TORQUE_EN,
+                          target, delta_walk, phase, (uint32_t)cycle);
+            }
+            double send_ms = (now_sec() - t_before_send) * 1000.0;
+            if (send_ms > max_send_ms) max_send_ms = send_ms;
+            if (send_ms > 5.0) send_over_5++;
 
             if (fb.valid) {
                 valid_ticks++;
@@ -569,23 +630,33 @@ int main(int argc, char **argv)
             }
 
             tick_count++;
-            double t_next = t_walk_start + tick_count * TICK;
-            double now = now_sec();
-
+            double t_before_sleep = now_sec();
             /*
-             * Burst 방지: scheduler 가 trot loop 을 길게 schedule out 시키면
-             * t_next 가 이미 한참 과거 → sleep_until 즉시 return → 다음 iteration
-             * 도 즉시 → 100~200Hz 로 burst 송신 → STM32 처리 못 따라가서 양방향
-             * SPI 프레임 깨짐 (Jetson 측 invalid feedback + STM32 측 CRC_ERROR).
+             * RELATIVE timing (Phase 5 와 동일):
+             * 절대 시간 기준 catch-up 안 함. Jetson 송신 주기가 STM32 의 자연 주기
+             * (~47Hz, body 13~17ms + delay 4~7ms) 와 자연스럽게 sync.
              *
-             * 50ms (2.5 tick) 이상 늦으면 잃은 frame 은 잃은 채로 두고
-             * tick_count 를 현재 시간에 맞춰 점프 → 정상 50Hz 페이스 복귀.
+             * 이전 (absolute timing) 은 Jetson 을 정확 50Hz 로 강제해서 STM32 47Hz
+             * 와 3Hz beat → 매 1/3 초마다 Jetson frame 이 STM32 의 body 처리 중
+             * (DMA 안 armed) 시점에 도착해서 frame 사라짐.
              */
-            if (now > t_next + 0.05) {
-                tick_count = (int)((now - t_walk_start) / TICK) + 1;
-                /* sleep 없이 즉시 다음 iteration */
-            } else {
-                sleep_until(t_next);
+            sleep_until(t_before_sleep + TICK);
+            double sleep_ms = (now_sec() - t_before_sleep) * 1000.0;
+            if (sleep_ms > max_sleep_ms) max_sleep_ms = sleep_ms;
+            if (sleep_ms > 30.0) sleep_over_30++;
+
+            /* === Pause 진단: 비정상적으로 긴 iteration 기록 === */
+            double iter_ms = (now_sec() - t_iter_start) * 1000.0;
+            if (iter_ms > max_iter_ms) max_iter_ms = iter_ms;
+            if (iter_ms > 30.0) {
+                iter_over_30++;
+                if (pause_count < 64) {
+                    PauseEvent& p = pauses[pause_count++];
+                    p.tick = tick_count - 1;
+                    p.iter_ms = iter_ms;
+                    p.send_ms = send_ms;
+                    p.sleep_ms = sleep_ms;
+                }
             }
         }
         total_ticks = tick_count;
@@ -599,7 +670,7 @@ int main(int argc, char **argv)
      *   trot 마지막 자세에서 standing으로 부드럽게 보간.
      *   loop 안 printf 없음.
      */
-    if (!g_stop) {
+    if (!g_stop && !idle_test) {
         float max_delta = 0.0f;
         for (int i = 0; i < 12; i++) {
             float d = fabsf(stand_target[i] - last_target[i]);
@@ -629,7 +700,7 @@ int main(int argc, char **argv)
      *   Standing → 처음 시작했던 자세 (Phase 0에서 read한 initial_pose)
      *   "올라간 만큼 다시 천천히 내려간다" — STM 자체 trot 마지막 흐름과 동일.
      */
-    if (!g_stop && got_initial) {
+    if (!g_stop && got_initial && !idle_test) {
         float max_delta = 0.0f;
         for (int i = 0; i < 12; i++) {
             float d = fabsf(initial_pose[i] - stand_target[i]);
@@ -666,6 +737,32 @@ int main(int argc, char **argv)
     printf("  IDLE mst tick: %d / %d (%.0f%%)\n",
            idle_count, valid_ticks,
            valid_ticks > 0 ? 100.0*idle_count/valid_ticks : 0.0);
+
+    /* === Pause 진단 결과 === */
+    printf("\n  ── Pause 진단 ──\n");
+    printf("  Loop iteration 시간:\n");
+    printf("    max iter:  %.1fms (정상 ~20ms)\n", max_iter_ms);
+    printf("    max send:  %.1fms (정상 1~2ms)  →  큼이면 SPI ioctl block\n", max_send_ms);
+    printf("    max sleep: %.1fms (정상 ~18ms)  →  큼이면 scheduler 지연\n", max_sleep_ms);
+    printf("  비정상 카운트:\n");
+    printf("    iter  > 30ms: %d 회\n", iter_over_30);
+    printf("    send  >  5ms: %d 회\n", send_over_5);
+    printf("    sleep > 30ms: %d 회\n", sleep_over_30);
+    if (pause_count > 0) {
+        printf("  상세 (iter > 30ms 인 iteration, 최대 %d개):\n",
+               (int)(sizeof(pauses)/sizeof(pauses[0])));
+        for (int i = 0; i < pause_count; i++) {
+            PauseEvent& p = pauses[i];
+            const char* cause = "?";
+            if (p.send_ms > 10.0) cause = "SPI ioctl block";
+            else if (p.sleep_ms > 30.0) cause = "scheduler 지연";
+            else cause = "기타 (body 처리 느림)";
+            printf("    tick=%d iter=%.1fms send=%.1fms sleep=%.1fms → %s\n",
+                   p.tick, p.iter_ms, p.send_ms, p.sleep_ms, cause);
+        }
+    }
+    printf("\n");
+
     if (fevent_count > 0) {
         printf("  fault transitions:\n");
         for (int i = 0; i < fevent_count; i++) {
