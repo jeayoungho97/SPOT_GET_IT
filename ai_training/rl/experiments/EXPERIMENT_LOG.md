@@ -48,3 +48,7 @@
 | 044 | 05/11 | spotmicro_v5_1_terrain_curriculum | V5.1: 복잡한 지형 학습 | 0.0% | 0.146 | 28.0% | ❌ |
 | 045 | 05/11 | spotmicro_v5_2_gait_period | V5.2: gait period, feet height 조정 | 81.5% | 0.112 | 6.3% | ✅ |
 | 046 | 05/11 | spotmicro_v5_2_1_gait_perioid | V5.2.1: gait period 수치 조정 | 90.7% | 0.078 | 11.0% | ✅ |
+| 047 | 05/12 | spotmicro_v5_2_2_tracking_ik_desc | V5.2.2: IK tracking 완화 | 90.7% | 0.078 | 11.0% | ✅ |
+| 048 | 05/12 | spotmicro_v5_2_2_tracking_ik_desc | V5.2.2: IK tracking 완화 | 94.8% | 0.049 | 16.8% | ✅ |
+| 049 | 05/12 | spotmicro_v5_2_2_tracking_ik_desc | V5.2.1: gait period 조정 | 94.8% | 0.049 | 16.8% | ✅ |
+| 050 | 05/12 | spotmicro_v5_2_2_tracking_ik_desc | V5.2.1: gait period 조정 | 94.8% | 0.050 | 14.5% | ✅ |
