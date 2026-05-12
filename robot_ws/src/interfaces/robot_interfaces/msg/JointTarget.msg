@@ -12,3 +12,6 @@ uint8 flags
 
 float32[12] target_rad
 float32[12] max_delta_rad
+
+float32 gait_phase
+uint32 gait_cycle_count
