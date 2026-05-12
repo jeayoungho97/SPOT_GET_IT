@@ -261,10 +261,12 @@ void control_loop_run(void) {
                     max_temp_idx = i;
                 }
             }
-            /* === SPI 수신 진단 ===
-             *   rx/s    : 지난 1초간 SPI DMA RX 완료 횟수 (Jetson 이 정확히 보낸 횟수와 같음)
-             *   crc_err : 지난 1초간 CRC 불일치 횟수 (rx 했지만 디코드 실패)
-             * 50Hz 정상이면 rx ~50, crc_err 0. rx 가 0 이면 Jetson 송신 자체가 도달 안 함.
+            /* === SPI 수신 + peripheral state 진단 ===
+             *   rx/s     : 지난 1초간 SPI DMA RX 완료 횟수
+             *   crc_err  : 지난 1초간 CRC 불일치 횟수
+             *   spi_st   : HAL_SPI_GetState (1=READY, 5=BUSY_TX_RX, 6=ERROR, 7=ABORT)
+             *   spi_err  : ErrorCode bitmask (1=MODF, 2=CRC, 4=OVR, 8=FRE, 0x10=DMA, ...)
+             * 50Hz 정상이면 rx~50, crc_err=0, spi_st=1 또는 5, spi_err=0.
              */
             static uint32_t prev_crc_err = 0;
             uint32_t cur_rx_count   = spi_rx_count;
@@ -272,8 +274,11 @@ void control_loop_run(void) {
             uint32_t crc_err_delta  = g_robot_state.crc_error_count - prev_crc_err;
             prev_crc_err = g_robot_state.crc_error_count;
 
+            uint32_t spi_state_now = (uint32_t)HAL_SPI_GetState(&hspi1);
+            uint32_t spi_err_now   = (uint32_t)HAL_SPI_GetError(&hspi1);
+
             printf("[%lu] mode=%u st=0x%02X fault=%u torque=%u seq=%u "
-                   "rx=%lu/s crc_err=%lu/s "
+                   "rx=%lu/s crc_err=%lu/s spi_st=%lu spi_err=0x%lX "
                    "maxT=%.0fC(j%d) Vbus=%.1fV "
                    "worst_cyc=%lums over20=%lu/%lu\r\n",
                    (unsigned long)t_start,
@@ -284,6 +289,8 @@ void control_loop_run(void) {
                    (unsigned)g_robot_state.cmd_seq,
                    (unsigned long)cur_rx_count,
                    (unsigned long)crc_err_delta,
+                   (unsigned long)spi_state_now,
+                   (unsigned long)spi_err_now,
                    (double)max_temp, max_temp_idx,
                    (double)g_robot_state.bus_voltage,
                    (unsigned long)worst_cycle_ms,
