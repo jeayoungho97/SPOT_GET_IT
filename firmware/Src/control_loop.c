@@ -23,9 +23,14 @@ static uint8_t spi_rx_buffer[SPI_FRAME_SIZE];
 /* SPI 통신 상태 */
 static volatile bool spi_transfer_done = false;
 
-/* DMA 완료 콜백 (HAL weak override) */
+/* DMA 완료 콜백 (HAL weak override)
+ * ISR context: DMA 끝나는 즉시 DATA_READY_LOW 로 떨어뜨려서
+ * Jetson 이 "STM 이 지금 처리 중 — 다음 프레임 아직 보내지 마" 를 즉시 감지하도록.
+ * (main loop step 1 까지 기다리면 최대 20ms 지연 가능)
+ */
 void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi) {
     if (hspi->Instance == SPI1) {
+        DATA_READY_LOW();
         spi_transfer_done = true;
     }
 }
@@ -180,12 +185,17 @@ void control_loop_run(void) {
 
     printf("\r\n=== Control loop started (50Hz, RL-driven) ===\r\n");
 
-    /* 첫 SPI transfer 시작 */
+    /* 첫 SPI transfer 시작
+     * 순서 중요: DATA_READY_LOW + flag clear → DMA arm → 성공 시에만 DATA_READY_HIGH.
+     * DMA arm 이 실패한 상태에서 DATA_READY_HIGH 떴다 하면 Jetson 이 헛 프레임 보낸다.
+     */
     spi_encode_feedback(spi_tx_buffer);
-    HAL_SPI_TransmitReceive_DMA(&hspi1, spi_tx_buffer, spi_rx_buffer,
-                                SPI_FRAME_SIZE);
-    DATA_READY_HIGH();
+    DATA_READY_LOW();
     spi_transfer_done = false;
+    if (HAL_SPI_TransmitReceive_DMA(&hspi1, spi_tx_buffer, spi_rx_buffer,
+                                    SPI_FRAME_SIZE) == HAL_OK) {
+        DATA_READY_HIGH();
+    }
 
     /* 50Hz 루프 */
     uint32_t next_tick = HAL_GetTick();
@@ -230,12 +240,18 @@ void control_loop_run(void) {
         /* 5. Mode dispatch */
         dispatch_mode();
 
-        /* 6. SPI TX 준비 + 다음 transfer 시작 */
+        /* 6. SPI TX 준비 + 다음 transfer 시작
+         * DMA arm 이 HAL_OK 일 때만 DATA_READY_HIGH 로 올린다.
+         * arm 실패 (BUSY/ERROR) 인데 HIGH 올라가면 Jetson 이 비어 있는 슬레이브에
+         * 프레임 보내고 그게 silent drop / CRC error 로 보이게 됨.
+         */
         spi_encode_feedback(spi_tx_buffer);
         if (HAL_SPI_GetState(&hspi1) == HAL_SPI_STATE_READY) {
-            HAL_SPI_TransmitReceive_DMA(&hspi1, spi_tx_buffer,
-                                        spi_rx_buffer, SPI_FRAME_SIZE);
-            DATA_READY_HIGH();
+            if (HAL_SPI_TransmitReceive_DMA(&hspi1, spi_tx_buffer,
+                                            spi_rx_buffer,
+                                            SPI_FRAME_SIZE) == HAL_OK) {
+                DATA_READY_HIGH();
+            }
         }
 
         /* 7. 디버그 출력 (1초마다) — 실제 max temp 도 함께 출력해서 fault=5 진위 확인 */
