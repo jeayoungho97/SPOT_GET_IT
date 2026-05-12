@@ -22,6 +22,7 @@
 #define MODE_CAL_MEASURE    4       /* 캘리브레이션 (토크 OFF + raw 출력) */
 #define MODE_SPI_TEST       5       /* SPI slave DMA echo 검증 */
 #define MODE_RL_CONTROL     6       /* Jetson RL 50Hz control loop */
+#define MODE_DR_TOGGLE_TEST 7       /* DATA_READY (PB0) 토글 — Jetson gpiod 배선 검증용 */
 #define DEMO_MODE           MODE_RL_CONTROL
 
 /* ===== Body / IK 파라미터 ===== */
@@ -44,8 +45,8 @@
 
 #define ENABLE_MONITOR      0           /* 1 = 모니터 활성 (run_trot 안 #if로 게이팅) */
 
-#define STRIDE_X            70.0f       /* 발끝 전후 sweep 폭 (mm) */
-#define LIFT_Z              13.0f       /* swing peak 높이 (대칭 arch + 4/3 보정으로 실제 peak = LIFT_Z) */
+#define STRIDE_X            80.0f       /* 발끝 전후 sweep 폭 (mm) */
+#define LIFT_Z              10.0f       /* swing peak 높이 (대칭 arch + 4/3 보정으로 실제 peak = LIFT_Z) */
 
 /* Safety 임계 — IN_HAND_MODE에 따라 자동 결정 */
 #if IN_HAND_MODE

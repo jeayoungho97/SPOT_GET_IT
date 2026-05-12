@@ -91,7 +91,22 @@ decode_result_t spi_decode_command(const uint8_t *rx) {
     }
 
     g_robot_state.cmd_seq = read_u16_le(rx + 2);
-    g_robot_state.mode = (control_mode_t)rx[8];
+
+    /* Wire mode -> internal control_mode_t.
+     * STM 의 wire 는 DISABLE/OPERATE 두 가지뿐. ROS 의 semantic mode (STAND/RL/CROUCH 등)
+     * 는 bridge 에서 OPERATE 로 매핑됨. E_STOP 은 SPI_FLAG_E_STOP 비트로 전달 → control_loop 처리.
+     * Unknown wire 값은 안전 fallback (DISABLE).
+     */
+    uint8_t wire_mode = rx[8];
+    switch (wire_mode) {
+        case SPI_MODE_OPERATE:
+            g_robot_state.mode = MODE_POSITION;
+            break;
+        case SPI_MODE_DISABLE:
+        default:
+            g_robot_state.mode = MODE_IDLE;
+            break;
+    }
     g_robot_state.flags = rx[9];
 
     for (int i = 0; i < NUM_JOINTS; i++)
@@ -133,7 +148,22 @@ void spi_encode_feedback(uint8_t *tx) {
     write_u32_le(tx + 4, HAL_GetTick() * 1000);
     tx[8] = g_robot_state.status;
     tx[9] = (uint8_t)g_robot_state.fault_code;
-    tx[10] = (uint8_t)g_robot_state.mode;       /* motion_state = current mode */
+
+    /* motion_state (StmMotion.msg enum)
+     * STM 은 RL 이 보낸 target 만 따라가므로 실제 방향은 모름.
+     * IDLE/HOLD/CAL -> STOP, POSITION -> UNKNOWN 으로 단순 매핑.
+     * 정확한 motion direction 은 RL/high-level controller 가 별도 publish 해야 함.
+     * (이전엔 internal mode (IDLE=0..HOLD=3) 를 그대로 채워 ROS 가 WALK_FORWARD 등으로 오해석하던 버그)
+     */
+    uint8_t motion_state;
+    switch (g_robot_state.mode) {
+        case MODE_POSITION:    motion_state = MOTION_STATE_UNKNOWN; break;
+        case MODE_IDLE:
+        case MODE_HOLD:
+        case MODE_CALIBRATION:
+        default:               motion_state = MOTION_STATE_STOP;    break;
+    }
+    tx[10] = motion_state;
 
     /* gait echo */
     write_f32_le(tx + 11, g_robot_state.gait_phase);

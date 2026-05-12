@@ -37,6 +37,8 @@ int main(void) {
     printf("  Demo: SPI-TEST  (ESC to exit)\r\n");
 #elif DEMO_MODE == MODE_RL_CONTROL
     printf("  Demo: RL-CONTROL  (Jetson 50Hz control loop)\r\n");
+#elif DEMO_MODE == MODE_DR_TOGGLE_TEST
+    printf("  Demo: DR-TOGGLE-TEST  (PB0 1Hz 토글 — 배선 검증)\r\n");
 #endif
 #if IN_HAND_MODE
     printf("  Safety: IN-HAND  (비활성, 손에 들고 시연)\r\n");
@@ -60,6 +62,31 @@ int main(void) {
     printf("  >>> 평면 위에 두고 catch 준비 <<<\r\n");
 #endif
     printf("=================================================\r\n");
+
+#if DEMO_MODE == MODE_DR_TOGGLE_TEST
+    /* === DATA_READY (PB0) LOW 유지 테스트 ===
+     * Jetson 쪽 gpiod 배선/코드 검증용. 서보·IMU 의존 없이 GPIO 를 LOW 로 고정.
+     * 확인 방법 (Jetson):
+     *   sudo gpioget <chip> <line>      # 0 이 찍히면 OK
+     * heartbeat 1초마다 UART 로 찍어서 STM32 가 살아 있음을 확인.
+     * 종료: ESC (delay_with_estop 안에서 폴링) 또는 보드 리셋.
+     */
+    printf("\r\n=== DATA_READY (PB0) LOW hold test ===\r\n");
+    printf("    PB0 = LOW (constant). ESC to exit.\r\n");
+    DATA_READY_LOW();
+    {
+    	uint32_t cnt = 0;
+    	while (1) {
+    	    DATA_READY_HIGH();
+    	    printf("[%lu] DR=HIGH\r\n", (unsigned long)cnt++);
+    	    delay_with_estop(500);
+    	    DATA_READY_LOW();
+    	    printf("[%lu] DR=LOW\r\n", (unsigned long)cnt++);
+    	    delay_with_estop(500);
+    	}
+    }
+    /* 도달 안 함 */
+#endif
 
     /* === Boot sequence === */
     printf("\r\n[1] Pinging 12 servos...\r\n");
