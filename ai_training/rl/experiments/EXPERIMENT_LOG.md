@@ -55,3 +55,4 @@
 | 051 | 05/12 | spotmicro_v5_3_stand_still | V5.3: 정지상태 yaw 오차 감소 | 89.5% | 0.046 | 17.4% | ✅ |
 | 052 | 05/12 | spotmicro_v5_4_IK_yaw | V5.4: yaw_ik 수정 | 98.5% | 0.049 | 14.2% | ✅ |
 | 053 | 05/12 | spotmicro_v5_4_1_shoulder_tuning | V5.4.1: shoulder ref 약화 | 27.3% | 0.060 | 17.4% | ❌ |
+| 054 | 05/12 | spotmicro_v5_4_2_stride_tuning | V5.4.2: shoulder reg delete | 92.8% | 0.049 | 14.4% | ✅ |
