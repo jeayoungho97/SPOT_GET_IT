@@ -208,16 +208,26 @@ void control_loop_run(void) {
     uint32_t cycle_over_20 = 0;
     uint32_t cycle_count   = 0;
 
+    /* === 진단: 마지막 도달 step + DMA arm 결과 추적 ===
+     * 1Hz print 에서 보고. main loop 어디서 hang 됐는지 / DMA arm 이 어떻게
+     * 반환하는지 / DR HIGH 가 실제로 set 되는지 확인용.
+     */
+    static volatile uint8_t  last_step       = 0;
+    static volatile uint8_t  last_arm_ret    = 0xFF;   /* 0=HAL_OK, 1=HAL_ERROR, 2=HAL_BUSY, 0xFF=not arm'd */
+    static volatile uint32_t arm_skipped     = 0;       /* GetState != READY 라 arm 안 한 횟수 */
+    static volatile uint32_t arm_ok          = 0;       /* HAL_OK 받은 횟수 */
+    static volatile uint32_t arm_fail        = 0;       /* arm 실패 횟수 */
+    static volatile uint32_t dr_high_set     = 0;       /* DATA_READY_HIGH() 실제 호출된 횟수 */
+
     while (1) {
+        last_step = 0;
         uint32_t t_start = HAL_GetTick();
 
         /* ESC 체크 */
         if (check_esc()) emergency_stop();
 
-        /* 1. SPI RX 처리
-         * Jetson 측이 flag 사용 안 하기로 결정 (RL/stand 모두 flags=0).
-         * E-STOP 은 STM 내부 트리거 (UART ESC / safety_check) 로만 발동.
-         */
+        /* 1. SPI RX 처리 */
+        last_step = 1;
         if (spi_transfer_done) {
             spi_transfer_done = false;
             DATA_READY_LOW();
@@ -225,30 +235,40 @@ void control_loop_run(void) {
         }
 
         /* 2. Stale check */
+        last_step = 2;
         check_stale(t_start);
 
         /* 3. Telemetry (서보 12ch + IMU) */
+        last_step = 3;
         telemetry_update_all();
 
         /* 4. Safety (자세/온도/전압) */
+        last_step = 4;
         check_safety();
 
         /* 5. Mode dispatch */
+        last_step = 5;
         dispatch_mode();
 
-        /* 6. SPI TX 준비 + 다음 transfer 시작
-         * DMA arm 이 HAL_OK 일 때만 DATA_READY_HIGH 로 올린다.
-         * arm 실패 (BUSY/ERROR) 인데 HIGH 올라가면 Jetson 이 비어 있는 슬레이브에
-         * 프레임 보내고 그게 silent drop / CRC error 로 보이게 됨.
-         */
+        /* 6. SPI TX 준비 + 다음 transfer 시작 */
+        last_step = 6;
         spi_encode_feedback(spi_tx_buffer);
-        if (HAL_SPI_GetState(&hspi1) == HAL_SPI_STATE_READY) {
-            if (HAL_SPI_TransmitReceive_DMA(&hspi1, spi_tx_buffer,
-                                            spi_rx_buffer,
-                                            SPI_FRAME_SIZE) == HAL_OK) {
+        HAL_SPI_StateTypeDef pre_st = HAL_SPI_GetState(&hspi1);
+        if (pre_st == HAL_SPI_STATE_READY) {
+            HAL_StatusTypeDef ret = HAL_SPI_TransmitReceive_DMA(
+                &hspi1, spi_tx_buffer, spi_rx_buffer, SPI_FRAME_SIZE);
+            last_arm_ret = (uint8_t)ret;
+            if (ret == HAL_OK) {
                 DATA_READY_HIGH();
+                dr_high_set++;
+                arm_ok++;
+            } else {
+                arm_fail++;
             }
+        } else {
+            arm_skipped++;
         }
+        last_step = 7;
 
         /* 7. 디버그 출력 (1초마다) — 실제 max temp 도 함께 출력해서 fault=5 진위 확인 */
         if (t_start - last_print >= DEBUG_PRINT_MS) {
@@ -277,8 +297,25 @@ void control_loop_run(void) {
             uint32_t spi_state_now = (uint32_t)HAL_SPI_GetState(&hspi1);
             uint32_t spi_err_now   = (uint32_t)HAL_SPI_GetError(&hspi1);
 
+            /* DR 핀 실제 register 값 — ODR (우리가 쓴 값) vs IDR (실제 전기 상태) */
+            uint8_t dr_odr = (GPIOB->ODR & GPIO_PIN_0) ? 1 : 0;
+            uint8_t dr_idr = (GPIOB->IDR & GPIO_PIN_0) ? 1 : 0;
+
+            /* 지난 1초간 arm 통계 delta */
+            static uint32_t prev_arm_ok = 0, prev_arm_fail = 0, prev_arm_skipped = 0, prev_dr_high = 0;
+            uint32_t d_arm_ok       = arm_ok       - prev_arm_ok;
+            uint32_t d_arm_fail     = arm_fail     - prev_arm_fail;
+            uint32_t d_arm_skipped  = arm_skipped  - prev_arm_skipped;
+            uint32_t d_dr_high      = dr_high_set  - prev_dr_high;
+            prev_arm_ok       = arm_ok;
+            prev_arm_fail     = arm_fail;
+            prev_arm_skipped  = arm_skipped;
+            prev_dr_high      = dr_high_set;
+
             printf("[%lu] mode=%u st=0x%02X fault=%u torque=%u seq=%u "
                    "rx=%lu/s crc_err=%lu/s spi_st=%lu spi_err=0x%lX "
+                   "dr_odr=%u dr_idr=%u step=%u "
+                   "arm_ok=%lu/s skip=%lu/s fail=%lu/s drH=%lu/s arm_ret=%u "
                    "maxT=%.0fC(j%d) Vbus=%.1fV "
                    "worst_cyc=%lums over20=%lu/%lu\r\n",
                    (unsigned long)t_start,
@@ -291,6 +328,10 @@ void control_loop_run(void) {
                    (unsigned long)crc_err_delta,
                    (unsigned long)spi_state_now,
                    (unsigned long)spi_err_now,
+                   (unsigned)dr_odr, (unsigned)dr_idr, (unsigned)last_step,
+                   (unsigned long)d_arm_ok, (unsigned long)d_arm_skipped,
+                   (unsigned long)d_arm_fail, (unsigned long)d_dr_high,
+                   (unsigned)last_arm_ret,
                    (double)max_temp, max_temp_idx,
                    (double)g_robot_state.bus_voltage,
                    (unsigned long)worst_cycle_ms,
