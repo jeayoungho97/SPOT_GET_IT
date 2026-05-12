@@ -239,14 +239,21 @@ void control_loop_run(void) {
     printf("\r\n=== Control loop started (50Hz, RL-driven) ===\r\n");
 
     /* 첫 SPI transfer 시작
-     * 순서 중요: DATA_READY_LOW + flag clear → DMA arm → 성공 시에만 DATA_READY_HIGH.
-     * DMA arm 이 실패한 상태에서 DATA_READY_HIGH 떴다 하면 Jetson 이 헛 프레임 보낸다.
+     * 순서: DATA_READY_LOW → DMA arm → TX DMA 가 첫 byte 를 SPI DR 에 load 한 후
+     *       DATA_READY_HIGH. TX race 방지 — master 가 너무 빨리 clock 시작해서
+     *       TX shift register 가 비어 있을 때 stale 송신 (BAD_MAGIC) 막음.
      */
     spi_encode_feedback(spi_tx_buffer);
     DATA_READY_LOW();
     spi_transfer_done = false;
     if (HAL_SPI_TransmitReceive_DMA(&hspi1, spi_tx_buffer, spi_rx_buffer,
                                     SPI_FRAME_SIZE) == HAL_OK) {
+        /* TX DMA NDTR 가 SPI_FRAME_SIZE 보다 작아질 때까지 wait — DR load 됐다는 뜻 */
+        uint32_t tx_wait = 10000;
+        while (__HAL_DMA_GET_COUNTER(hspi1.hdmatx) >= SPI_FRAME_SIZE
+               && tx_wait-- > 0) {
+            __NOP();
+        }
         DATA_READY_HIGH();
     }
 
@@ -327,6 +334,12 @@ void control_loop_run(void) {
                 &hspi1, spi_tx_buffer, spi_rx_buffer, SPI_FRAME_SIZE);
             last_arm_ret = (uint8_t)ret;
             if (ret == HAL_OK) {
+                /* TX DMA 가 첫 byte 를 DR 에 load 한 후 DR HIGH (race 방지) */
+                uint32_t tx_wait = 10000;
+                while (__HAL_DMA_GET_COUNTER(hspi1.hdmatx) >= SPI_FRAME_SIZE
+                       && tx_wait-- > 0) {
+                    __NOP();
+                }
                 DATA_READY_HIGH();
                 dr_high_set++;
                 arm_ok++;
