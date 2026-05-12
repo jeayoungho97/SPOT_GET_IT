@@ -51,9 +51,9 @@ class SpotmicroTest(LeggedRobot):
         )
 
         self.max_stride_x = 0.12
-        self.max_stride_y = 0.03
-        self.shoulder_y_gain = 1.0
-        self.shoulder_ref_limit = 0.10
+        self.max_stride_y = 0.02
+        self.shoulder_y_gain = 0.5
+        self.shoulder_ref_limit = 0.05
         # ==== Step 5: 서보 응답 지연 (substep 단위, dt=5ms 해상도) ====
         if self.cfg.domain_rand.action_delay:
             delay_range = self.cfg.domain_rand.action_delay_range
