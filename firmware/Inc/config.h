@@ -22,6 +22,7 @@
 #define MODE_CAL_MEASURE    4       /* 캘리브레이션 (토크 OFF + raw 출력) */
 #define MODE_SPI_TEST       5       /* SPI slave DMA echo 검증 */
 #define MODE_RL_CONTROL     6       /* Jetson RL 50Hz control loop */
+#define MODE_DR_TOGGLE_TEST 7       /* DATA_READY (PB0) 토글 — Jetson gpiod 배선 검증용 */
 #define DEMO_MODE           MODE_RL_CONTROL
 
 /* ===== Body / IK 파라미터 ===== */
