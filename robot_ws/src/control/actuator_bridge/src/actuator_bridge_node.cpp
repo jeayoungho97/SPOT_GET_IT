@@ -28,6 +28,13 @@ constexpr uint8_t STATUS_OK = 0;
 constexpr uint8_t STATUS_WARN = 1;
 constexpr uint8_t STATUS_FAULT = 2;
 
+constexpr uint8_t STM_STATUS_TORQUE_ON      = (1 << 0);
+constexpr uint8_t STM_STATUS_IMU_OK         = (1 << 1);
+constexpr uint8_t STM_STATUS_ALL_SERVOS_OK  = (1 << 2);
+constexpr uint8_t STM_STATUS_CMD_FRESH      = (1 << 3);
+constexpr uint8_t STM_STATUS_IN_SAFE_STATE  = (1 << 4);
+constexpr uint8_t STM_STATUS_CALIBRATING    = (1 << 5);
+
 constexpr uint8_t FAULT_NONE = 0;
 constexpr uint8_t FAULT_STALE_TARGET = 1;
 constexpr uint8_t FAULT_SPI_OPEN_FAILED = 10;
@@ -55,6 +62,14 @@ public:
     spi_speed_hz_ = this->declare_parameter("spi_speed_hz", 5000000);
     spi_mode_ = this->declare_parameter("spi_mode", 0);
     spi_bits_per_word_ = this->declare_parameter("spi_bits_per_word", 8);
+
+    use_data_ready_ = this->declare_parameter("use_data_ready", true);
+    data_ready_gpiochip_ = this->declare_parameter(
+      "data_ready_gpiochip", "/dev/gpiochip0");
+    data_ready_line_ = this->declare_parameter("data_ready_line", 0);
+    data_ready_active_high_ = this->declare_parameter("data_ready_active_high", true);
+    data_ready_timeout_us_ = this->declare_parameter("data_ready_timeout_us", 5000);
+    data_ready_poll_interval_us_ = this->declare_parameter("data_ready_poll_interval_us", 50);
 
     freeze_seq_when_stale_ = this->declare_parameter("freeze_seq_when_stale", true);
 
@@ -136,6 +151,29 @@ public:
         "SPI open failed: %s",
         spi_.last_error().c_str());
     } else {
+      const bool dr_ok = spi_.configure_data_ready(
+      use_data_ready_,
+      data_ready_gpiochip_,
+      static_cast<unsigned int>(data_ready_line_),
+      data_ready_active_high_,
+      data_ready_timeout_us_,
+      data_ready_poll_interval_us_);
+
+      if (!dr_ok) {
+        spi_open_failed_ = true;
+        RCLCPP_ERROR(
+          this->get_logger(),
+          "DATA_READY setup failed: %s",
+          spi_.last_error().c_str());
+      } else if (use_data_ready_) {
+        RCLCPP_INFO(
+          this->get_logger(),
+          "DATA_READY enabled: chip=%s, line=%d, active_high=%d, timeout=%dus",
+          data_ready_gpiochip_.c_str(),
+          data_ready_line_,
+          data_ready_active_high_,
+          data_ready_timeout_us_);
+      }
       RCLCPP_INFO(
         this->get_logger(),
         "SPI opened: device=%s, speed=%d Hz, mode=%d, bits=%d, frame=%zu bytes",
@@ -298,23 +336,47 @@ private:
 
     return stale;
   }
-
+  /*
   void checkSequence(uint16_t sent_seq, uint16_t seq_echo)
   {
-    const uint16_t prev_seq = static_cast<uint16_t>(sent_seq - 1U);
+    // SPI full-duplex 구조에서는 STM이 현재 transaction에서 받은 seq가 아니라
+    // 직전 또는 2~3 frame 전 command seq를 echo할 수 있다.
+    constexpr uint16_t kAllowedSeqLag = 3;
 
-    if (seq_echo != sent_seq && seq_echo != prev_seq) {
+    const uint16_t lag = static_cast<uint16_t>(sent_seq - seq_echo);
+
+    if (lag > kAllowedSeqLag) {
       packet_drop_count_++;
-
       RCLCPP_WARN_THROTTLE(
         this->get_logger(),
         *this->get_clock(),
         1000,
-        "seq mismatch: sent=%u, echo=%u",
+        "seq mismatch: sent=%u, echo=%u, lag=%u",
         sent_seq,
-        seq_echo);
+        seq_echo,
+        lag);
     }
   }
+  */
+
+  
+  void checkSequence(uint16_t sent_seq, uint16_t seq_echo)
+  {
+    constexpr uint16_t kAllowedSeqLag = 5;
+    const uint16_t lag = static_cast<uint16_t>(sent_seq - seq_echo);
+
+    if (lag > kAllowedSeqLag) {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(),
+        *this->get_clock(),
+        1000,
+        "seq mismatch: sent=%u, echo=%u, lag=%u",
+        sent_seq,
+        seq_echo,
+        lag);
+    }
+  }
+  
 
   void publishJointFeedbackFromPacket(const actuator_bridge::FeedbackPacket & feedback)
   {
@@ -377,11 +439,29 @@ private:
       msg.status = STATUS_WARN;
       msg.fault_code = FAULT_STALE_TARGET;
       msg.torque_enabled = false;
+      msg.servo_connected = false;
     } else {
-      msg.status = feedback.status;
+      const bool torque_on = (feedback.status & STM_STATUS_TORQUE_ON) != 0;
+      const bool imu_ok = (feedback.status & STM_STATUS_IMU_OK) != 0;
+      const bool servos_ok = (feedback.status & STM_STATUS_ALL_SERVOS_OK) != 0;
+      const bool cmd_fresh = (feedback.status & STM_STATUS_CMD_FRESH) != 0;
+      const bool in_safe_state = (feedback.status & STM_STATUS_IN_SAFE_STATE) != 0;
+      const bool calibrating = (feedback.status & STM_STATUS_CALIBRATING) != 0;
+      const bool fault_ok = (feedback.fault_code == FAULT_NONE);
+
       msg.fault_code = feedback.fault_code;
-      msg.torque_enabled =
-        (feedback.status == STATUS_OK && feedback.fault_code == FAULT_NONE);
+      msg.torque_enabled = torque_on;
+      msg.servo_connected = servos_ok;
+
+      if (!fault_ok) {
+        msg.status = STATUS_FAULT;
+      } else if (in_safe_state || calibrating) {
+        msg.status = STATUS_WARN;
+      } else if (imu_ok && servos_ok && cmd_fresh) {
+        msg.status = STATUS_OK;
+      } else {
+        msg.status = STATUS_WARN;
+      }
     }
 
     msg.bus_voltage = feedback.bus_voltage;
@@ -391,8 +471,6 @@ private:
     msg.crc_error_count = crc_error_count_;
     msg.missed_deadline_count = missed_deadline_count_;
     msg.spi_connected = spi_.is_open();
-    msg.servo_connected =
-      (feedback.status == STATUS_OK && feedback.fault_code == FAULT_NONE);
 
     if (loop_time_ms > (1000.0 / control_rate_hz_)) {
       missed_deadline_count_++;
@@ -490,6 +568,13 @@ private:
   uint32_t packet_drop_count_{0};
   uint32_t crc_error_count_{0};
   uint32_t missed_deadline_count_{0};
+
+  bool use_data_ready_{true};
+  std::string data_ready_gpiochip_{"/dev/gpiochip0"};
+  int data_ready_line_{0};
+  bool data_ready_active_high_{true};
+  int data_ready_timeout_us_{5000};
+  int data_ready_poll_interval_us_{50};
 
   rclcpp::Subscription<robot_interfaces::msg::JointTarget>::SharedPtr target_sub_;
   rclcpp::Publisher<robot_interfaces::msg::JointFeedback>::SharedPtr joint_feedback_pub_;

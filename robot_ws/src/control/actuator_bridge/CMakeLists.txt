@@ -10,6 +10,9 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(robot_interfaces REQUIRED)
 
+find_library(GPIOD_LIBRARY gpiod REQUIRED)
+find_path(GPIOD_INCLUDE_DIR gpiod.h REQUIRED)
+
 add_library(packet_codec
   src/packet_codec.cpp
 )
@@ -30,6 +33,11 @@ target_compile_features(spi_transport PUBLIC cxx_std_17)
 target_include_directories(spi_transport PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
+  ${GPIOD_INCLUDE_DIR}
+)
+
+target_link_libraries(spi_transport
+  ${GPIOD_LIBRARY}
 )
 
 add_executable(actuator_bridge_node
