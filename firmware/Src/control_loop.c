@@ -35,20 +35,19 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi) {
     }
 }
 
-/* === Helper: torque 상태 갱신 === */
-static void update_torque_from_flags(void) {
-    bool requested = (g_robot_state.flags & SPI_FLAG_TORQUE_EN) != 0;
-
-    if (requested && !g_robot_state.torque_enabled) {
+/* === Helper: torque 자동 ON ===
+ * Jetson 측에서 flag 를 사용하지 않기로 결정 (RL/stand 모두 flags=0 송신).
+ * Wire mode 가 OPERATE 면 dispatch 가 알아서 torque on 한다.
+ * Torque off 는 MODE_IDLE / MODE_CALIBRATION dispatch 에서 처리.
+ * E-STOP 은 STM 내부 트리거 (UART ESC / safety_check / 향후 sit-down) 로만 발동.
+ */
+static void ensure_torque_on(void) {
+    if (!g_robot_state.torque_enabled) {
         robot_torque_on_all();
         g_robot_state.torque_enabled = true;
         g_robot_state.status |= STATUS_BIT_TORQUE_ON;
         /* 토크 ON 시점에 현재 position을 prev_target으로 캡처 → 점프 방지 */
         joint_control_capture_current_as_prev();
-    } else if (!requested && g_robot_state.torque_enabled) {
-        robot_torque_off_all();
-        g_robot_state.torque_enabled = false;
-        g_robot_state.status &= ~STATUS_BIT_TORQUE_ON;
     }
 }
 
@@ -133,20 +132,18 @@ static void dispatch_mode(void) {
             break;
 
         case MODE_POSITION:
-            update_torque_from_flags();
-            if (g_robot_state.torque_enabled) {
-                if (!joint_control_apply_target()) {
-                    /* NaN 또는 servo timeout → hold fallback */
-                    joint_control_hold();
-                }
+            /* Jetson 이 OPERATE 명령 보냄 → 자동 torque on */
+            ensure_torque_on();
+            if (!joint_control_apply_target()) {
+                /* NaN 또는 servo timeout → hold fallback */
+                joint_control_hold();
             }
             break;
 
         case MODE_HOLD:
-            update_torque_from_flags();
-            if (g_robot_state.torque_enabled) {
-                joint_control_hold();
-            }
+            /* stale fallback — Jetson 짧게 끊겨도 마지막 자세 유지하면서 자세 안 무너지게 */
+            ensure_torque_on();
+            joint_control_hold();
             break;
 
         case MODE_CALIBRATION:
@@ -215,17 +212,14 @@ void control_loop_run(void) {
         /* ESC 체크 */
         if (check_esc()) emergency_stop();
 
-        /* 1. SPI RX 처리 */
+        /* 1. SPI RX 처리
+         * Jetson 측이 flag 사용 안 하기로 결정 (RL/stand 모두 flags=0).
+         * E-STOP 은 STM 내부 트리거 (UART ESC / safety_check) 로만 발동.
+         */
         if (spi_transfer_done) {
             spi_transfer_done = false;
             DATA_READY_LOW();
-
-            /* E-STOP flag 체크 (디코드 전 확인) */
-            decode_result_t dr = spi_decode_command(spi_rx_buffer);
-            if (dr == DECODE_OK
-                && (g_robot_state.flags & SPI_FLAG_E_STOP)) {
-                emergency_stop();
-            }
+            (void)spi_decode_command(spi_rx_buffer);
         }
 
         /* 2. Stale check */
