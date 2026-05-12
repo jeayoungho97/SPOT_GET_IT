@@ -8,14 +8,14 @@ def generate_launch_description():
     pkg_dir = get_package_share_directory("sim_executor")
     param_path = os.path.join(pkg_dir, "config", "sim_executor.param.yaml")
 
-    sim_02 = Node(
+    spot_02 = Node(
         package="sim_executor",
         executable="sim_executor_node",
-        name="sim_executor_sim_02",
+        name="sim_executor_spot_02",
         parameters=[
             param_path,
             {
-                "robot_id": 2,
+                "robot_id": "spot_02",
                 "start_x":  2.0,
                 "start_y":  2.0,
             },
@@ -23,14 +23,14 @@ def generate_launch_description():
         output="screen",
     )
 
-    sim_03 = Node(
+    spot_03 = Node(
         package="sim_executor",
         executable="sim_executor_node",
-        name="sim_executor_sim_03",
+        name="sim_executor_spot_03",
         parameters=[
             param_path,
             {
-                "robot_id": 3,
+                "robot_id": "spot_03",
                 "start_x":  3.0,
                 "start_y":  1.0,
             },
@@ -38,4 +38,4 @@ def generate_launch_description():
         output="screen",
     )
 
-    return LaunchDescription([sim_02, sim_03])
+    return LaunchDescription([spot_02, spot_03])

@@ -7,9 +7,9 @@ global_path_manager_node.py
 이후 spin() 유지 (TRANSIENT_LOCAL 캐시 보존)
 
 Publish:
-  /planning/global_path/robot_01  (nav_msgs/Path)
-  /planning/global_path/sim_02    (nav_msgs/Path)
-  /planning/global_path/sim_03    (nav_msgs/Path)
+  /planning/global_path/spot_01  (robot_interfaces/GlobalPathWaypoints)
+  /planning/global_path/spot_02  (robot_interfaces/GlobalPathWaypoints)
+  /planning/global_path/spot_03  (robot_interfaces/GlobalPathWaypoints)
   ※ 토픽은 map.yaml의 starts 키 기준으로 자동 생성
 """
 
@@ -19,11 +19,11 @@ from typing import Dict
 
 import rclpy
 from ament_index_python.packages import get_package_share_directory
-from geometry_msgs.msg import PoseStamped
-from nav_msgs.msg import Path
+from geometry_msgs.msg import Pose, Point, Quaternion
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 
+from robot_interfaces.msg import GlobalPathWaypoints, LocalizedRobotPose
 from .path_set import GlobalPath, MapConfig, build_path_set, select_paths, validate_path_set
 
 
@@ -31,23 +31,39 @@ def _yaw_between(p1, p2) -> float:
     return math.atan2(p2[1] - p1[1], p2[0] - p1[0])
 
 
-def _to_path_msg(path: GlobalPath, stamp, frame_id: str) -> Path:
-    msg = Path()
-    msg.header.stamp = stamp
+def _to_waypoints_msg(
+    path: GlobalPath,
+    robot_id: str,
+    stamp,
+    frame_id: str,
+) -> GlobalPathWaypoints:
+    msg = GlobalPathWaypoints()
+    msg.header.stamp    = stamp
     msg.header.frame_id = frame_id
+    msg.robot_id        = robot_id
+
     wps = path.waypoints
     for i, (x, y) in enumerate(wps):
-        pose = PoseStamped()
-        pose.header.stamp = stamp
-        pose.header.frame_id = frame_id
-        pose.pose.position.x = float(x)
-        pose.pose.position.y = float(y)
-        pose.pose.position.z = 0.05
-        yaw = (_yaw_between(wps[i], wps[i+1]) if i < len(wps)-1
-               else _yaw_between(wps[i-1], wps[i]) if len(wps) > 1 else 0.0)
-        pose.pose.orientation.z = math.sin(yaw / 2.0)
-        pose.pose.orientation.w = math.cos(yaw / 2.0)
-        msg.poses.append(pose)
+        yaw = (_yaw_between(wps[i], wps[i + 1]) if i < len(wps) - 1
+               else _yaw_between(wps[i - 1], wps[i]) if len(wps) > 1 else 0.0)
+
+        half = yaw / 2.0
+        q = Quaternion(x=0.0, y=0.0, z=math.sin(half), w=math.cos(half))
+
+        wp = LocalizedRobotPose()
+        wp.header.stamp    = stamp
+        wp.header.frame_id = frame_id
+        wp.robot_id        = robot_id
+        wp.base_frame      = 'base_link'
+        wp.x_m             = float(x)
+        wp.y_m             = float(y)
+        wp.z_m             = 0.05
+        wp.yaw_rad         = float(yaw)
+        wp.pose.position   = Point(x=float(x), y=float(y), z=0.05)
+        wp.pose.orientation = q
+
+        msg.waypoints.append(wp)
+
     return msg
 
 
@@ -56,11 +72,11 @@ class GlobalPathManagerNode(Node):
     def __init__(self):
         super().__init__("global_path_manager_node")
 
-        self.declare_parameter("frame_id",       "map")
+        self.declare_parameter("frame_id",        "map")
         self.declare_parameter("map_config_path", "")
 
-        self.frame_id      = self.get_parameter("frame_id").value
-        map_config_path    = self.get_parameter("map_config_path").value
+        self.frame_id   = self.get_parameter("frame_id").value
+        map_config_path = self.get_parameter("map_config_path").value
 
         if not map_config_path:
             map_config_path = os.path.join(
@@ -89,7 +105,7 @@ class GlobalPathManagerNode(Node):
         pubs: Dict[str, rclpy.publisher.Publisher] = {}
         for robot_key in cfg.starts:
             topic = f"/planning/global_path/{robot_key}"
-            pubs[robot_key] = self.create_publisher(Path, topic, qos)
+            pubs[robot_key] = self.create_publisher(GlobalPathWaypoints, topic, qos)
             self.get_logger().info(f"Publisher 등록: {topic}")
 
         # ── path set 생성 ──
@@ -109,7 +125,9 @@ class GlobalPathManagerNode(Node):
         # ── 발행 ──
         stamp = self.get_clock().now().to_msg()
         for robot_key, path in selected.items():
-            pubs[robot_key].publish(_to_path_msg(path, stamp, self.frame_id))
+            pubs[robot_key].publish(
+                _to_waypoints_msg(path, robot_key, stamp, self.frame_id)
+            )
             self.get_logger().info(
                 f"  [{robot_key}] {path.path_id}  waypoints: {path.waypoints}"
             )
