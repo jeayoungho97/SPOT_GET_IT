@@ -23,18 +23,53 @@ static uint8_t spi_rx_buffer[SPI_FRAME_SIZE];
 /* SPI 통신 상태 */
 static volatile bool     spi_transfer_done = false;
 static volatile uint32_t spi_rx_count      = 0;   /* DMA RX 완료 횟수 (1초 카운트, 진단용) */
+static volatile uint32_t spi_error_count   = 0;   /* HAL_SPI_ErrorCallback 발생 횟수 */
+static volatile uint32_t spi_recover_count = 0;   /* wedge 감지 → Abort 재시작 횟수 */
+static volatile uint32_t spi_last_event_ms = 0;   /* 마지막 ISR (complete or error) 시각 */
+
+/* wedge watchdog: ISR 이 이 시간 (ms) 이상 fire 안 되면 SPI wedge 로 간주 */
+#define SPI_WEDGE_TIMEOUT_MS  200
 
 /* DMA 완료 콜백 (HAL weak override)
  * ISR context: DMA 끝나는 즉시 DATA_READY_LOW 로 떨어뜨려서
  * Jetson 이 "STM 이 지금 처리 중 — 다음 프레임 아직 보내지 마" 를 즉시 감지하도록.
- * (main loop step 1 까지 기다리면 최대 20ms 지연 가능)
  */
 void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi) {
     if (hspi->Instance == SPI1) {
         DATA_READY_LOW();
         spi_transfer_done = true;
         spi_rx_count++;
+        spi_last_event_ms = HAL_GetTick();
     }
+}
+
+/* SPI error 콜백 (HAL weak override)
+ * OVR/MODF/FRE/DMA 에러로 ISR fire. ErrorCode 는 hspi->ErrorCode 에 set 됨.
+ * 그냥 카운터만 올리고 — 실제 recovery 는 main loop watchdog 이 abort + re-arm.
+ */
+void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi) {
+    if (hspi->Instance == SPI1) {
+        DATA_READY_LOW();
+        spi_error_count++;
+        spi_last_event_ms = HAL_GetTick();
+    }
+}
+
+/* SPI wedge 복구: state != READY 인데 마지막 ISR 이후 N ms 지났으면 강제 재시작.
+ * 호출 시점에 DMA armed 일 수도 있고 idle 일 수도 있음. Abort 후 main loop 의
+ * 다음 step 6 에서 자연스럽게 re-arm 됨 (GetState 가 READY 로 돌아오므로).
+ */
+static void spi_wedge_recovery(uint32_t now_ms) {
+    if (HAL_SPI_GetState(&hspi1) == HAL_SPI_STATE_READY) return;
+    if (spi_last_event_ms == 0) return;   /* 부팅 직후 아직 ISR 없으면 skip */
+    if ((now_ms - spi_last_event_ms) < SPI_WEDGE_TIMEOUT_MS) return;
+
+    /* wedge 확정 — abort */
+    HAL_SPI_Abort(&hspi1);
+    spi_transfer_done = false;
+    DATA_READY_LOW();
+    spi_recover_count++;
+    spi_last_event_ms = now_ms;
 }
 
 /* === Helper: torque 자동 ON ===
@@ -226,6 +261,9 @@ void control_loop_run(void) {
         /* ESC 체크 */
         if (check_esc()) emergency_stop();
 
+        /* 0. SPI wedge 복구 (state != READY 인데 ISR 200ms 안 fire 됐으면 abort) */
+        spi_wedge_recovery(t_start);
+
         /* 1. SPI RX 처리 */
         last_step = 1;
         if (spi_transfer_done) {
@@ -316,6 +354,7 @@ void control_loop_run(void) {
                    "rx=%lu/s crc_err=%lu/s spi_st=%lu spi_err=0x%lX "
                    "dr_odr=%u dr_idr=%u step=%u "
                    "arm_ok=%lu/s skip=%lu/s fail=%lu/s drH=%lu/s arm_ret=%u "
+                   "isr_err=%lu recover=%lu "
                    "maxT=%.0fC(j%d) Vbus=%.1fV "
                    "worst_cyc=%lums over20=%lu/%lu\r\n",
                    (unsigned long)t_start,
@@ -332,6 +371,7 @@ void control_loop_run(void) {
                    (unsigned long)d_arm_ok, (unsigned long)d_arm_skipped,
                    (unsigned long)d_arm_fail, (unsigned long)d_dr_high,
                    (unsigned)last_arm_ret,
+                   (unsigned long)spi_error_count, (unsigned long)spi_recover_count,
                    (double)max_temp, max_temp_idx,
                    (double)g_robot_state.bus_voltage,
                    (unsigned long)worst_cycle_ms,
