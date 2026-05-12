@@ -47,3 +47,4 @@
 | 043 | 05/11 | spotmicro_v3_2_noise_order | V5: v3.2 버전으로 롤백, 초기 모델 | 97.7% | 0.046 | 19.8% | ✅ |
 | 044 | 05/11 | spotmicro_v5_1_terrain_curriculum | V5.1: 복잡한 지형 학습 | 0.0% | 0.146 | 28.0% | ❌ |
 | 045 | 05/11 | spotmicro_v5_2_gait_period | V5.2: gait period, feet height 조정 | 81.5% | 0.112 | 6.3% | ✅ |
+| 046 | 05/11 | spotmicro_v5_2_1_gait_perioid | V5.2.1: gait period 수치 조정 | 90.7% | 0.078 | 11.0% | ✅ |

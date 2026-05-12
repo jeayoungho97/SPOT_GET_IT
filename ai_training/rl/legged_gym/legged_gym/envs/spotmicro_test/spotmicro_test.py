@@ -21,8 +21,8 @@ class SpotmicroTest(LeggedRobot):
         self.robot_width = 0.15
 
         self.gait_period = 1.0
-        self.duty_factor = 0.6
-        self.step_height = 0.015
+        self.duty_factor = 0.55
+        self.step_height = 0.025
         self.body_height = 0.206
 
         self.gait_phase = torch.zeros(self.num_envs, 1, dtype=torch.float, device=self.device)
@@ -278,11 +278,15 @@ class SpotmicroTest(LeggedRobot):
         vx = self.commands[:, 0]
         wz = self.commands[:, 2] 
 
+        
         v_left = vx - (wz * self.robot_width / 2.0)
         v_right = vx + (wz * self.robot_width / 2.0)
         stance_time = self.gait_period * self.duty_factor
-        stride_l = v_left * stance_time
-        stride_r = v_right * stance_time
+        max_stride = 0.12
+        raw_stride_l = v_left * stance_time
+        stride_l = torch.clamp(raw_stride_l, -max_stride, max_stride)
+        raw_stride_r = v_right * stance_time
+        stride_r = torch.clamp(raw_stride_r, -max_stride, max_stride)
         strides = torch.stack([stride_l, stride_r, stride_l, stride_r], dim=1)
         offsets = torch.tensor([0.0, 0.5, 0.5, 0.0], device=self.device)
         phases = (self.gait_phase + offsets) % 1.0
