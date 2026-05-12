@@ -6,7 +6,7 @@ actuator_bridge_node:
     spi_mode: 0
     spi_bits_per_word: 8
 
-    use_data_ready: true
+    use_data_ready: True
     data_ready_gpiochip: "/dev/gpiochip0"
     data_ready_line: 105              # 실제 연결한 Jetson GPIO line 번호로 수정
     data_ready_active_high: true

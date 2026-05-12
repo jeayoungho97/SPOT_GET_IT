@@ -42,6 +42,63 @@ constexpr uint8_t FAULT_SPI_TRANSFER_FAILED = 11;
 constexpr uint8_t FAULT_FEEDBACK_DECODE_FAILED = 12;
 constexpr uint8_t FAULT_SEQ_MISMATCH = 13;
 
+// ROS JointTarget semantic mode
+constexpr uint8_t JT_MODE_DISABLE = 0;
+constexpr uint8_t JT_MODE_STAND   = 1;
+constexpr uint8_t JT_MODE_RL      = 2;
+constexpr uint8_t JT_MODE_CROUCH  = 3;
+constexpr uint8_t JT_MODE_E_STOP  = 4;
+
+// SPI wire mode: STM이 실제로 이해하는 최소 mode
+constexpr uint8_t SPI_MODE_DISABLE = 0;
+constexpr uint8_t SPI_MODE_OPERATE = 1;
+
+// SPI flags
+constexpr uint8_t SPI_FLAG_E_STOP = 0x08;
+
+
+uint8_t mapRosModeToSpiMode(uint8_t ros_mode, uint8_t ros_flags)
+{
+  // E-STOP flag가 이미 들어와 있으면 mode와 무관하게 disable
+  if ((ros_flags & SPI_FLAG_E_STOP) != 0) {
+    return SPI_MODE_DISABLE;
+  }
+
+  switch (ros_mode) {
+    case JT_MODE_STAND:
+    case JT_MODE_RL:
+    case JT_MODE_CROUCH:
+      return SPI_MODE_OPERATE;
+
+    case JT_MODE_DISABLE:
+    case JT_MODE_E_STOP:
+    default:
+      return SPI_MODE_DISABLE;
+  }
+}
+
+uint8_t mapRosModeToSpiFlags(uint8_t ros_mode, uint8_t ros_flags)
+{
+  uint8_t wire_flags = ros_flags;
+
+  if (ros_mode == JT_MODE_E_STOP) {
+    wire_flags |= SPI_FLAG_E_STOP;
+  }
+
+  switch (ros_mode) {
+    case JT_MODE_STAND:
+    case JT_MODE_RL:
+    case JT_MODE_CROUCH:
+      break;
+
+    case JT_MODE_DISABLE:
+    default:
+      break;
+  }
+
+  return wire_flags;
+}
+
 rclcpp::QoS control_qos()
 {
   return rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
@@ -308,7 +365,7 @@ private:
       command.seq = freeze_seq_when_stale_ ? last_sent_seq_ : latest_seq_;
       command.gait_phase = latest_gait_phase_;
       command.gait_cycle_count = latest_gait_cycle_count_;
-      command.mode = MODE_DISABLE;
+      command.mode = SPI_MODE_DISABLE;
       command.flags = 0;
 
       for (std::size_t i = 0; i < actuator_bridge::NUM_JOINTS; ++i) {
@@ -317,8 +374,8 @@ private:
       }
     } else {
       command.seq = latest_seq_;
-      command.mode = latest_mode_;
-      command.flags = latest_flags_;
+      command.mode = mapRosModeToSpiMode(latest_mode_, latest_flags_);
+      command.flags = mapRosModeToSpiFlags(latest_mode_, latest_flags_);
 
       for (std::size_t i = 0; i < actuator_bridge::NUM_JOINTS; ++i) {
         command.target_rad[i] = latest_target_rad_[i];
