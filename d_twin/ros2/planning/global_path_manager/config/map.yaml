@@ -1,12 +1,12 @@
 map:
   starts:
-    robot_01:
+    spot_01:
     - 2.0
     - 1.0
-    sim_02:
+    spot_02:
     - 2.0
     - 2.0
-    sim_03:
+    spot_03:
     - 3.0
     - 1.0
   end:

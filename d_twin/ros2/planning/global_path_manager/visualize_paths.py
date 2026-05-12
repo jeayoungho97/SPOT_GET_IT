@@ -30,16 +30,15 @@ from global_path_manager.path_set import (
     _paths_cross,
     build_path_set,
     select_paths,
-    shape_of,
     validate_path_set,
 )
 
 COLORS = {
-    'robot_01': '#E74C3C',
-    'sim_02':   '#27AE60',
-    'sim_03':   '#2980B9',
-    'sim_04':   '#E67E22',
-    'sim_05':   '#8E44AD',
+    'spot_01': '#E74C3C',
+    'spot_02': '#27AE60',
+    'spot_03': '#2980B9',
+    'spot_04': '#E67E22',
+    'spot_05': '#8E44AD',
 }
 DEFAULT_COLOR = '#7F8C8D'
 
@@ -61,7 +60,7 @@ def draw_map(ax, cfg: MapConfig):
             (c['x_min'], c['y_min']),
             c['x_max'] - c['x_min'], c['y_max'] - c['y_min'],
             lw=2, ec='#2C3E50', fc='#ECF0F1', zorder=1))
-    
+
     ax.add_patch(patches.Rectangle(
         (lobby['x_min'], lobby['y_min']),
         lobby['x_max'] - lobby['x_min'],
@@ -133,8 +132,7 @@ def main():
 
         print(f"\n[{i}/5] 분석 시작: {map_filename}")
         cfg = MapConfig(map_path)
-        
-        # 경로 수 출력 파트 복구
+
         path_sets = build_path_set(cfg)
         total_gen = sum(len(v) for v in path_sets.values())
         print(f"   ㄴ 경로 후보 생성: {total_gen}개")

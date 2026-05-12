@@ -2,9 +2,9 @@
 
 Isaac Sim 디지털 트윈 연동에 필요한 ROS2 패키지 모음.
 
-실물 로봇(robot_01)의 위치는 Jetson에서 발행하고,
-시뮬 로봇(sim_02, sim_03)의 위치는 이 패키지들이 생성하여 발행한다.
-Isaac Sim은 `/localization/robot/state`를 구독하여 Spot prim 위치를 반영한다.
+실물 로봇(spot_01)의 위치는 Jetson에서 발행하고,
+시뮬 로봇(spot_02, spot_03)의 위치는 이 패키지들이 생성하여 발행한다.
+Isaac Sim은 `/localization/pose`를 구독하여 Spot prim 위치를 반영한다.
 
 ---
 

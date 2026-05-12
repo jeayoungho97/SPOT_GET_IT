@@ -29,6 +29,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/JointFeedback.msg"
   "msg/RobotStatus.msg"
   "msg/RlDebug.msg"
+  "msg/GlobalPathWaypoints.msg"
 	DEPENDENCIES 
   std_msgs
   geometry_msgs

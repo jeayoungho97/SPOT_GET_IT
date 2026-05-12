@@ -1,9 +1,9 @@
 sim_executor_node:
   ros__parameters:
-    robot_id:       2        # 2: sim_02 / 3: sim_03
-    start_x:        2.0      # 실제 출발 x (m) — launch에서 로봇별로 주입
-    start_y:        2.0      # 실제 출발 y (m) — launch에서 로봇별로 주입
-    speed:          0.1      # 이동 속도 (m/s)
-    arrival_dist:   0.7      # waypoint 도착 판정 거리 (m)
-    tick_rate:      20.0     # 위치 갱신 주기 (Hz)
+    robot_id:       "spot_02"  # "spot_02" / "spot_03" — launch에서 로봇별로 주입
+    start_x:        2.0        # 실제 출발 x (m) — launch에서 로봇별로 주입
+    start_y:        2.0        # 실제 출발 y (m) — launch에서 로봇별로 주입
+    speed:          0.1        # 이동 속도 (m/s)
+    arrival_dist:   0.7        # waypoint 도착 판정 거리 (m)
+    tick_rate:      20.0       # 위치 갱신 주기 (Hz)
     frame_id:       "map"
