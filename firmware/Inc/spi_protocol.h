@@ -25,11 +25,23 @@
 /* SPI full-duplex: 양쪽 중 큰 쪽(MISO)에 맞춤 */
 #define SPI_FRAME_SIZE          MISO_PAYLOAD_SIZE
 
-/* Jetson -> STM 모드 */
-#define SPI_MODE_IDLE           0
-#define SPI_MODE_POSITION       1
-#define SPI_MODE_CAL            2
-#define SPI_MODE_HOLD           3
+/* Jetson -> STM wire mode
+ * STM 의 실제 행동은 두 가지뿐 — torque off / target 따라가기.
+ * 의미적 모드 (STAND/RL/CROUCH 등 robot_interfaces/JointTarget.msg) 는
+ * Jetson 측 bridge 가 OPERATE 로 매핑하고 자세 차이는 target_rad 로 결정.
+ * E_STOP 은 별도 wire mode 가 아니라 SPI_FLAG_E_STOP 비트로 전달.
+ */
+#define SPI_MODE_DISABLE        0   /* torque off — safe state */
+#define SPI_MODE_OPERATE        1   /* torque on + apply target_rad */
+
+/* STM -> Jetson motion_state (feedback)
+ * STM 은 RL 이 보낸 target 만 따라가므로 motion direction 은 모름.
+ * 현재 STM 이 set 할 수 있는 두 값만 정의. 나머지 WALK_FORWARD/TURN_LEFT/...
+ * 등은 robot_interfaces/msg/StmMotion.msg 가 정의하지만 RL/high-level 노드가
+ * 별도 publish 해야 함 (STM 영역 아님).
+ */
+#define MOTION_STATE_STOP       0
+#define MOTION_STATE_UNKNOWN    8
 
 /* flags 비트 */
 #define SPI_FLAG_TORQUE_EN      (1 << 0)
