@@ -328,21 +328,23 @@ int main(int argc, char **argv)
     float duty      = 0.55f;
     int   spi_bus   = 0;
     int   spi_dev   = 0;
+    bool  idle_test = false;     /* --idle-test: 모터 안 움직이고 SPI loss 측정 */
 
     /* 인자 파싱 */
     static struct option long_opts[] = {
-        {"cycles",  required_argument, 0, 'c'},
-        {"stride",  required_argument, 0, 's'},
-        {"lift",    required_argument, 0, 'l'},
-        {"period",  required_argument, 0, 'p'},
-        {"duty",    required_argument, 0, 'd'},
-        {"bus",     required_argument, 0, 'b'},
-        {"dev",     required_argument, 0, 'D'},
-        {"help",    no_argument,       0, 'h'},
+        {"cycles",     required_argument, 0, 'c'},
+        {"stride",     required_argument, 0, 's'},
+        {"lift",       required_argument, 0, 'l'},
+        {"period",     required_argument, 0, 'p'},
+        {"duty",       required_argument, 0, 'd'},
+        {"bus",        required_argument, 0, 'b'},
+        {"dev",        required_argument, 0, 'D'},
+        {"idle-test",  no_argument,       0, 'I'},
+        {"help",       no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
     int opt;
-    while ((opt = getopt_long(argc, argv, "c:s:l:p:d:b:D:h", long_opts, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "c:s:l:p:d:b:D:Ih", long_opts, nullptr)) != -1) {
         switch (opt) {
             case 'c': n_cycles = atoi(optarg); break;
             case 's': stride_x = strtof(optarg, nullptr); break;
@@ -351,9 +353,12 @@ int main(int argc, char **argv)
             case 'd': duty     = strtof(optarg, nullptr); break;
             case 'b': spi_bus  = atoi(optarg); break;
             case 'D': spi_dev  = atoi(optarg); break;
+            case 'I': idle_test = true; break;
             case 'h':
                 printf("Usage: sudo %s [--cycles N] [--stride MM] [--lift MM] "
-                       "[--period S] [--duty F] [--bus N] [--dev N]\n", argv[0]);
+                       "[--period S] [--duty F] [--bus N] [--dev N] [--idle-test]\n"
+                       "  --idle-test : 모터 안 움직이고 IDLE 명령만 보내서 SPI loss 측정\n",
+                       argv[0]);
                 return 0;
         }
     }
@@ -485,8 +490,10 @@ int main(int argc, char **argv)
      *   STM의 robot_transition과 동일한 방식.
      *   adaptive duration: max delta * 1초/rad, [1, 3]초 클램프
      *   loop 안에서 printf 없음 — 50Hz 정확히 유지
+     *
+     *   --idle-test 모드면 Phase 1 / 1.5 / 3 / 4 모두 skip (모터 안 움직임)
      */
-    if (!g_stop) {
+    if (!g_stop && !idle_test) {
         float max_delta = 0.0f;
         for (int i = 0; i < 12; i++) {
             float d = fabsf(stand_target[i] - initial_pose[i]);
@@ -516,7 +523,7 @@ int main(int argc, char **argv)
      *   "자세 잡고 → 걷기 시작" 의 자연스러운 pause.
      *   STM 자체 trot 의 stand_at_height 후 잠시 대기와 동일한 효과.
      */
-    if (!g_stop) {
+    if (!g_stop && !idle_test) {
         const double DWELL_BEFORE_TROT = 1.5;
         printf("[Phase 1.5] Hold standing (%.1fs)\n", DWELL_BEFORE_TROT);
         double t_end = now_sec() + DWELL_BEFORE_TROT;
@@ -529,10 +536,16 @@ int main(int argc, char **argv)
     /* ── Phase 2: Trot walking ──
      *   loop 안 printf 절대 없음. 진단 데이터는 메모리 버퍼에만 저장.
      *   Phase 1 → 2 사이도 printf 없으므로 STM32 stale 안 일어남.
+     *
+     *   --idle-test 모드면 trot 안 하고 IDLE 명령 N*period 초 동안 송신.
      */
     if (!g_stop) {
         double total_walk = n_cycles * period_s;
-        printf("[Phase 2] Trot walking — %d cycles (%.1fs)\n", n_cycles, total_walk);
+        if (idle_test) {
+            printf("[Phase 2] IDLE-only SPI test — %.1fs (모터 안 움직임)\n", total_walk);
+        } else {
+            printf("[Phase 2] Trot walking — %d cycles (%.1fs)\n", n_cycles, total_walk);
+        }
 
         double t_walk_start = now_sec();
         int tick_count = 0;
@@ -547,8 +560,16 @@ int main(int argc, char **argv)
 
             compute_targets(phase, stride_x, lift_z, duty, target);
 
-            FeedbackPacket fb = send(MODE_POSITION, FLAG_TORQUE_EN,
-                                     target, delta_walk, phase, (uint32_t)cycle);
+            /* --idle-test: 모터 안 움직이고 IDLE 명령만 보냄 (순수 SPI 검증) */
+            float zero_target[12] = {0};
+            float zero_delta[12]  = {0};
+            FeedbackPacket fb;
+            if (idle_test) {
+                fb = send(MODE_IDLE, 0, zero_target, zero_delta, 0.0f, 0);
+            } else {
+                fb = send(MODE_POSITION, FLAG_TORQUE_EN,
+                          target, delta_walk, phase, (uint32_t)cycle);
+            }
 
             if (fb.valid) {
                 valid_ticks++;
@@ -594,7 +615,7 @@ int main(int argc, char **argv)
      *   trot 마지막 자세에서 standing으로 부드럽게 보간.
      *   loop 안 printf 없음.
      */
-    if (!g_stop) {
+    if (!g_stop && !idle_test) {
         float max_delta = 0.0f;
         for (int i = 0; i < 12; i++) {
             float d = fabsf(stand_target[i] - last_target[i]);
@@ -624,7 +645,7 @@ int main(int argc, char **argv)
      *   Standing → 처음 시작했던 자세 (Phase 0에서 read한 initial_pose)
      *   "올라간 만큼 다시 천천히 내려간다" — STM 자체 trot 마지막 흐름과 동일.
      */
-    if (!g_stop && got_initial) {
+    if (!g_stop && got_initial && !idle_test) {
         float max_delta = 0.0f;
         for (int i = 0; i < 12; i++) {
             float d = fabsf(initial_pose[i] - stand_target[i]);
