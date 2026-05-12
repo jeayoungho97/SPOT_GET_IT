@@ -45,8 +45,8 @@
 
 #define ENABLE_MONITOR      0           /* 1 = 모니터 활성 (run_trot 안 #if로 게이팅) */
 
-#define STRIDE_X            70.0f       /* 발끝 전후 sweep 폭 (mm) */
-#define LIFT_Z              13.0f       /* swing peak 높이 (대칭 arch + 4/3 보정으로 실제 peak = LIFT_Z) */
+#define STRIDE_X            80.0f       /* 발끝 전후 sweep 폭 (mm) */
+#define LIFT_Z              10.0f       /* swing peak 높이 (대칭 arch + 4/3 보정으로 실제 peak = LIFT_Z) */
 
 /* Safety 임계 — IN_HAND_MODE에 따라 자동 결정 */
 #if IN_HAND_MODE
