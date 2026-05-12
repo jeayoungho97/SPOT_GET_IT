@@ -219,8 +219,40 @@ static void dispatch_mode(void) {
     }
 }
 
+/* === SPI DMA stream re-init — priority HIGH + FIFO 활성 ===
+ * CubeMX 의 기본 설정 (priority LOW + FIFO disabled) 이 STM32F4 SPI slave 에서
+ * Overrun (OVR) 발생 빈도 높음. priority VERY_HIGH + FIFO enable 로 burst 흡수.
+ * spi.c 는 CubeMX 자동 생성 파일이라 함부로 수정 못 함 — runtime override.
+ */
+static void spi_dma_boost_init(void) {
+    /* RX stream */
+    HAL_DMA_DeInit(&hdma_spi1_rx);
+    hdma_spi1_rx.Init.Priority      = DMA_PRIORITY_VERY_HIGH;
+    hdma_spi1_rx.Init.FIFOMode      = DMA_FIFOMODE_ENABLE;
+    hdma_spi1_rx.Init.FIFOThreshold = DMA_FIFO_THRESHOLD_HALFFULL;
+    hdma_spi1_rx.Init.MemBurst      = DMA_MBURST_SINGLE;
+    hdma_spi1_rx.Init.PeriphBurst   = DMA_PBURST_SINGLE;
+    HAL_DMA_Init(&hdma_spi1_rx);
+    __HAL_LINKDMA(&hspi1, hdmarx, hdma_spi1_rx);
+
+    /* TX stream */
+    HAL_DMA_DeInit(&hdma_spi1_tx);
+    hdma_spi1_tx.Init.Priority      = DMA_PRIORITY_VERY_HIGH;
+    hdma_spi1_tx.Init.FIFOMode      = DMA_FIFOMODE_ENABLE;
+    hdma_spi1_tx.Init.FIFOThreshold = DMA_FIFO_THRESHOLD_HALFFULL;
+    hdma_spi1_tx.Init.MemBurst      = DMA_MBURST_SINGLE;
+    hdma_spi1_tx.Init.PeriphBurst   = DMA_PBURST_SINGLE;
+    HAL_DMA_Init(&hdma_spi1_tx);
+    __HAL_LINKDMA(&hspi1, hdmatx, hdma_spi1_tx);
+}
+
 /* === 50Hz 메인 루프 === */
 void control_loop_run(void) {
+    /* SPI DMA peripheral 보강 — VERY_HIGH priority + FIFO halffull
+     * 반드시 robot_state_init / 첫 SPI arm 보다 먼저 호출.
+     */
+    spi_dma_boost_init();
+
     /* 초기화 */
     robot_state_init();
 
