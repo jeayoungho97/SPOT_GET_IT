@@ -120,6 +120,8 @@ static uint16_t crc16_ccitt(const uint8_t *data, size_t len)
    SPI 초기화 / 전송
    ═══════════════════════════════════ */
 
+static uint32_t g_spi_speed_hz = 2000000;   /* 기본 2MHz, --speed 로 변경 가능 */
+
 static int spi_open(int bus, int dev, uint32_t speed_hz)
 {
     char path[64];
@@ -133,6 +135,7 @@ static int spi_open(int bus, int dev, uint32_t speed_hz)
     ioctl(fd, SPI_IOC_WR_BITS_PER_WORD, &bits);
     ioctl(fd, SPI_IOC_WR_MAX_SPEED_HZ, &speed_hz);
 
+    g_spi_speed_hz = speed_hz;
     printf("SPI: %s @ %u Hz, mode %u\n", path, speed_hz, mode);
     return fd;
 }
@@ -143,7 +146,7 @@ static void spi_transfer(int fd, const uint8_t *tx, uint8_t *rx, size_t len)
     tr.tx_buf = (__u64)(uintptr_t)tx;
     tr.rx_buf = (__u64)(uintptr_t)rx;
     tr.len    = (uint32_t)len;
-    tr.speed_hz = 5000000;
+    tr.speed_hz = g_spi_speed_hz;
     tr.bits_per_word = 8;
     int ret = ioctl(fd, SPI_IOC_MESSAGE(1), &tr);
     if (ret < 0) perror("SPI_IOC_MESSAGE");
@@ -368,7 +371,7 @@ int main(int argc, char **argv)
     signal(SIGTERM, signal_handler);
 
     /* SPI 열기 */
-    spi_fd = spi_open(spi_bus, spi_dev, 5000000);
+    spi_fd = spi_open(spi_bus, spi_dev, spi_speed_hz);
     if (spi_fd < 0) return 1;
 
     /* standing pose 계산 */

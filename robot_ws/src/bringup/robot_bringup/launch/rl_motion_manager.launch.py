@@ -12,7 +12,7 @@ def generate_launch_description():
     rl_param = os.path.join(
         rl_share,
         'config',
-        'policy_onnx.param.yaml'
+        'policy_config.yaml'
     )
 
     actuator_param = os.path.join(
