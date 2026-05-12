@@ -10,7 +10,18 @@
 #include <stdio.h>
 #include <math.h>
 
-#define STALE_TIMEOUT_MS       200     /* 10 cycle 이상 패킷 없으면 stale (Linux non-RT jitter 흡수) */
+/* Stale 처리 — Jetson 끊김 시 단계별 degradation
+ *   0   ~ WARN_MS : 정상 (fresh bit set, mode 그대로)
+ *   WARN_MS ~ SAFE_MS : warn (fresh bit clear, FAULT_STALE_COMMAND set, mode 유지)
+ *   SAFE_MS 이상     : safe (mode 강제 IDLE → torque off)
+ *
+ * 핵심: WARN ~ SAFE 사이에는 mode 강제 변경 안 함. Bridge 가 명시적으로 보낸
+ * 마지막 wire mode (보통 DISABLE 또는 OPERATE) 그대로 dispatch. Bridge 자체 stale
+ * 시 DISABLE 보내면 STM 의 mode 도 IDLE 자연스러움. STM 이 mode HOLD 로 강제하면
+ * mode oscillation 발생 → torque 토글 → cycle 폭증 → SPI OVR cascade.
+ */
+#define STALE_WARN_MS          200     /* fresh bit clear, FAULT_STALE_COMMAND */
+#define STALE_SAFE_MS          1000    /* mode 강제 IDLE (safe state) */
 #define TEMP_LIMIT_C           70.0f   /* 서보 온도 한계 */
 #define VOLTAGE_LOW_V          10.0f   /* 3S LiPo 저전압 한계 */
 #define VOLTAGE_VALID_V        0.1f    /* ADC 유효 판별 최소값 */
@@ -88,16 +99,24 @@ static void ensure_torque_on(void) {
     }
 }
 
-/* === Helper: stale 체크 === */
+/* === Helper: stale 체크 ===
+ * 2단계 degradation. mode oscillation 방지 위해 WARN 단계엔 mode 유지.
+ * SAFE 단계에서만 강제 IDLE → torque off.
+ */
 static void check_stale(uint32_t now_ms) {
     uint32_t age = now_ms - g_robot_state.last_cmd_time_ms;
-    if (age > STALE_TIMEOUT_MS) {
+
+    if (age > STALE_WARN_MS) {
+        /* 200ms+ : fresh bit clear + fault 표시. mode 는 그대로 유지. */
         g_robot_state.status &= ~STATUS_BIT_CMD_FRESH;
         if (g_robot_state.fault_code == FAULT_OK) {
             g_robot_state.fault_code = FAULT_STALE_COMMAND;
         }
-        /* stale 시 강제 HOLD (last target 유지) — 안전 fallback */
-        g_robot_state.mode = MODE_HOLD;
+    }
+
+    if (age > STALE_SAFE_MS) {
+        /* 1s+ : 명백한 disconnect. 강제 안전 상태 (mode IDLE → torque off). */
+        g_robot_state.mode = MODE_IDLE;
     }
 }
 
