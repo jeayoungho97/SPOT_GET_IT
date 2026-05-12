@@ -191,6 +191,14 @@ void control_loop_run(void) {
     uint32_t next_tick = HAL_GetTick();
     uint32_t last_print = 0;
 
+    /* === 진단: cycle time 측정 ===
+     * 주기적으로 control loop 의 실제 소요 시간 추적.
+     * 20ms 초과한 cycle 수 + 최대 cycle 시간 1초마다 reset 후 출력.
+     */
+    uint32_t worst_cycle_ms = 0;
+    uint32_t cycle_over_20 = 0;
+    uint32_t cycle_count   = 0;
+
     while (1) {
         uint32_t t_start = HAL_GetTick();
 
@@ -242,7 +250,8 @@ void control_loop_run(void) {
                 }
             }
             printf("[%lu] mode=%u st=0x%02X fault=%u torque=%u seq=%u "
-                   "maxT=%.0fC(j%d) Vbus=%.1fV\r\n",
+                   "maxT=%.0fC(j%d) Vbus=%.1fV "
+                   "worst_cyc=%lums over20=%lu/%lu\r\n",
                    (unsigned long)t_start,
                    (unsigned)g_robot_state.mode,
                    (unsigned)g_robot_state.status,
@@ -250,10 +259,23 @@ void control_loop_run(void) {
                    (unsigned)g_robot_state.torque_enabled,
                    (unsigned)g_robot_state.cmd_seq,
                    (double)max_temp, max_temp_idx,
-                   (double)g_robot_state.bus_voltage);
+                   (double)g_robot_state.bus_voltage,
+                   (unsigned long)worst_cycle_ms,
+                   (unsigned long)cycle_over_20,
+                   (unsigned long)cycle_count);
+
+            /* 1초마다 리셋 (직전 1초 통계) */
+            worst_cycle_ms = 0;
+            cycle_over_20 = 0;
+            cycle_count = 0;
         }
 
-        /* 8. 주기 유지 (50Hz = 20ms) */
+        /* 8. 주기 유지 (50Hz = 20ms) — cycle time 측정 후 delay */
+        uint32_t cycle_body_ms = HAL_GetTick() - t_start;
+        if (cycle_body_ms > worst_cycle_ms) worst_cycle_ms = cycle_body_ms;
+        if (cycle_body_ms > 20) cycle_over_20++;
+        cycle_count++;
+
         next_tick += LOOP_PERIOD_MS;
         uint32_t now = HAL_GetTick();
         if (now < next_tick) {
@@ -264,3 +286,4 @@ void control_loop_run(void) {
         }
     }
 }
+
