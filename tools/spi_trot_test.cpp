@@ -117,6 +117,8 @@ static uint16_t crc16_ccitt(const uint8_t *data, size_t len)
    SPI 초기화 / 전송
    ═══════════════════════════════════ */
 
+static uint32_t g_spi_speed_hz = 2000000;   /* 기본 2MHz, --speed 로 변경 가능 */
+
 static int spi_open(int bus, int dev, uint32_t speed_hz)
 {
     char path[64];
@@ -130,6 +132,7 @@ static int spi_open(int bus, int dev, uint32_t speed_hz)
     ioctl(fd, SPI_IOC_WR_BITS_PER_WORD, &bits);
     ioctl(fd, SPI_IOC_WR_MAX_SPEED_HZ, &speed_hz);
 
+    g_spi_speed_hz = speed_hz;
     printf("SPI: %s @ %u Hz, mode %u\n", path, speed_hz, mode);
     return fd;
 }
@@ -140,7 +143,7 @@ static void spi_transfer(int fd, const uint8_t *tx, uint8_t *rx, size_t len)
     tr.tx_buf = (__u64)(uintptr_t)tx;
     tr.rx_buf = (__u64)(uintptr_t)rx;
     tr.len    = (uint32_t)len;
-    tr.speed_hz = 5000000;
+    tr.speed_hz = g_spi_speed_hz;
     tr.bits_per_word = 8;
     int ret = ioctl(fd, SPI_IOC_MESSAGE(1), &tr);
     if (ret < 0) perror("SPI_IOC_MESSAGE");
@@ -308,6 +311,7 @@ int main(int argc, char **argv)
     float duty      = 0.55f;
     int   spi_bus   = 0;
     int   spi_dev   = 0;
+    uint32_t spi_speed_hz = 2000000;    /* 기본 2MHz (5MHz 보다 EMI 강건) */
 
     /* 인자 파싱 */
     static struct option long_opts[] = {
@@ -318,11 +322,12 @@ int main(int argc, char **argv)
         {"duty",    required_argument, 0, 'd'},
         {"bus",     required_argument, 0, 'b'},
         {"dev",     required_argument, 0, 'D'},
+        {"speed",   required_argument, 0, 'S'},
         {"help",    no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
     int opt;
-    while ((opt = getopt_long(argc, argv, "c:s:l:p:d:b:D:h", long_opts, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "c:s:l:p:d:b:D:S:h", long_opts, nullptr)) != -1) {
         switch (opt) {
             case 'c': n_cycles = atoi(optarg); break;
             case 's': stride_x = strtof(optarg, nullptr); break;
@@ -331,9 +336,12 @@ int main(int argc, char **argv)
             case 'd': duty     = strtof(optarg, nullptr); break;
             case 'b': spi_bus  = atoi(optarg); break;
             case 'D': spi_dev  = atoi(optarg); break;
+            case 'S': spi_speed_hz = (uint32_t)strtoul(optarg, nullptr, 10); break;
             case 'h':
                 printf("Usage: sudo %s [--cycles N] [--stride MM] [--lift MM] "
-                       "[--period S] [--duty F] [--bus N] [--dev N]\n", argv[0]);
+                       "[--period S] [--duty F] [--bus N] [--dev N] [--speed HZ]\n"
+                       "  --speed: SPI clock in Hz (default 2000000 = 2MHz)\n",
+                       argv[0]);
                 return 0;
         }
     }
@@ -343,7 +351,7 @@ int main(int argc, char **argv)
     signal(SIGTERM, signal_handler);
 
     /* SPI 열기 */
-    spi_fd = spi_open(spi_bus, spi_dev, 5000000);
+    spi_fd = spi_open(spi_bus, spi_dev, spi_speed_hz);
     if (spi_fd < 0) return 1;
 
     /* standing pose 계산 */
