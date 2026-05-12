@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cerrno>
 #include <cmath>
 #include <csignal>
 #include <unistd.h>
@@ -23,6 +24,8 @@
 #include <getopt.h>
 #include <time.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <sched.h>
 #include <linux/spi/spidev.h>
 
 /* ─── 프로토콜 상수 ─── */
@@ -300,6 +303,23 @@ static void compute_targets(float phase, float stride_x, float lift_z,
 
 int main(int argc, char **argv)
 {
+    /* ─── RT 친화 설정 (sudo 로 실행 시 자동 적용) ───
+     * 매번 chrt 안 쳐도 sudo 로 실행만 하면 SCHED_FIFO + memory lock 됨.
+     * 권한 없으면 (sudo X) 경고 후 일반 priority 로 계속 진행.
+     */
+    if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
+        fprintf(stderr, "[warn] mlockall 실패 (sudo 권한 필요): %s\n", strerror(errno));
+    }
+    {
+        struct sched_param sp = {};
+        sp.sched_priority = 50;
+        if (sched_setscheduler(0, SCHED_FIFO, &sp) != 0) {
+            fprintf(stderr, "[warn] SCHED_FIFO 설정 실패 (sudo 권한 필요): %s\n", strerror(errno));
+        } else {
+            printf("[RT] SCHED_FIFO priority 50 + mlockall 적용\n");
+        }
+    }
+
     /* 기본값 */
     int   n_cycles  = 3;
     float stride_x  = 70.0f;
