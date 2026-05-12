@@ -1,13 +1,18 @@
 /*
  * spi_trot_test.cpp — Jetson 단독 SPI trot 보행 테스트 (ROS2 불필요)
- * v2: 진단 출력 강화 — Phase 2 동안 target/feedback/fault 비교 출력
+ * v3: DATA_READY GPIO 동기화 옵션 추가 — STM32 의 ready 신호 기반 100% sync
  *
  * 빌드 (Jetson):
- *   g++ -O2 -o spi_trot_test spi_trot_test.cpp -lm
+ *   g++ -O2 -o spi_trot_test spi_trot_test.cpp -lm -lgpiod
  *
  * 실행:
- *   sudo ./spi_trot_test
- *   sudo ./spi_trot_test --cycles 5 --stride 50 --lift 10
+ *   sudo ./spi_trot_test                            # 기존 relative timing
+ *   sudo ./spi_trot_test --data-ready 0,105         # DATA_READY GPIO 폴링 동기화
+ *
+ * DATA_READY 핀 찾기 (Jetson 에서 한 번만):
+ *   sudo apt install gpiod libgpiod-dev
+ *   gpioinfo | grep -i "PR\|GPIO01"   # Pin 29 의 chip,line 확인
+ *   예: "gpiochip0 line 144 PR.04" → --data-ready 0,144
  *
  * Ctrl+C → IDLE (torque OFF) 전송 후 종료
  */
@@ -27,6 +32,7 @@
 #include <sys/mman.h>
 #include <sched.h>
 #include <linux/spi/spidev.h>
+#include <gpiod.h>
 
 /* ─── 프로토콜 상수 ─── */
 static constexpr uint16_t COMMAND_MAGIC  = 0xA55A;
@@ -35,9 +41,12 @@ static constexpr int      NUM_JOINTS     = 12;
 static constexpr int      SPI_FRAME_SIZE = 261;
 static constexpr int      MOSI_PAYLOAD   = 116;
 
-static constexpr uint8_t MODE_IDLE     = 0;
-static constexpr uint8_t MODE_POSITION = 1;
-static constexpr uint8_t MODE_HOLD     = 3;
+/* Wire mode (STM 펌웨어 spi_protocol.h 와 동기 — DISABLE/OPERATE 두 가지)
+ * Bridge 가 ROS msg semantic mode (STAND/RL/CROUCH/...) 를 OPERATE 로 매핑함.
+ * 이 test 도구는 직접 wire 값으로 보내므로 OPERATE 만 사용.
+ */
+static constexpr uint8_t MODE_DISABLE = 0;
+static constexpr uint8_t MODE_OPERATE = 1;
 static constexpr uint8_t FLAG_TORQUE_EN = 0x01;
 
 /* ─── 로봇 파라미터 (firmware/Inc/config.h) ─── */
@@ -70,7 +79,48 @@ static const char* fault_name(uint8_t f) {
 static volatile sig_atomic_t g_stop = 0;
 static int spi_fd = -1;
 
+/* ─── DATA_READY GPIO (선택) ───
+ * STM32 의 DATA_READY 핀이 HIGH 일 때만 SPI frame 을 보내서
+ * STM32 의 body 처리 중 (DMA 안 armed) 시점에 frame 이 사라지는 문제 제거.
+ * --data-ready CHIP,LINE 옵션으로 활성화. 비활성 시 기존 relative timing 그대로.
+ */
+static gpiod_chip* g_dr_chip   = nullptr;
+static gpiod_line* g_dr_line   = nullptr;
+static bool        g_dr_enable = false;
+/* 5ms timeout: 50Hz 주기 (20ms) 의 1/4. STM32 의 cycle 이 wedge 됐다면
+ * 더 기다려도 회수 가능성 낮음 → 빠르게 fallback send 가 낫다. */
+static constexpr long DR_TIMEOUT_US = 5000;
+
 static void signal_handler(int) { g_stop = 1; }
+
+/* DATA_READY HIGH 까지 폴링. timeout 초과 시 false (그래도 호출자는 send 강행). */
+static bool wait_data_ready_high()
+{
+    if (!g_dr_enable) return true;
+
+    struct timespec t0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+
+    while (!g_stop) {
+        int v = gpiod_line_get_value(g_dr_line);
+        if (v == 1) return true;
+        if (v < 0) {
+            /* gpiod read error — 동기화 포기, send 강행 */
+            return false;
+        }
+
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        long us = (now.tv_sec - t0.tv_sec) * 1000000L
+                + (now.tv_nsec - t0.tv_nsec) / 1000L;
+        if (us > DR_TIMEOUT_US) return false;
+
+        /* 10us 단위 폴링 — busy spin 안 하면서도 latency 충분히 낮음 */
+        struct timespec sl = {0, 10000};
+        nanosleep(&sl, nullptr);
+    }
+    return false;
+}
 
 /* ═══════════════════════════════════
    시간 유틸
@@ -329,6 +379,8 @@ int main(int argc, char **argv)
     int   spi_bus   = 0;
     int   spi_dev   = 0;
     bool  idle_test = false;     /* --idle-test: 모터 안 움직이고 SPI loss 측정 */
+    int   dr_chip_id = -1;       /* --data-ready CHIP,LINE → gpiochipN */
+    int   dr_line_id = -1;       /* --data-ready CHIP,LINE → line offset */
 
     /* 인자 파싱 */
     static struct option long_opts[] = {
@@ -340,11 +392,12 @@ int main(int argc, char **argv)
         {"bus",        required_argument, 0, 'b'},
         {"dev",        required_argument, 0, 'D'},
         {"idle-test",  no_argument,       0, 'I'},
+        {"data-ready", required_argument, 0, 'R'},
         {"help",       no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
     int opt;
-    while ((opt = getopt_long(argc, argv, "c:s:l:p:d:b:D:Ih", long_opts, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "c:s:l:p:d:b:D:IR:h", long_opts, nullptr)) != -1) {
         switch (opt) {
             case 'c': n_cycles = atoi(optarg); break;
             case 's': stride_x = strtof(optarg, nullptr); break;
@@ -354,10 +407,19 @@ int main(int argc, char **argv)
             case 'b': spi_bus  = atoi(optarg); break;
             case 'D': spi_dev  = atoi(optarg); break;
             case 'I': idle_test = true; break;
+            case 'R':
+                if (sscanf(optarg, "%d,%d", &dr_chip_id, &dr_line_id) != 2) {
+                    fprintf(stderr, "[err] --data-ready 형식: CHIP,LINE (예: 0,144)\n");
+                    return 1;
+                }
+                break;
             case 'h':
                 printf("Usage: sudo %s [--cycles N] [--stride MM] [--lift MM] "
-                       "[--period S] [--duty F] [--bus N] [--dev N] [--idle-test]\n"
-                       "  --idle-test : 모터 안 움직이고 IDLE 명령만 보내서 SPI loss 측정\n",
+                       "[--period S] [--duty F] [--bus N] [--dev N] [--idle-test] "
+                       "[--data-ready CHIP,LINE]\n"
+                       "  --idle-test  : 모터 안 움직이고 IDLE 명령만 보내서 SPI loss 측정\n"
+                       "  --data-ready : STM32 ready 신호 폴링 동기화\n"
+                       "                 CHIP/LINE 은 `gpioinfo | grep PR.04` 등으로 확인\n",
                        argv[0]);
                 return 0;
         }
@@ -370,6 +432,39 @@ int main(int argc, char **argv)
     /* SPI 열기 */
     spi_fd = spi_open(spi_bus, spi_dev, 5000000);
     if (spi_fd < 0) return 1;
+
+    /* DATA_READY GPIO 열기 (옵션) */
+    if (dr_chip_id >= 0 && dr_line_id >= 0) {
+        char chip_path[32];
+        snprintf(chip_path, sizeof(chip_path), "/dev/gpiochip%d", dr_chip_id);
+        g_dr_chip = gpiod_chip_open(chip_path);
+        if (!g_dr_chip) {
+            fprintf(stderr, "[err] gpiod_chip_open(%s) 실패: %s\n",
+                    chip_path, strerror(errno));
+            close(spi_fd);
+            return 1;
+        }
+        g_dr_line = gpiod_chip_get_line(g_dr_chip, dr_line_id);
+        if (!g_dr_line) {
+            fprintf(stderr, "[err] gpiod_chip_get_line(%d) 실패\n", dr_line_id);
+            gpiod_chip_close(g_dr_chip);
+            close(spi_fd);
+            return 1;
+        }
+        /* input 으로 요청 — STM32 가 driver, Jetson 은 reader */
+        if (gpiod_line_request_input(g_dr_line, "spi_trot_test") < 0) {
+            fprintf(stderr, "[err] gpiod_line_request_input 실패: %s\n",
+                    strerror(errno));
+            gpiod_chip_close(g_dr_chip);
+            close(spi_fd);
+            return 1;
+        }
+        g_dr_enable = true;
+        printf("[GPIO] DATA_READY enabled: gpiochip%d line %d (timeout %ldus)\n",
+               dr_chip_id, dr_line_id, DR_TIMEOUT_US);
+    } else {
+        printf("[GPIO] DATA_READY disabled — relative timing only\n");
+    }
 
     /* standing pose 계산 */
     float stand_target[12];
@@ -398,9 +493,12 @@ int main(int argc, char **argv)
     float   target[12] = {};
     uint16_t seq = 0;
     const double TICK = 0.02;  /* 50Hz */
+    int dr_timeouts = 0;       /* DATA_READY HIGH 못 보고 fallback send 한 횟수 */
 
     auto send = [&](uint8_t mode, uint8_t flags, const float *tgt,
                     const float *dlt, float gph = 0, uint32_t gcyc = 0) -> FeedbackPacket {
+        /* STM32 ready 신호 폴링 — g_dr_enable=false 면 즉시 true 반환 */
+        if (!wait_data_ready_high()) dr_timeouts++;
         build_mosi(tx, seq, mode, flags, tgt, dlt, gph, gcyc);
         spi_transfer(spi_fd, tx, rx, SPI_FRAME_SIZE);
         seq = (seq + 1) & 0xFFFF;
@@ -409,7 +507,7 @@ int main(int argc, char **argv)
 
     auto send_idle = [&]() {
         float z[12] = {};
-        return send(MODE_IDLE, 0, z, z);
+        return send(MODE_DISABLE, 0, z, z);
     };
 
     /*
@@ -458,7 +556,7 @@ int main(int argc, char **argv)
     {
         printf("[Diag] SPI check... ");
         float zt[12] = {}, zd[12] = {};
-        build_mosi(tx, 0xFFFF, MODE_IDLE, 0, zt, zd, 0, 0);
+        build_mosi(tx, 0xFFFF, MODE_DISABLE, 0, zt, zd, 0, 0);
         spi_transfer(spi_fd, tx, rx, SPI_FRAME_SIZE);
         printf("TX[0:4]=%02X %02X %02X %02X  RX[0:4]=%02X %02X %02X %02X\n",
                tx[0], tx[1], tx[2], tx[3],
@@ -534,7 +632,7 @@ int main(int argc, char **argv)
                 interp[i] = initial_pose[i]
                           + (stand_target[i] - initial_pose[i]) * s;
             }
-            send(MODE_POSITION, FLAG_TORQUE_EN, interp, delta_smooth);
+            send(MODE_OPERATE, FLAG_TORQUE_EN, interp, delta_smooth);
             sleep_until(now_sec() + TICK);
         }
     }
@@ -548,7 +646,7 @@ int main(int argc, char **argv)
         printf("[Phase 1.5] Hold standing (%.1fs)\n", DWELL_BEFORE_TROT);
         double t_end = now_sec() + DWELL_BEFORE_TROT;
         while (now_sec() < t_end && !g_stop) {
-            send(MODE_POSITION, FLAG_TORQUE_EN, stand_target, delta_smooth);
+            send(MODE_OPERATE, FLAG_TORQUE_EN, stand_target, delta_smooth);
             sleep_until(now_sec() + TICK);
         }
     }
@@ -587,9 +685,9 @@ int main(int argc, char **argv)
             FeedbackPacket fb;
             double t_before_send = now_sec();
             if (idle_test) {
-                fb = send(MODE_IDLE, 0, zero_target, zero_delta, 0.0f, 0);
+                fb = send(MODE_DISABLE, 0, zero_target, zero_delta, 0.0f, 0);
             } else {
-                fb = send(MODE_POSITION, FLAG_TORQUE_EN,
+                fb = send(MODE_OPERATE, FLAG_TORQUE_EN,
                           target, delta_walk, phase, (uint32_t)cycle);
             }
             double send_ms = (now_sec() - t_before_send) * 1000.0;
@@ -688,7 +786,7 @@ int main(int argc, char **argv)
                 interp[i] = last_target[i]
                           + (stand_target[i] - last_target[i]) * s;
             }
-            send(MODE_POSITION, FLAG_TORQUE_EN, interp, delta_smooth);
+            send(MODE_OPERATE, FLAG_TORQUE_EN, interp, delta_smooth);
             sleep_until(now_sec() + TICK);
         }
     }
@@ -718,7 +816,7 @@ int main(int argc, char **argv)
                 interp[i] = stand_target[i]
                           + (initial_pose[i] - stand_target[i]) * s;
             }
-            send(MODE_POSITION, FLAG_TORQUE_EN, interp, delta_smooth);
+            send(MODE_OPERATE, FLAG_TORQUE_EN, interp, delta_smooth);
             sleep_until(now_sec() + TICK);
         }
     }
@@ -745,6 +843,11 @@ int main(int argc, char **argv)
     printf("    iter  > 30ms: %d 회\n", iter_over_30);
     printf("    send  >  5ms: %d 회\n", send_over_5);
     printf("    sleep > 30ms: %d 회\n", sleep_over_30);
+    if (g_dr_enable) {
+        printf("    DATA_READY timeout: %d 회 / %d ticks (%.1f%%)\n",
+               dr_timeouts, total_ticks,
+               total_ticks > 0 ? 100.0 * dr_timeouts / total_ticks : 0.0);
+    }
     if (pause_count > 0) {
         printf("  상세 (iter > 30ms 인 iteration, 최대 %d개):\n",
                (int)(sizeof(pauses)/sizeof(pauses[0])));
@@ -791,7 +894,7 @@ int main(int argc, char **argv)
     if (!g_stop) {
         printf("[Phase 5] Holding initial pose. Press Ctrl+C to release torque.\n");
         while (!g_stop) {
-            send(MODE_HOLD, FLAG_TORQUE_EN, initial_pose, delta_smooth);
+            send(MODE_OPERATE, FLAG_TORQUE_EN, initial_pose, delta_smooth);
             sleep_until(now_sec() + TICK);
         }
     }
@@ -804,6 +907,11 @@ int main(int argc, char **argv)
     }
 
     close(spi_fd);
+
+    /* DATA_READY GPIO 정리 — line release 안 하면 다음 실행에서 EBUSY */
+    if (g_dr_line) gpiod_line_release(g_dr_line);
+    if (g_dr_chip) gpiod_chip_close(g_dr_chip);
+
     printf("\n=== %s ===\n", g_stop ? "Ctrl+C: 종료" : "Trot test complete!");
     return 0;
 }
