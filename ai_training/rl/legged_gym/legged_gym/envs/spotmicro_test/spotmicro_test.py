@@ -322,8 +322,14 @@ class SpotmicroTest(LeggedRobot):
         leg_y = self.leg_origin_y.unsqueeze(0)  # [1, 4]
 
         # yaw 회전에 따른 다리별 목표 foot velocity
+        '''
+        self.turn_half_width = 0.09
+
+        turn_y = torch.sign(self.leg_origin_y).unsqueeze(0) * self.turn_half_width
+        foot_vx = vx - wz * turn_y
+        '''
         foot_vx = vx - wz * leg_y
-        #foot_vy = vy + wz * leg_x
+        foot_vy = vy + wz * leg_x
         foot_vy = torch.zeros_like(foot_vx)
 
         stance_time = self.gait_period * self.duty_factor
@@ -336,14 +342,14 @@ class SpotmicroTest(LeggedRobot):
             -self.max_stride_x,
             self.max_stride_x,
         )
-        '''
+        
         stride_y = torch.clamp(
             stride_y,
             -self.max_stride_y,
             self.max_stride_y,
         )
-        '''
-        stride_y = torch.zeros_like(stride_x)
+        
+        #stride_y = torch.zeros_like(stride_x)
         offsets = torch.tensor(
             [0.0, 0.5, 0.5, 0.0],
             device=self.device,
@@ -381,7 +387,7 @@ class SpotmicroTest(LeggedRobot):
         # y 방향 목표를 shoulder reference로 변환
         shoulder_raw = self.shoulder_y_gain * torch.atan2(y, -z)
 
-        '''
+        
         shoulder_ref = torch.clamp(
             shoulder_raw,
             -self.shoulder_ref_limit,
@@ -389,8 +395,8 @@ class SpotmicroTest(LeggedRobot):
         )
 
         shoulder_ref = shoulder_ref * self.shoulder_sign.unsqueeze(0)
-        '''
-        shoulder_ref = torch.zeros((self.num_envs, 4), device=self.device)
+        
+        #shoulder_ref = torch.zeros((self.num_envs, 4), device=self.device)
 
         # shoulder가 y 방향을 담당한다고 보고,
         # leg/foot IK는 x-z_eff 평면에서 계산
