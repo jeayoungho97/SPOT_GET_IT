@@ -53,3 +53,4 @@
 | 049 | 05/12 | spotmicro_v5_2_2_tracking_ik_desc | V5.2.1: gait period 조정 | 94.8% | 0.049 | 16.8% | ✅ |
 | 050 | 05/12 | spotmicro_v5_2_2_tracking_ik_desc | V5.2.1: gait period 조정 | 94.8% | 0.050 | 14.5% | ✅ |
 | 051 | 05/12 | spotmicro_v5_3_stand_still | V5.3: 정지상태 yaw 오차 감소 | 89.5% | 0.046 | 17.4% | ✅ |
+| 052 | 05/12 | spotmicro_v5_4_IK_yaw | V5.4: yaw_ik 수정 | 98.5% | 0.049 | 14.2% | ✅ |
