@@ -8,7 +8,7 @@ actuator_bridge_node:
 
     use_data_ready: true
     data_ready_gpiochip: "/dev/gpiochip0"
-    data_ready_line: 0              # 실제 연결한 Jetson GPIO line 번호로 수정
+    data_ready_line: 105              # 실제 연결한 Jetson GPIO line 번호로 수정
     data_ready_active_high: true
     data_ready_timeout_us: 5000
     data_ready_poll_interval_us: 50
