@@ -427,8 +427,28 @@ int main(int argc, char **argv)
         float    phase;
         uint8_t  from, to;
     };
-    static DiagSnap   snaps[64];   int snap_count = 0;
-    static FaultEvent fevents[32]; int fevent_count = 0;
+    /*
+     * Pause 진단 — 어떤 iteration 이 비정상적으로 길었는지 추적.
+     *   send_ms : SPI ioctl 시간 (정상 1~2ms)
+     *   sleep_ms: sleep_until 시간 (정상 ~18ms)
+     *   iter_ms : 전체 iteration 시간 (정상 ~20ms)
+     */
+    struct PauseEvent {
+        int    tick;
+        double iter_ms;
+        double send_ms;
+        double sleep_ms;
+    };
+    static DiagSnap   snaps[64];     int snap_count = 0;
+    static FaultEvent fevents[32];   int fevent_count = 0;
+    static PauseEvent pauses[64];    int pause_count = 0;
+    double max_iter_ms = 0;
+    double max_send_ms = 0;
+    double max_sleep_ms = 0;
+    int    iter_over_30 = 0;     /* iter > 30ms 횟수 */
+    int    send_over_5  = 0;     /* send > 5ms 횟수 */
+    int    sleep_over_30 = 0;    /* sleep > 30ms 횟수 */
+
     int total_ticks = 0;
     int valid_ticks = 0;
     int safety_count = 0;
@@ -552,7 +572,8 @@ int main(int argc, char **argv)
         uint8_t last_fault = 255;
 
         while (!g_stop) {
-            double elapsed = now_sec() - t_walk_start;
+            double t_iter_start = now_sec();    /* === pause 진단 시작 === */
+            double elapsed = t_iter_start - t_walk_start;
             if (elapsed >= total_walk) break;
 
             float phase = fmodf((float)elapsed, period_s) / period_s;
@@ -564,12 +585,16 @@ int main(int argc, char **argv)
             float zero_target[12] = {0};
             float zero_delta[12]  = {0};
             FeedbackPacket fb;
+            double t_before_send = now_sec();
             if (idle_test) {
                 fb = send(MODE_IDLE, 0, zero_target, zero_delta, 0.0f, 0);
             } else {
                 fb = send(MODE_POSITION, FLAG_TORQUE_EN,
                           target, delta_walk, phase, (uint32_t)cycle);
             }
+            double send_ms = (now_sec() - t_before_send) * 1000.0;
+            if (send_ms > max_send_ms) max_send_ms = send_ms;
+            if (send_ms > 5.0) send_over_5++;
 
             if (fb.valid) {
                 valid_ticks++;
@@ -602,7 +627,25 @@ int main(int argc, char **argv)
             }
 
             tick_count++;
+            double t_before_sleep = now_sec();
             sleep_until(t_walk_start + tick_count * TICK);
+            double sleep_ms = (now_sec() - t_before_sleep) * 1000.0;
+            if (sleep_ms > max_sleep_ms) max_sleep_ms = sleep_ms;
+            if (sleep_ms > 30.0) sleep_over_30++;
+
+            /* === Pause 진단: 비정상적으로 긴 iteration 기록 === */
+            double iter_ms = (now_sec() - t_iter_start) * 1000.0;
+            if (iter_ms > max_iter_ms) max_iter_ms = iter_ms;
+            if (iter_ms > 30.0) {
+                iter_over_30++;
+                if (pause_count < 64) {
+                    PauseEvent& p = pauses[pause_count++];
+                    p.tick = tick_count - 1;
+                    p.iter_ms = iter_ms;
+                    p.send_ms = send_ms;
+                    p.sleep_ms = sleep_ms;
+                }
+            }
         }
         total_ticks = tick_count;
     }
@@ -682,6 +725,32 @@ int main(int argc, char **argv)
     printf("  IDLE mst tick: %d / %d (%.0f%%)\n",
            idle_count, valid_ticks,
            valid_ticks > 0 ? 100.0*idle_count/valid_ticks : 0.0);
+
+    /* === Pause 진단 결과 === */
+    printf("\n  ── Pause 진단 ──\n");
+    printf("  Loop iteration 시간:\n");
+    printf("    max iter:  %.1fms (정상 ~20ms)\n", max_iter_ms);
+    printf("    max send:  %.1fms (정상 1~2ms)  →  큼이면 SPI ioctl block\n", max_send_ms);
+    printf("    max sleep: %.1fms (정상 ~18ms)  →  큼이면 scheduler 지연\n", max_sleep_ms);
+    printf("  비정상 카운트:\n");
+    printf("    iter  > 30ms: %d 회\n", iter_over_30);
+    printf("    send  >  5ms: %d 회\n", send_over_5);
+    printf("    sleep > 30ms: %d 회\n", sleep_over_30);
+    if (pause_count > 0) {
+        printf("  상세 (iter > 30ms 인 iteration, 최대 %d개):\n",
+               (int)(sizeof(pauses)/sizeof(pauses[0])));
+        for (int i = 0; i < pause_count; i++) {
+            PauseEvent& p = pauses[i];
+            const char* cause = "?";
+            if (p.send_ms > 10.0) cause = "SPI ioctl block";
+            else if (p.sleep_ms > 30.0) cause = "scheduler 지연";
+            else cause = "기타 (body 처리 느림)";
+            printf("    tick=%d iter=%.1fms send=%.1fms sleep=%.1fms → %s\n",
+                   p.tick, p.iter_ms, p.send_ms, p.sleep_ms, cause);
+        }
+    }
+    printf("\n");
+
     if (fevent_count > 0) {
         printf("  fault transitions:\n");
         for (int i = 0; i < fevent_count; i++) {
