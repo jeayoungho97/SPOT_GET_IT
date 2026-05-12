@@ -272,7 +272,15 @@ class SpotmicroTest(LeggedRobot):
         
     def _reward_stand_still(self):
         cmd_norm = torch.norm(self.commands[:, :3], dim=1)
-        return torch.sum(torch.abs(self.dof_pos - self.default_dof_pos), dim=1) * (cmd_norm < 0.1)
+        is_stand = (cmd_norm < 0.1).float()
+
+        lin_penalty = torch.sum(torch.square(self.base_lin_vel[:, :2]), dim=1)
+        yaw_penalty = torch.square(self.base_ang_vel[:, 2])
+        pose_penalty = 0.2 * torch.sum(
+            torch.square(self.dof_pos - self.default_dof_pos), dim=1
+        )
+
+        return (lin_penalty + 0.5 * yaw_penalty + pose_penalty) * is_stand
 
     def _get_ik_target(self):
         vx = self.commands[:, 0]
