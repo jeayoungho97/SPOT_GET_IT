@@ -254,9 +254,20 @@ void control_loop_run(void) {
     static volatile uint32_t arm_fail        = 0;       /* arm 실패 횟수 */
     static volatile uint32_t dr_high_set     = 0;       /* DATA_READY_HIGH() 실제 호출된 횟수 */
 
+    /* NSS (PA4) edge polling — Jetson CS 가 토글되는지 main loop 50Hz 로 polling */
+    static uint8_t  last_nss = 1;
+    static uint32_t nss_low_cnt = 0;       /* 1초간 NSS falling edge 횟수 */
+
     while (1) {
         last_step = 0;
         uint32_t t_start = HAL_GetTick();
+
+        /* NSS state polling — Jetson CS 토글 detect (50Hz sampling, 짧은 pulse 는 놓침) */
+        uint8_t nss_now = (GPIOA->IDR & GPIO_PIN_4) ? 1 : 0;
+        if (last_nss == 1 && nss_now == 0) {
+            nss_low_cnt++;
+        }
+        last_nss = nss_now;
 
         /* ESC 체크 */
         if (check_esc()) emergency_stop();
@@ -339,6 +350,16 @@ void control_loop_run(void) {
             uint8_t dr_odr = (GPIOB->ODR & GPIO_PIN_0) ? 1 : 0;
             uint8_t dr_idr = (GPIOB->IDR & GPIO_PIN_0) ? 1 : 0;
 
+            /* NSS (CS, PA4) 핀 상태 + SPI status register
+             * nss_idr : 현재 PA4 전기상태. idle 시 1 정상, 0 이면 CS 가 active stuck.
+             * nss_lo  : 지난 1초간 NSS LOW falling edge 횟수 (50Hz polling 추정).
+             * spi_sr  : SPI1->SR raw. bit5=MODF, bit6=OVR, bit7=BSY, bit8=FRE.
+             */
+            uint8_t  nss_idr = (GPIOA->IDR & GPIO_PIN_4) ? 1 : 0;
+            uint32_t nss_lo  = nss_low_cnt;
+            nss_low_cnt = 0;
+            uint32_t spi_sr  = SPI1->SR;
+
             /* 지난 1초간 arm 통계 delta */
             static uint32_t prev_arm_ok = 0, prev_arm_fail = 0, prev_arm_skipped = 0, prev_dr_high = 0;
             uint32_t d_arm_ok       = arm_ok       - prev_arm_ok;
@@ -351,8 +372,8 @@ void control_loop_run(void) {
             prev_dr_high      = dr_high_set;
 
             printf("[%lu] mode=%u st=0x%02X fault=%u torque=%u seq=%u "
-                   "rx=%lu/s crc_err=%lu/s spi_st=%lu spi_err=0x%lX "
-                   "dr_odr=%u dr_idr=%u step=%u "
+                   "rx=%lu/s crc_err=%lu/s spi_st=%lu spi_err=0x%lX spi_sr=0x%lX "
+                   "dr=%u/%u nss=%u nss_lo=%lu step=%u "
                    "arm_ok=%lu/s skip=%lu/s fail=%lu/s drH=%lu/s arm_ret=%u "
                    "isr_err=%lu recover=%lu "
                    "maxT=%.0fC(j%d) Vbus=%.1fV "
@@ -367,7 +388,10 @@ void control_loop_run(void) {
                    (unsigned long)crc_err_delta,
                    (unsigned long)spi_state_now,
                    (unsigned long)spi_err_now,
-                   (unsigned)dr_odr, (unsigned)dr_idr, (unsigned)last_step,
+                   (unsigned long)spi_sr,
+                   (unsigned)dr_odr, (unsigned)dr_idr,
+                   (unsigned)nss_idr, (unsigned long)nss_lo,
+                   (unsigned)last_step,
                    (unsigned long)d_arm_ok, (unsigned long)d_arm_skipped,
                    (unsigned long)d_arm_fail, (unsigned long)d_dr_high,
                    (unsigned)last_arm_ret,
