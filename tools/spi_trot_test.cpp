@@ -569,7 +569,24 @@ int main(int argc, char **argv)
             }
 
             tick_count++;
-            sleep_until(t_walk_start + tick_count * TICK);
+            double t_next = t_walk_start + tick_count * TICK;
+            double now = now_sec();
+
+            /*
+             * Burst 방지: scheduler 가 trot loop 을 길게 schedule out 시키면
+             * t_next 가 이미 한참 과거 → sleep_until 즉시 return → 다음 iteration
+             * 도 즉시 → 100~200Hz 로 burst 송신 → STM32 처리 못 따라가서 양방향
+             * SPI 프레임 깨짐 (Jetson 측 invalid feedback + STM32 측 CRC_ERROR).
+             *
+             * 50ms (2.5 tick) 이상 늦으면 잃은 frame 은 잃은 채로 두고
+             * tick_count 를 현재 시간에 맞춰 점프 → 정상 50Hz 페이스 복귀.
+             */
+            if (now > t_next + 0.05) {
+                tick_count = (int)((now - t_walk_start) / TICK) + 1;
+                /* sleep 없이 즉시 다음 iteration */
+            } else {
+                sleep_until(t_next);
+            }
         }
         total_ticks = tick_count;
     }
