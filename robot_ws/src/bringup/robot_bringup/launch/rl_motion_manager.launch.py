@@ -18,7 +18,7 @@ def generate_launch_description():
     actuator_param = os.path.join(
         actuator_share,
         'config',
-        'spi_bridge.param.yaml'
+        'uart_bridge.param.yaml'
     )
 
     motion_param = os.path.join(
