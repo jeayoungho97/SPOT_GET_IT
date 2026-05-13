@@ -6,7 +6,7 @@ import os
 
 def generate_launch_description():
     pkg_share = get_package_share_directory("actuator_bridge")
-    param_file = os.path.join(pkg_share, "config", "spi_bridge.param.yaml")
+    param_file = os.path.join(pkg_share, "config", "uart_bridge.param.yaml")
 
     return LaunchDescription(
         [

@@ -2,7 +2,7 @@ actuator_bridge_node:
   ros__parameters:
     control_rate_hz: 50.0
     spi_device: "/dev/spidev0.0"
-    spi_speed_hz: 5000000
+    spi_speed_hz: 100000
     spi_mode: 0
     spi_bits_per_word: 8
 
