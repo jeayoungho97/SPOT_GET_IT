@@ -1,4 +1,5 @@
 #include "uart_jetson.h"
+#include "system_hal.h"   /* Error_Handler() */
 
 /* === Peripheral handles === */
 UART_HandleTypeDef huart_jetson;
@@ -14,18 +15,20 @@ static volatile bool     rx_idle = false;
 /* === USART1 초기화: 921600 8N1, full-duplex, DMA === */
 void MX_USART1_Jetson_Init(void)
 {
-    /* ---- GPIO: PA9 (TX), PA10 (RX) ---- */
-    __HAL_RCC_GPIOA_CLK_ENABLE();
+    /* ---- GPIO: PB6 (TX), PB7 (RX) — USART1 alternate pins
+     * PA9/PA10 는 Nucleo-F446RE 의 USB OTG VBUS/ID 회로와 충돌 (PA10 풀다운)
+     * 으로 사용 불가. PB6/PB7 로 우회. (원래 I2C1 자리는 PB8/PB9 로 swap 완료) */
+    __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_USART1_CLK_ENABLE();
     __HAL_RCC_DMA2_CLK_ENABLE();
 
     GPIO_InitTypeDef gp = {0};
-    gp.Pin       = GPIO_PIN_9 | GPIO_PIN_10;
+    gp.Pin       = GPIO_PIN_6 | GPIO_PIN_7;
     gp.Mode      = GPIO_MODE_AF_PP;
-    gp.Pull      = GPIO_PULLUP;
+    gp.Pull      = GPIO_NOPULL;
     gp.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
     gp.Alternate = GPIO_AF7_USART1;
-    HAL_GPIO_Init(GPIOA, &gp);
+    HAL_GPIO_Init(GPIOB, &gp);
 
     /* ---- USART1 ---- */
     huart_jetson.Instance          = USART1;
@@ -94,10 +97,15 @@ void uart_jetson_start_rx(void)
     __HAL_UART_ENABLE_IT(&huart_jetson, UART_IT_IDLE);
 }
 
-/* === TX: feedback DMA 전송 === */
+/* === TX: feedback DMA 전송 ===
+ * 주의: HAL_UART_GetState() 는 gState(TX) | RxState 의 OR 값을 반환.
+ *       RX DMA circular 모드가 활성이면 RxState=BUSY_RX 라서
+ *       HAL_UART_STATE_BUSY_TX 비트와 우연히 겹쳐 항상 busy 로 오판됨.
+ *       반드시 gState 만 직접 확인해야 함.
+ */
 bool uart_jetson_transmit_dma(const uint8_t *data, uint16_t size)
 {
-    if (HAL_UART_GetState(&huart_jetson) & HAL_UART_STATE_BUSY_TX) {
+    if (huart_jetson.gState != HAL_UART_STATE_READY) {
         return false;
     }
     return HAL_UART_Transmit_DMA(&huart_jetson, (uint8_t *)data, size) == HAL_OK;
@@ -105,7 +113,7 @@ bool uart_jetson_transmit_dma(const uint8_t *data, uint16_t size)
 
 bool uart_jetson_tx_ready(void)
 {
-    return !(HAL_UART_GetState(&huart_jetson) & HAL_UART_STATE_BUSY_TX);
+    return huart_jetson.gState == HAL_UART_STATE_READY;
 }
 
 /* === IDLE 콜백 — USART1_IRQHandler 에서 호출 === */
@@ -121,8 +129,17 @@ void uart_jetson_idle_callback(void)
 
 /* === RX 버퍼 접근 함수들 === */
 const uint8_t *uart_jetson_rx_buffer(void)   { return rx_buf; }
-uint16_t       uart_jetson_rx_head(void)     { return rx_head; }
 uint16_t       uart_jetson_rx_tail(void)     { return rx_tail; }
+
+/* rx_head 는 IDLE ISR 에서도 갱신되지만, 신뢰성을 위해 항상 DMA NDTR 에서
+ * 직접 계산. IDLE 인터럽트가 어떤 이유로 안 와도 데이터 위치 즉시 반영. */
+uint16_t uart_jetson_rx_head(void)
+{
+    uint16_t ndtr = (uint16_t)__HAL_DMA_GET_COUNTER(huart_jetson.hdmarx);
+    uint16_t h = JETSON_UART_RX_BUF_SIZE - ndtr;
+    if (h >= JETSON_UART_RX_BUF_SIZE) h = 0;
+    return h;
+}
 
 void uart_jetson_rx_consume(uint16_t new_tail)
 {

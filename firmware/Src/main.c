@@ -9,9 +9,10 @@
 #include "joint_control.h"
 #include "calibration.h"
 #include "spi_protocol.h"
-#include "spi.h"
+#include "uart_jetson.h"
 #include "control_loop.h"
 #include <stdio.h>
+#include <string.h>
 #include <math.h>
 
 int main(void) {
@@ -33,12 +34,10 @@ int main(void) {
     printf("  Demo: JOINT-TEST  (ESC to exit)\r\n");
 #elif DEMO_MODE == MODE_CAL_MEASURE
     printf("  Demo: CALIBRATION  (ESC to exit)\r\n");
-#elif DEMO_MODE == MODE_SPI_TEST
-    printf("  Demo: SPI-TEST  (ESC to exit)\r\n");
 #elif DEMO_MODE == MODE_RL_CONTROL
     printf("  Demo: RL-CONTROL  (Jetson 50Hz control loop)\r\n");
-#elif DEMO_MODE == MODE_DR_TOGGLE_TEST
-    printf("  Demo: DR-TOGGLE-TEST  (PB0 1Hz 토글 — 배선 검증)\r\n");
+#elif DEMO_MODE == MODE_UART_HELLO
+    printf("  Demo: UART-HELLO  (USART1 hello/echo — 통신 검증)\r\n");
 #endif
 #if IN_HAND_MODE
     printf("  Safety: IN-HAND  (비활성, 손에 들고 시연)\r\n");
@@ -63,27 +62,93 @@ int main(void) {
 #endif
     printf("=================================================\r\n");
 
-#if DEMO_MODE == MODE_DR_TOGGLE_TEST
-    /* === DATA_READY (PB0) LOW 유지 테스트 ===
-     * Jetson 쪽 gpiod 배선/코드 검증용. 서보·IMU 의존 없이 GPIO 를 LOW 로 고정.
-     * 확인 방법 (Jetson):
-     *   sudo gpioget <chip> <line>      # 0 이 찍히면 OK
-     * heartbeat 1초마다 UART 로 찍어서 STM32 가 살아 있음을 확인.
-     * 종료: ESC (delay_with_estop 안에서 폴링) 또는 보드 리셋.
+#if DEMO_MODE == MODE_UART_HELLO
+    /* === USART1 (Jetson 통신) hello/echo 테스트 ===
+     * 서보/IMU 의존 없이 UART 만 검증.
+     * STM→Jetson: 1초마다 "hello UART N" 송신 (UART TX DMA)
+     * Jetson→STM: 받은 바이트는 ST-Link VCP 콘솔에 hex dump
+     *
+     * Jetson 측 검증 명령:
+     *   screen /dev/ttyTHS1 921600
+     *   (또는 picocom -b 921600 /dev/ttyTHS1)
+     * 키 입력하면 STM 콘솔에 [RX] XX XX ... 로 찍힘.
+     * 종료: 보드 리셋.
      */
-    printf("\r\n=== DATA_READY (PB0) LOW hold test ===\r\n");
-    printf("    PB0 = LOW (constant). ESC to exit.\r\n");
-    DATA_READY_LOW();
-    {
-    	uint32_t cnt = 0;
-    	while (1) {
-    	    DATA_READY_HIGH();
-    	    printf("[%lu] DR=HIGH\r\n", (unsigned long)cnt++);
-    	    delay_with_estop(500);
-    	    DATA_READY_LOW();
-    	    printf("[%lu] DR=LOW\r\n", (unsigned long)cnt++);
-    	    delay_with_estop(500);
-    	}
+    printf("\r\n=== UART Hello Test (USART1, 921600 8N1) ===\r\n");
+    printf("    PB6 (TX, CN10-17)  -> Jetson Pin 10 (RX)\r\n");
+    printf("    PB7 (RX, CN7-21)   <- Jetson Pin 8  (TX)\r\n");
+    printf("    Loopback: PB6 <-> PB7 (점퍼 와이어)\r\n");
+    printf("    Jetson:  picocom -b 921600 /dev/ttyTHS1\r\n\r\n");
+
+    uart_jetson_start_rx();
+
+    uint16_t tail = 0;
+    uint32_t cnt = 0;
+    uint32_t last_tx = 0;
+    uint32_t last_diag = 0;
+    char msg[64];
+    while (1) {
+        if (check_esc()) emergency_stop();
+
+        uint32_t now = HAL_GetTick();
+
+        /* 1초마다 UART 상태 진단 출력 */
+        if (now - last_diag >= 1000) {
+            last_diag = now;
+            uint16_t ndtr = (uint16_t)__HAL_DMA_GET_COUNTER(huart_jetson.hdmarx);
+            uint16_t idr  = (uint16_t)(GPIOB->IDR & 0xFFFF);
+            printf("[DIAG] NDTR=%u gState=0x%02X RxState=0x%02X head=%u tail=%u\r\n"
+                   "       SR=0x%04lX CR1=0x%04lX CR3=0x%04lX BRR=0x%04lX\r\n"
+                   "       GPIOB: AFR0=0x%08lX MODER=0x%08lX PUPDR=0x%08lX IDR=0x%04X (PB6=%u PB7=%u)\r\n",
+                   (unsigned)ndtr,
+                   (unsigned)huart_jetson.gState,
+                   (unsigned)huart_jetson.RxState,
+                   (unsigned)uart_jetson_rx_head(),
+                   (unsigned)tail,
+                   (unsigned long)USART1->SR,
+                   (unsigned long)USART1->CR1,
+                   (unsigned long)USART1->CR3,
+                   (unsigned long)USART1->BRR,
+                   (unsigned long)GPIOB->AFR[0],
+                   (unsigned long)GPIOB->MODER,
+                   (unsigned long)GPIOB->PUPDR,
+                   (unsigned)idr,
+                   (unsigned)((idr >> 6) & 1),
+                   (unsigned)((idr >> 7) & 1));
+        }
+
+        /* 1초마다 hello 송신 — DMA + Blocking 두 방식 모두 시도해 진단 */
+        if (now - last_tx >= 1000) {
+            last_tx = now;
+            int n = snprintf(msg, sizeof(msg),
+                             "hello UART %lu\r\n",
+                             (unsigned long)cnt++);
+            if (n > 0 && uart_jetson_transmit_dma((const uint8_t *)msg, (uint16_t)n)) {
+                printf("[TX %lu DMA] %s", (unsigned long)cnt, msg);
+            } else {
+                printf("[TX %lu DMA] BUSY (skip)\r\n", (unsigned long)cnt);
+            }
+
+            /* Blocking TX — DMA 우회해서 USART 자체가 송신 가능한지 검증 */
+            const char *blk = "BLOCK\r\n";
+            HAL_StatusTypeDef ret = HAL_UART_Transmit(&huart_jetson,
+                                                     (uint8_t *)blk, 7, 100);
+            printf("[TX %lu BLOCK] ret=%d\r\n", (unsigned long)cnt, (int)ret);
+        }
+
+        /* RX 도착 바이트 hex dump (head 가 갱신됐을 때만) */
+        uint16_t head = uart_jetson_rx_head();
+        if (head != tail) {
+            const uint8_t *buf = uart_jetson_rx_buffer();
+            printf("[RX] ");
+            while (tail != head) {
+                printf("%02X ", buf[tail]);
+                tail = (uint16_t)((tail + 1) % JETSON_UART_RX_BUF_SIZE);
+            }
+            printf("\r\n");
+        }
+
+        HAL_Delay(10);
     }
     /* 도달 안 함 */
 #endif
@@ -283,52 +348,6 @@ int main(void) {
         if (elapsed < 20) HAL_Delay(20 - elapsed);
     }
 
-#elif DEMO_MODE == MODE_SPI_TEST
-    robot_state_init();
-    printf("\r\n========== SPI PROTOCOL TEST ==========\r\n");
-    printf("Waiting for Jetson SPI master (%d byte frames).\r\n", SPI_FRAME_SIZE);
-    printf("Torque OFF. Telemetry + encode/decode verification.\r\n");
-    robot_torque_off_all();
-
-    static uint8_t spi_tx_buf[SPI_FRAME_SIZE];
-    static uint8_t spi_rx_buf[SPI_FRAME_SIZE];
-
-    telemetry_update_all();
-    spi_encode_feedback(spi_tx_buf);
-
-    HAL_SPI_TransmitReceive_DMA(&hspi1, spi_tx_buf, spi_rx_buf, SPI_FRAME_SIZE);
-    DATA_READY_HIGH();
-
-    uint32_t spi_frame_count = 0;
-    while (1) {
-        if (check_esc()) emergency_stop();
-
-        if (HAL_SPI_GetState(&hspi1) == HAL_SPI_STATE_READY) {
-            DATA_READY_LOW();
-            spi_frame_count++;
-
-            decode_result_t dr = spi_decode_command(spi_rx_buf);
-
-            telemetry_update_all();
-            spi_encode_feedback(spi_tx_buf);
-
-            HAL_SPI_TransmitReceive_DMA(&hspi1, spi_tx_buf, spi_rx_buf, SPI_FRAME_SIZE);
-            DATA_READY_HIGH();
-
-            static uint32_t last_spi_print = 0;
-            uint32_t now = HAL_GetTick();
-            if (now - last_spi_print >= 250) {
-                last_spi_print = now;
-                printf("[%lu] decode=%d seq=%u mode=%u tgt[0]=%+.3f\r\n",
-                       (unsigned long)spi_frame_count,
-                       (int)dr, g_robot_state.cmd_seq,
-                       (unsigned)g_robot_state.mode,
-                       (double)g_robot_state.target_rad[0]);
-            }
-        }
-
-        HAL_Delay(POLL_PERIOD_MS);
-    }
 #endif
 
     /* === default → start, torque off === */

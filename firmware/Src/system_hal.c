@@ -57,8 +57,10 @@ static void MX_GPIO_Init(void) {
 
 static void MX_I2C1_Init(void) {
     __HAL_RCC_I2C1_CLK_ENABLE();
+    /* I2C1 핀: PB8 (SCL) / PB9 (SDA) — Arduino D15/D14 위치.
+     * PB6/PB7 은 USART1 alternate (PA9/PA10 의 USB OTG 충돌 회피용) 으로 양보. */
     GPIO_InitTypeDef gp = {0};
-    gp.Pin = GPIO_PIN_6 | GPIO_PIN_7;
+    gp.Pin = GPIO_PIN_8 | GPIO_PIN_9;
     gp.Mode = GPIO_MODE_AF_OD;
     gp.Pull = GPIO_PULLUP;
     gp.Speed = GPIO_SPEED_FREQ_VERY_HIGH;

@@ -20,10 +20,9 @@
 #define MODE_TELEMETRY_TEST 2       /* telemetry 50Hz read 검증 */
 #define MODE_JOINT_TEST     3       /* joint_control rad→raw 검증 */
 #define MODE_CAL_MEASURE    4       /* 캘리브레이션 (토크 OFF + raw 출력) */
-#define MODE_SPI_TEST       5       /* SPI slave DMA echo 검증 */
 #define MODE_RL_CONTROL     6       /* Jetson RL 50Hz control loop */
-#define MODE_DR_TOGGLE_TEST 7       /* DATA_READY (PB0) 토글 — Jetson gpiod 배선 검증용 */
-#define DEMO_MODE           MODE_RL_CONTROL
+#define MODE_UART_HELLO     8       /* USART1 hello/echo 통신 검증 (서보·IMU 의존 없음) */
+#define DEMO_MODE           MODE_UART_HELLO
 
 /* ===== Body / IK 파라미터 ===== */
 #define BODY_HEIGHT_MM      170.0f      /* default 정자세 몸체 높이 (mm) */
