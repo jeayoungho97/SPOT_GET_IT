@@ -10,6 +10,10 @@
 #include <stdio.h>
 #include <math.h>
 
+/* spi.c 에서 정의된 DMA handle (spi.h 에 extern 선언 안 돼있어서 직접 선언) */
+extern DMA_HandleTypeDef hdma_spi1_rx;
+extern DMA_HandleTypeDef hdma_spi1_tx;
+
 /* Stale 처리 — Jetson 끊김 시 단계별 degradation
  *   0   ~ WARN_MS : 정상 (fresh bit set, mode 그대로)
  *   WARN_MS ~ SAFE_MS : warn (fresh bit clear, FAULT_STALE_COMMAND set, mode 유지)
