@@ -62,10 +62,18 @@ bool telemetry_read_all_servos(void) {
         }
     }
 
+    /* Hysteresis — 1-cycle glitch (UART byte noise) 무시.
+     * 연속 N=3 cycle (60ms) 실패해야 status bit clear. 진짜 서보 disconnect 는
+     * 60ms 안에 검출 (느리지 않음). bridge 로 전달되는 status 가 안정됨. */
+    static uint8_t servo_fail_streak = 0;
     if (all_ok) {
+        servo_fail_streak = 0;
         g_robot_state.status |= STATUS_BIT_ALL_SERVOS_OK;
     } else {
-        g_robot_state.status &= ~STATUS_BIT_ALL_SERVOS_OK;
+        if (servo_fail_streak < 0xFF) servo_fail_streak++;
+        if (servo_fail_streak >= 3) {
+            g_robot_state.status &= ~STATUS_BIT_ALL_SERVOS_OK;
+        }
     }
 
     return all_ok;
@@ -75,11 +83,17 @@ bool telemetry_read_imu(void) {
     body_attitude_t tmp;
     bool ok = bno055_read_body(&hi2c1, &tmp);
 
+    /* Hysteresis — I2C glitch 1-cycle 무시. 3 cycle 연속 실패해야 clear. */
+    static uint8_t imu_fail_streak = 0;
     if (ok) {
         g_robot_state.imu = tmp;
+        imu_fail_streak = 0;
         g_robot_state.status |= STATUS_BIT_IMU_OK;
     } else {
-        g_robot_state.status &= ~STATUS_BIT_IMU_OK;
+        if (imu_fail_streak < 0xFF) imu_fail_streak++;
+        if (imu_fail_streak >= 3) {
+            g_robot_state.status &= ~STATUS_BIT_IMU_OK;
+        }
     }
 
     return ok;
