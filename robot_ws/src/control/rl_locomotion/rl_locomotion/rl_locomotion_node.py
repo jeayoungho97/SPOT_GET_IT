@@ -396,17 +396,17 @@ class RlLocomotionNode(Node):
             self._warn_throttled("imu_quat", "invalid IMU quaternion")
             return
 
-        ang = [
+        ang_raw = [
             float(msg.angular_velocity.x),
             float(msg.angular_velocity.y),
             float(msg.angular_velocity.z),
         ]
 
-        if not finite_list(ang, 3):
+        if not finite_list(ang_raw, 3):
             self._warn_throttled("imu_ang", "invalid IMU angular velocity")
             return
 
-        projected_gravity = list(
+        pg_raw = list(
             projected_gravity_from_ros_quat_xyzw(
                 qx=qx,
                 qy=qy,
@@ -415,9 +415,24 @@ class RlLocomotionNode(Node):
             )
         )
 
-        if not finite_list(projected_gravity, 3):
+        if not finite_list(pg_raw, 3):
             self._warn_throttled("imu_gravity", "invalid projected gravity")
             return
+
+        # === IMU mount-frame -> robot body-frame axis remap ===
+        # 실제 mount 관측 (gravity 방향 기준):
+        #   정자세           : gravity along +Y_imu  -> robot +Z (up) = -Y_imu
+        #   left side down   : gravity along +Z_imu  -> robot +Y (right) = -Z_imu
+        #   head up vertical : gravity along +X_imu  -> robot +X (forward) = -X_imu
+        # Rotation (IMU -> body): R = [[-1,0,0],[0,0,-1],[0,-1,0]]  (det = +1)
+        #   new_x = -old_x
+        #   new_y = -old_z
+        #   new_z = -old_y
+        def remap_imu_to_body(v):
+            return [-v[0], -v[2], -v[1]]
+
+        ang = remap_imu_to_body(ang_raw)
+        projected_gravity = remap_imu_to_body(pg_raw)
 
         with self.state_lock:
             self.base_ang_vel = ang
