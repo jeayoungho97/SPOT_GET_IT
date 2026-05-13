@@ -1,5 +1,6 @@
 #include "uart_jetson.h"
-#include "system_hal.h"   /* Error_Handler() */
+#include "system_hal.h"      /* Error_Handler() */
+#include "spi_protocol.h"    /* MOSI_PAYLOAD_SIZE, SPI_MOSI_MAGIC, spi_decode_command, crc16_ccitt_false */
 
 /* === Peripheral handles === */
 UART_HandleTypeDef huart_jetson;
@@ -148,10 +149,98 @@ void uart_jetson_rx_consume(uint16_t new_tail)
 
 uint16_t uart_jetson_rx_available(void)
 {
-    uint16_t h = rx_head;
+    /* head 는 IDLE 인터럽트와 무관하게 항상 DMA NDTR 에서 최신 위치 가져옴 */
+    uint16_t h = uart_jetson_rx_head();
     uint16_t t = rx_tail;
     if (h >= t) return h - t;
     return JETSON_UART_RX_BUF_SIZE - t + h;
 }
 
 volatile bool *uart_jetson_idle_flag_ptr(void) { return &rx_idle; }
+
+/* ============================================================================
+ * Frame parser (Step B)
+ *
+ * Magic + CRC 기반 command frame extraction.
+ * Jetson actuator_bridge 의 parse_rx_buffer 와 mirror.
+ *
+ * 호출 정책: control_loop 매 tick 에서 한 번. 백로그가 있으면 한 번에 다 처리
+ * (DMA 가 50Hz 보다 빠르게 burst 로 받았을 경우 대비).
+ * ============================================================================ */
+
+static volatile uint32_t frame_count_ok      = 0;
+static volatile uint32_t parser_crc_errors   = 0;
+static volatile uint32_t parser_resync_count = 0;
+
+uart_frame_result_t uart_jetson_process_rx(void)
+{
+    uart_frame_result_t last_result = UART_FRAME_NO_DATA;
+
+    /* 큐에 116B 이상 누적되어 있는 동안 반복 — backlog drain */
+    while (uart_jetson_rx_available() >= MOSI_PAYLOAD_SIZE) {
+        uint16_t avail = uart_jetson_rx_available();
+
+        /* 1) magic 0xA55A 위치 탐색 (tail 부터, 16-bit LE) */
+        bool     found = false;
+        uint16_t magic_off = 0;
+        for (uint16_t off = 0; off + 1 < avail; off++) {
+            uint16_t p0 = (uint16_t)((rx_tail + off    ) % JETSON_UART_RX_BUF_SIZE);
+            uint16_t p1 = (uint16_t)((rx_tail + off + 1) % JETSON_UART_RX_BUF_SIZE);
+            uint16_t m  = (uint16_t)rx_buf[p0] | ((uint16_t)rx_buf[p1] << 8);
+            if (m == SPI_MOSI_MAGIC) {
+                magic_off = off;
+                found = true;
+                break;
+            }
+        }
+
+        if (!found) {
+            /* magic 없음 — 마지막 1byte 만 남기고 폐기.
+             * (그 byte 가 다음 frame magic 의 첫 byte 일 수 있어서 보존) */
+            uint16_t h = uart_jetson_rx_head();
+            rx_tail = (uint16_t)((h + JETSON_UART_RX_BUF_SIZE - 1) % JETSON_UART_RX_BUF_SIZE);
+            return last_result;
+        }
+
+        /* 2) magic 앞 garbage 가 있으면 tail 점프 */
+        if (magic_off > 0) {
+            rx_tail = (uint16_t)((rx_tail + magic_off) % JETSON_UART_RX_BUF_SIZE);
+            parser_resync_count++;
+        }
+
+        /* 3) magic 위치부터 116B 확보됐는지 재확인 */
+        if (uart_jetson_rx_available() < MOSI_PAYLOAD_SIZE) {
+            return last_result;
+        }
+
+        /* 4) 116B candidate 를 선형 버퍼로 복사 (wrap-around 처리) */
+        static uint8_t candidate[MOSI_PAYLOAD_SIZE];
+        for (uint16_t i = 0; i < MOSI_PAYLOAD_SIZE; i++) {
+            uint16_t p = (uint16_t)((rx_tail + i) % JETSON_UART_RX_BUF_SIZE);
+            candidate[i] = rx_buf[p];
+        }
+
+        /* 5) decode — spi_decode_command 가 CRC 검증 + g_robot_state 갱신 */
+        decode_result_t r = spi_decode_command(candidate);
+        if (r == DECODE_OK) {
+            /* 정상 처리 — 116B 소비 */
+            rx_tail = (uint16_t)((rx_tail + MOSI_PAYLOAD_SIZE) % JETSON_UART_RX_BUF_SIZE);
+            frame_count_ok++;
+            last_result = UART_FRAME_OK;
+            /* 다음 frame 도 큐에 있을 수 있으니 계속 */
+        } else {
+            /* CRC 또는 magic 실패 — 1byte 밀고 재시도.
+             * spi_decode_command 가 g_robot_state.crc_error_count 도 증가시킴. */
+            parser_crc_errors++;
+            rx_tail = (uint16_t)((rx_tail + 1) % JETSON_UART_RX_BUF_SIZE);
+            last_result = UART_FRAME_BAD_CRC;
+            /* 루프 계속 — 같은 시도가 다시 일어날 수 있지만 1byte씩 밀려서 결국 빠져나옴 */
+        }
+    }
+
+    return last_result;
+}
+
+uint32_t uart_jetson_frame_count(void)       { return frame_count_ok; }
+uint32_t uart_jetson_crc_error_count(void)   { return parser_crc_errors; }
+uint32_t uart_jetson_resync_count(void)      { return parser_resync_count; }

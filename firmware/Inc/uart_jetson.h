@@ -16,8 +16,8 @@ extern DMA_HandleTypeDef  hdma_usart1_tx;
 /*
  * USART1 Jetson 통신 — SPI1 대체
  *
- * 핀:  PA9  (TX, AF7)  →  Jetson RX
- *      PA10 (RX, AF7)  ←  Jetson TX
+ * 핀:  PB6  (TX, AF7)  →  Jetson RX  (PA9/PA10 USB OTG 충돌 회피)
+ *      PB7  (RX, AF7)  ←  Jetson TX
  * 설정: 921600 8N1, no flow control
  * DMA:  RX = DMA2 Stream2 Ch4 (circular)
  *       TX = DMA2 Stream7 Ch4 (normal)
@@ -50,6 +50,30 @@ uint16_t       uart_jetson_rx_available(void);
 
 /* IDLE 플래그 — ISR 에서 set, 메인 루프에서 clear */
 volatile bool *uart_jetson_idle_flag_ptr(void);
+
+/* === Frame parser (Step B) ===
+ *
+ * RX circular buffer 에서 magic + CRC 기반 command frame 추출.
+ * Jetson actuator_bridge 의 parse_rx_buffer 와 mirror 알고리즘:
+ *   1. SPI_MOSI_MAGIC (0xA55A) 위치 탐색
+ *   2. MOSI_PAYLOAD_SIZE (116) 모이면 candidate 추출 (wrap-around 처리)
+ *   3. CRC 검증 → 성공 시 spi_decode_command() 호출, 116B 소비
+ *   4. 실패 시 1byte 밀고 재동기화
+ *
+ * Control loop 매 tick (50Hz) 에서 호출. 한 번 호출에 큐에 쌓인 모든
+ * frame 을 처리 (backlog drain). 진단 카운터 별도 노출.
+ */
+typedef enum {
+    UART_FRAME_OK = 0,        /* 직전 시도가 frame 한 개 이상 정상 처리 */
+    UART_FRAME_NO_DATA,       /* magic 못 찾았거나 116B 미달 */
+    UART_FRAME_BAD_CRC,       /* CRC 실패 → 1byte 밀고 재시도 중 */
+} uart_frame_result_t;
+
+uart_frame_result_t uart_jetson_process_rx(void);
+
+uint32_t uart_jetson_frame_count(void);       /* 누적 정상 frame 수 */
+uint32_t uart_jetson_crc_error_count(void);   /* 누적 CRC 실패 수 */
+uint32_t uart_jetson_resync_count(void);      /* 누적 magic 재동기화 수 (garbage skip) */
 
 #ifdef __cplusplus
 }
