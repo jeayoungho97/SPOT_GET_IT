@@ -43,9 +43,14 @@
 #define MOTION_STATE_STOP       0
 #define MOTION_STATE_UNKNOWN    8
 
-/* flags 비트 */
-#define SPI_FLAG_TORQUE_EN      (1 << 0)
-#define SPI_FLAG_E_STOP         (1 << 3)
+/* flags 비트 — 현재 펌웨어/Jetson 양쪽 모두 사용 안 함 (RL/stand 모두 flags=0 송신).
+ * STM 의 torque on/off 는 wire mode dispatch 가 자동 결정:
+ *   wire OPERATE → torque on, wire DISABLE → torque off.
+ * E-STOP 은 STM 내부 트리거 (UART ESC / safety_check) 로만 발동.
+ * 비트 정의는 향후 reserved hook 으로 남겨둠.
+ */
+#define SPI_FLAG_TORQUE_EN      (1 << 0)   /* reserved (unused) */
+#define SPI_FLAG_E_STOP         (1 << 3)   /* reserved (unused) */
 
 /* MOSI: Jetson -> STM (116 payload + 145 padding = 261) */
 typedef struct __attribute__((packed)) {

@@ -10,7 +10,22 @@
 #include <stdio.h>
 #include <math.h>
 
-#define STALE_TIMEOUT_MS       200     /* 10 cycle 이상 패킷 없으면 stale (Linux non-RT jitter 흡수) */
+/* spi.c 에서 정의된 DMA handle (spi.h 에 extern 선언 안 돼있어서 직접 선언) */
+extern DMA_HandleTypeDef hdma_spi1_rx;
+extern DMA_HandleTypeDef hdma_spi1_tx;
+
+/* Stale 처리 — Jetson 끊김 시 단계별 degradation
+ *   0   ~ WARN_MS : 정상 (fresh bit set, mode 그대로)
+ *   WARN_MS ~ SAFE_MS : warn (fresh bit clear, FAULT_STALE_COMMAND set, mode 유지)
+ *   SAFE_MS 이상     : safe (mode 강제 IDLE → torque off)
+ *
+ * 핵심: WARN ~ SAFE 사이에는 mode 강제 변경 안 함. Bridge 가 명시적으로 보낸
+ * 마지막 wire mode (보통 DISABLE 또는 OPERATE) 그대로 dispatch. Bridge 자체 stale
+ * 시 DISABLE 보내면 STM 의 mode 도 IDLE 자연스러움. STM 이 mode HOLD 로 강제하면
+ * mode oscillation 발생 → torque 토글 → cycle 폭증 → SPI OVR cascade.
+ */
+#define STALE_WARN_MS          200     /* fresh bit clear, FAULT_STALE_COMMAND */
+#define STALE_SAFE_MS          1000    /* mode 강제 IDLE (safe state) */
 #define TEMP_LIMIT_C           70.0f   /* 서보 온도 한계 */
 #define VOLTAGE_LOW_V          10.0f   /* 3S LiPo 저전압 한계 */
 #define VOLTAGE_VALID_V        0.1f    /* ADC 유효 판별 최소값 */
@@ -21,47 +36,91 @@ static uint8_t spi_tx_buffer[SPI_FRAME_SIZE];
 static uint8_t spi_rx_buffer[SPI_FRAME_SIZE];
 
 /* SPI 통신 상태 */
-static volatile bool spi_transfer_done = false;
+static volatile bool     spi_transfer_done = false;
+static volatile uint32_t spi_rx_count      = 0;   /* DMA RX 완료 횟수 (1초 카운트, 진단용) */
+static volatile uint32_t spi_error_count   = 0;   /* HAL_SPI_ErrorCallback 발생 횟수 */
+static volatile uint32_t spi_recover_count = 0;   /* wedge 감지 → Abort 재시작 횟수 */
+static volatile uint32_t spi_last_event_ms = 0;   /* 마지막 ISR (complete or error) 시각 */
+
+/* wedge watchdog: ISR 이 이 시간 (ms) 이상 fire 안 되면 SPI wedge 로 간주 */
+#define SPI_WEDGE_TIMEOUT_MS  200
 
 /* DMA 완료 콜백 (HAL weak override)
  * ISR context: DMA 끝나는 즉시 DATA_READY_LOW 로 떨어뜨려서
  * Jetson 이 "STM 이 지금 처리 중 — 다음 프레임 아직 보내지 마" 를 즉시 감지하도록.
- * (main loop step 1 까지 기다리면 최대 20ms 지연 가능)
  */
 void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi) {
     if (hspi->Instance == SPI1) {
         DATA_READY_LOW();
         spi_transfer_done = true;
+        spi_rx_count++;
+        spi_last_event_ms = HAL_GetTick();
     }
 }
 
-/* === Helper: torque 상태 갱신 === */
-static void update_torque_from_flags(void) {
-    bool requested = (g_robot_state.flags & SPI_FLAG_TORQUE_EN) != 0;
+/* SPI error 콜백 (HAL weak override)
+ * OVR/MODF/FRE/DMA 에러로 ISR fire. ErrorCode 는 hspi->ErrorCode 에 set 됨.
+ * 그냥 카운터만 올리고 — 실제 recovery 는 main loop watchdog 이 abort + re-arm.
+ */
+void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi) {
+    if (hspi->Instance == SPI1) {
+        DATA_READY_LOW();
+        spi_error_count++;
+        spi_last_event_ms = HAL_GetTick();
+    }
+}
 
-    if (requested && !g_robot_state.torque_enabled) {
+/* SPI wedge 복구: state != READY 인데 마지막 ISR 이후 N ms 지났으면 강제 재시작.
+ * 호출 시점에 DMA armed 일 수도 있고 idle 일 수도 있음. Abort 후 main loop 의
+ * 다음 step 6 에서 자연스럽게 re-arm 됨 (GetState 가 READY 로 돌아오므로).
+ */
+static void spi_wedge_recovery(uint32_t now_ms) {
+    if (HAL_SPI_GetState(&hspi1) == HAL_SPI_STATE_READY) return;
+    if (spi_last_event_ms == 0) return;   /* 부팅 직후 아직 ISR 없으면 skip */
+    if ((now_ms - spi_last_event_ms) < SPI_WEDGE_TIMEOUT_MS) return;
+
+    /* wedge 확정 — abort */
+    HAL_SPI_Abort(&hspi1);
+    spi_transfer_done = false;
+    DATA_READY_LOW();
+    spi_recover_count++;
+    spi_last_event_ms = now_ms;
+}
+
+/* === Helper: torque 자동 ON ===
+ * Jetson 측에서 flag 를 사용하지 않기로 결정 (RL/stand 모두 flags=0 송신).
+ * Wire mode 가 OPERATE 면 dispatch 가 알아서 torque on 한다.
+ * Torque off 는 MODE_IDLE / MODE_CALIBRATION dispatch 에서 처리.
+ * E-STOP 은 STM 내부 트리거 (UART ESC / safety_check / 향후 sit-down) 로만 발동.
+ */
+static void ensure_torque_on(void) {
+    if (!g_robot_state.torque_enabled) {
         robot_torque_on_all();
         g_robot_state.torque_enabled = true;
         g_robot_state.status |= STATUS_BIT_TORQUE_ON;
         /* 토크 ON 시점에 현재 position을 prev_target으로 캡처 → 점프 방지 */
         joint_control_capture_current_as_prev();
-    } else if (!requested && g_robot_state.torque_enabled) {
-        robot_torque_off_all();
-        g_robot_state.torque_enabled = false;
-        g_robot_state.status &= ~STATUS_BIT_TORQUE_ON;
     }
 }
 
-/* === Helper: stale 체크 === */
+/* === Helper: stale 체크 ===
+ * 2단계 degradation. mode oscillation 방지 위해 WARN 단계엔 mode 유지.
+ * SAFE 단계에서만 강제 IDLE → torque off.
+ */
 static void check_stale(uint32_t now_ms) {
     uint32_t age = now_ms - g_robot_state.last_cmd_time_ms;
-    if (age > STALE_TIMEOUT_MS) {
+
+    if (age > STALE_WARN_MS) {
+        /* 200ms+ : fresh bit clear + fault 표시. mode 는 그대로 유지. */
         g_robot_state.status &= ~STATUS_BIT_CMD_FRESH;
         if (g_robot_state.fault_code == FAULT_OK) {
             g_robot_state.fault_code = FAULT_STALE_COMMAND;
         }
-        /* stale 시 강제 HOLD (last target 유지) — 안전 fallback */
-        g_robot_state.mode = MODE_HOLD;
+    }
+
+    if (age > STALE_SAFE_MS) {
+        /* 1s+ : 명백한 disconnect. 강제 안전 상태 (mode IDLE → torque off). */
+        g_robot_state.mode = MODE_IDLE;
     }
 }
 
@@ -133,20 +192,18 @@ static void dispatch_mode(void) {
             break;
 
         case MODE_POSITION:
-            update_torque_from_flags();
-            if (g_robot_state.torque_enabled) {
-                if (!joint_control_apply_target()) {
-                    /* NaN 또는 servo timeout → hold fallback */
-                    joint_control_hold();
-                }
+            /* Jetson 이 OPERATE 명령 보냄 → 자동 torque on */
+            ensure_torque_on();
+            if (!joint_control_apply_target()) {
+                /* NaN 또는 servo timeout → hold fallback */
+                joint_control_hold();
             }
             break;
 
         case MODE_HOLD:
-            update_torque_from_flags();
-            if (g_robot_state.torque_enabled) {
-                joint_control_hold();
-            }
+            /* stale fallback — Jetson 짧게 끊겨도 마지막 자세 유지하면서 자세 안 무너지게 */
+            ensure_torque_on();
+            joint_control_hold();
             break;
 
         case MODE_CALIBRATION:
@@ -166,8 +223,40 @@ static void dispatch_mode(void) {
     }
 }
 
+/* === SPI DMA stream re-init — priority HIGH + FIFO 활성 ===
+ * CubeMX 의 기본 설정 (priority LOW + FIFO disabled) 이 STM32F4 SPI slave 에서
+ * Overrun (OVR) 발생 빈도 높음. priority VERY_HIGH + FIFO enable 로 burst 흡수.
+ * spi.c 는 CubeMX 자동 생성 파일이라 함부로 수정 못 함 — runtime override.
+ */
+static void spi_dma_boost_init(void) {
+    /* RX stream */
+    HAL_DMA_DeInit(&hdma_spi1_rx);
+    hdma_spi1_rx.Init.Priority      = DMA_PRIORITY_VERY_HIGH;
+    hdma_spi1_rx.Init.FIFOMode      = DMA_FIFOMODE_ENABLE;
+    hdma_spi1_rx.Init.FIFOThreshold = DMA_FIFO_THRESHOLD_HALFFULL;
+    hdma_spi1_rx.Init.MemBurst      = DMA_MBURST_SINGLE;
+    hdma_spi1_rx.Init.PeriphBurst   = DMA_PBURST_SINGLE;
+    HAL_DMA_Init(&hdma_spi1_rx);
+    __HAL_LINKDMA(&hspi1, hdmarx, hdma_spi1_rx);
+
+    /* TX stream */
+    HAL_DMA_DeInit(&hdma_spi1_tx);
+    hdma_spi1_tx.Init.Priority      = DMA_PRIORITY_VERY_HIGH;
+    hdma_spi1_tx.Init.FIFOMode      = DMA_FIFOMODE_ENABLE;
+    hdma_spi1_tx.Init.FIFOThreshold = DMA_FIFO_THRESHOLD_HALFFULL;
+    hdma_spi1_tx.Init.MemBurst      = DMA_MBURST_SINGLE;
+    hdma_spi1_tx.Init.PeriphBurst   = DMA_PBURST_SINGLE;
+    HAL_DMA_Init(&hdma_spi1_tx);
+    __HAL_LINKDMA(&hspi1, hdmatx, hdma_spi1_tx);
+}
+
 /* === 50Hz 메인 루프 === */
 void control_loop_run(void) {
+    /* SPI DMA peripheral 보강 — VERY_HIGH priority + FIFO halffull
+     * 반드시 robot_state_init / 첫 SPI arm 보다 먼저 호출.
+     */
+    spi_dma_boost_init();
+
     /* 초기화 */
     robot_state_init();
 
@@ -186,14 +275,21 @@ void control_loop_run(void) {
     printf("\r\n=== Control loop started (50Hz, RL-driven) ===\r\n");
 
     /* 첫 SPI transfer 시작
-     * 순서 중요: DATA_READY_LOW + flag clear → DMA arm → 성공 시에만 DATA_READY_HIGH.
-     * DMA arm 이 실패한 상태에서 DATA_READY_HIGH 떴다 하면 Jetson 이 헛 프레임 보낸다.
+     * 순서: DATA_READY_LOW → DMA arm → TX DMA 가 첫 byte 를 SPI DR 에 load 한 후
+     *       DATA_READY_HIGH. TX race 방지 — master 가 너무 빨리 clock 시작해서
+     *       TX shift register 가 비어 있을 때 stale 송신 (BAD_MAGIC) 막음.
      */
     spi_encode_feedback(spi_tx_buffer);
     DATA_READY_LOW();
     spi_transfer_done = false;
     if (HAL_SPI_TransmitReceive_DMA(&hspi1, spi_tx_buffer, spi_rx_buffer,
                                     SPI_FRAME_SIZE) == HAL_OK) {
+        /* TX DMA NDTR 가 SPI_FRAME_SIZE 보다 작아질 때까지 wait — DR load 됐다는 뜻 */
+        uint32_t tx_wait = 10000;
+        while (__HAL_DMA_GET_COUNTER(hspi1.hdmatx) >= SPI_FRAME_SIZE
+               && tx_wait-- > 0) {
+            __NOP();
+        }
         DATA_READY_HIGH();
     }
 
@@ -209,50 +305,87 @@ void control_loop_run(void) {
     uint32_t cycle_over_20 = 0;
     uint32_t cycle_count   = 0;
 
+    /* === 진단: 마지막 도달 step + DMA arm 결과 추적 ===
+     * 1Hz print 에서 보고. main loop 어디서 hang 됐는지 / DMA arm 이 어떻게
+     * 반환하는지 / DR HIGH 가 실제로 set 되는지 확인용.
+     */
+    static volatile uint8_t  last_step       = 0;
+    static volatile uint8_t  last_arm_ret    = 0xFF;   /* 0=HAL_OK, 1=HAL_ERROR, 2=HAL_BUSY, 0xFF=not arm'd */
+    static volatile uint32_t arm_skipped     = 0;       /* GetState != READY 라 arm 안 한 횟수 */
+    static volatile uint32_t arm_ok          = 0;       /* HAL_OK 받은 횟수 */
+    static volatile uint32_t arm_fail        = 0;       /* arm 실패 횟수 */
+    static volatile uint32_t dr_high_set     = 0;       /* DATA_READY_HIGH() 실제 호출된 횟수 */
+
+    /* NSS (PA4) edge polling — Jetson CS 가 토글되는지 main loop 50Hz 로 polling */
+    static uint8_t  last_nss = 1;
+    static uint32_t nss_low_cnt = 0;       /* 1초간 NSS falling edge 횟수 */
+
     while (1) {
+        last_step = 0;
         uint32_t t_start = HAL_GetTick();
+
+        /* NSS state polling — Jetson CS 토글 detect (50Hz sampling, 짧은 pulse 는 놓침) */
+        uint8_t nss_now = (GPIOA->IDR & GPIO_PIN_4) ? 1 : 0;
+        if (last_nss == 1 && nss_now == 0) {
+            nss_low_cnt++;
+        }
+        last_nss = nss_now;
 
         /* ESC 체크 */
         if (check_esc()) emergency_stop();
 
+        /* 0. SPI wedge 복구 (state != READY 인데 ISR 200ms 안 fire 됐으면 abort) */
+        spi_wedge_recovery(t_start);
+
         /* 1. SPI RX 처리 */
+        last_step = 1;
         if (spi_transfer_done) {
             spi_transfer_done = false;
             DATA_READY_LOW();
-
-            /* E-STOP flag 체크 (디코드 전 확인) */
-            decode_result_t dr = spi_decode_command(spi_rx_buffer);
-            if (dr == DECODE_OK
-                && (g_robot_state.flags & SPI_FLAG_E_STOP)) {
-                emergency_stop();
-            }
+            (void)spi_decode_command(spi_rx_buffer);
         }
 
         /* 2. Stale check */
+        last_step = 2;
         check_stale(t_start);
 
         /* 3. Telemetry (서보 12ch + IMU) */
+        last_step = 3;
         telemetry_update_all();
 
         /* 4. Safety (자세/온도/전압) */
+        last_step = 4;
         check_safety();
 
         /* 5. Mode dispatch */
+        last_step = 5;
         dispatch_mode();
 
-        /* 6. SPI TX 준비 + 다음 transfer 시작
-         * DMA arm 이 HAL_OK 일 때만 DATA_READY_HIGH 로 올린다.
-         * arm 실패 (BUSY/ERROR) 인데 HIGH 올라가면 Jetson 이 비어 있는 슬레이브에
-         * 프레임 보내고 그게 silent drop / CRC error 로 보이게 됨.
-         */
+        /* 6. SPI TX 준비 + 다음 transfer 시작 */
+        last_step = 6;
         spi_encode_feedback(spi_tx_buffer);
-        if (HAL_SPI_GetState(&hspi1) == HAL_SPI_STATE_READY) {
-            if (HAL_SPI_TransmitReceive_DMA(&hspi1, spi_tx_buffer,
-                                            spi_rx_buffer,
-                                            SPI_FRAME_SIZE) == HAL_OK) {
+        HAL_SPI_StateTypeDef pre_st = HAL_SPI_GetState(&hspi1);
+        if (pre_st == HAL_SPI_STATE_READY) {
+            HAL_StatusTypeDef ret = HAL_SPI_TransmitReceive_DMA(
+                &hspi1, spi_tx_buffer, spi_rx_buffer, SPI_FRAME_SIZE);
+            last_arm_ret = (uint8_t)ret;
+            if (ret == HAL_OK) {
+                /* TX DMA 가 첫 byte 를 DR 에 load 한 후 DR HIGH (race 방지) */
+                uint32_t tx_wait = 10000;
+                while (__HAL_DMA_GET_COUNTER(hspi1.hdmatx) >= SPI_FRAME_SIZE
+                       && tx_wait-- > 0) {
+                    __NOP();
+                }
                 DATA_READY_HIGH();
+                dr_high_set++;
+                arm_ok++;
+            } else {
+                arm_fail++;
             }
+        } else {
+            arm_skipped++;
         }
+        last_step = 7;
 
         /* 7. 디버그 출력 (1초마다) — 실제 max temp 도 함께 출력해서 fault=5 진위 확인 */
         if (t_start - last_print >= DEBUG_PRINT_MS) {
@@ -265,7 +398,52 @@ void control_loop_run(void) {
                     max_temp_idx = i;
                 }
             }
+            /* === SPI 수신 + peripheral state 진단 ===
+             *   rx/s     : 지난 1초간 SPI DMA RX 완료 횟수
+             *   crc_err  : 지난 1초간 CRC 불일치 횟수
+             *   spi_st   : HAL_SPI_GetState (1=READY, 5=BUSY_TX_RX, 6=ERROR, 7=ABORT)
+             *   spi_err  : ErrorCode bitmask (1=MODF, 2=CRC, 4=OVR, 8=FRE, 0x10=DMA, ...)
+             * 50Hz 정상이면 rx~50, crc_err=0, spi_st=1 또는 5, spi_err=0.
+             */
+            static uint32_t prev_crc_err = 0;
+            uint32_t cur_rx_count   = spi_rx_count;
+            spi_rx_count = 0;
+            uint32_t crc_err_delta  = g_robot_state.crc_error_count - prev_crc_err;
+            prev_crc_err = g_robot_state.crc_error_count;
+
+            uint32_t spi_state_now = (uint32_t)HAL_SPI_GetState(&hspi1);
+            uint32_t spi_err_now   = (uint32_t)HAL_SPI_GetError(&hspi1);
+
+            /* DR 핀 실제 register 값 — ODR (우리가 쓴 값) vs IDR (실제 전기 상태) */
+            uint8_t dr_odr = (GPIOB->ODR & GPIO_PIN_0) ? 1 : 0;
+            uint8_t dr_idr = (GPIOB->IDR & GPIO_PIN_0) ? 1 : 0;
+
+            /* NSS (CS, PA4) 핀 상태 + SPI status register
+             * nss_idr : 현재 PA4 전기상태. idle 시 1 정상, 0 이면 CS 가 active stuck.
+             * nss_lo  : 지난 1초간 NSS LOW falling edge 횟수 (50Hz polling 추정).
+             * spi_sr  : SPI1->SR raw. bit5=MODF, bit6=OVR, bit7=BSY, bit8=FRE.
+             */
+            uint8_t  nss_idr = (GPIOA->IDR & GPIO_PIN_4) ? 1 : 0;
+            uint32_t nss_lo  = nss_low_cnt;
+            nss_low_cnt = 0;
+            uint32_t spi_sr  = SPI1->SR;
+
+            /* 지난 1초간 arm 통계 delta */
+            static uint32_t prev_arm_ok = 0, prev_arm_fail = 0, prev_arm_skipped = 0, prev_dr_high = 0;
+            uint32_t d_arm_ok       = arm_ok       - prev_arm_ok;
+            uint32_t d_arm_fail     = arm_fail     - prev_arm_fail;
+            uint32_t d_arm_skipped  = arm_skipped  - prev_arm_skipped;
+            uint32_t d_dr_high      = dr_high_set  - prev_dr_high;
+            prev_arm_ok       = arm_ok;
+            prev_arm_fail     = arm_fail;
+            prev_arm_skipped  = arm_skipped;
+            prev_dr_high      = dr_high_set;
+
             printf("[%lu] mode=%u st=0x%02X fault=%u torque=%u seq=%u "
+                   "rx=%lu/s crc_err=%lu/s spi_st=%lu spi_err=0x%lX spi_sr=0x%lX "
+                   "dr=%u/%u nss=%u nss_lo=%lu step=%u "
+                   "arm_ok=%lu/s skip=%lu/s fail=%lu/s drH=%lu/s arm_ret=%u "
+                   "isr_err=%lu recover=%lu "
                    "maxT=%.0fC(j%d) Vbus=%.1fV "
                    "worst_cyc=%lums over20=%lu/%lu\r\n",
                    (unsigned long)t_start,
@@ -274,6 +452,18 @@ void control_loop_run(void) {
                    (unsigned)g_robot_state.fault_code,
                    (unsigned)g_robot_state.torque_enabled,
                    (unsigned)g_robot_state.cmd_seq,
+                   (unsigned long)cur_rx_count,
+                   (unsigned long)crc_err_delta,
+                   (unsigned long)spi_state_now,
+                   (unsigned long)spi_err_now,
+                   (unsigned long)spi_sr,
+                   (unsigned)dr_odr, (unsigned)dr_idr,
+                   (unsigned)nss_idr, (unsigned long)nss_lo,
+                   (unsigned)last_step,
+                   (unsigned long)d_arm_ok, (unsigned long)d_arm_skipped,
+                   (unsigned long)d_arm_fail, (unsigned long)d_dr_high,
+                   (unsigned)last_arm_ret,
+                   (unsigned long)spi_error_count, (unsigned long)spi_recover_count,
                    (double)max_temp, max_temp_idx,
                    (double)g_robot_state.bus_voltage,
                    (unsigned long)worst_cycle_ms,
