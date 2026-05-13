@@ -12,6 +12,7 @@ import argparse
 import math
 import os
 import sys
+from typing import List, Tuple
 
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
@@ -33,6 +34,9 @@ from global_path_manager.path_set import (
     validate_path_set,
 )
 
+INTERP_MAX_DIST = 0.5
+Waypoint = Tuple[float, float]
+
 COLORS = {
     'spot_01': '#E74C3C',
     'spot_02': '#27AE60',
@@ -41,6 +45,25 @@ COLORS = {
     'spot_05': '#8E44AD',
 }
 DEFAULT_COLOR = '#7F8C8D'
+
+
+def _yaw_between(p1, p2) -> float:
+    return math.atan2(p2[1] - p1[1], p2[0] - p1[0])
+
+
+def _interpolate(wps: List[Waypoint]) -> List[Waypoint]:
+    """선분마다 INTERP_MAX_DIST 이하로 보간한 점 목록 반환."""
+    result: List[Waypoint] = []
+    for i in range(len(wps) - 1):
+        p1, p2 = wps[i], wps[i + 1]
+        length = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+        n = math.ceil(length / INTERP_MAX_DIST)
+        for k in range(n):
+            t = k / n
+            result.append((round(p1[0] + t * (p2[0] - p1[0]), 2),
+                            round(p1[1] + t * (p2[1] - p1[1]), 2)))
+    result.append(wps[-1])
+    return result
 
 
 def draw_map(ax, cfg: MapConfig):
@@ -86,6 +109,9 @@ def draw_paths_with_coverage(ax, selected, all_cells, cfg):
     for robot_key, path in selected.items():
         color = COLORS.get(robot_key, DEFAULT_COLOR)
         wps = path.waypoints
+        interp_wps = _interpolate(wps)
+
+        # 커버리지는 원본 waypoints 기준
         cov = _cells_within_radius(wps, COVER_RADIUS, all_cells, x_min, y_min)
         for cell in cov:
             cx = x_min + (cell[0] + 0.5) * GRID_STEP
@@ -97,10 +123,17 @@ def draw_paths_with_coverage(ax, selected, all_cells, cfg):
                 ec='none', alpha=0.22, zorder=2))
         seen |= cov
 
-        xs2, ys2 = [w[0] for w in wps], [w[1] for w in wps]
-        ax.plot(xs2, ys2, '-', color=color, lw=2.5, zorder=5, alpha=0.9)
-        ax.plot(xs2, ys2, 'o', color=color, markersize=7, zorder=6)
-        ax.plot([], [], '-o', color=color, lw=2.5, label=f'{robot_key} pivot={path.pivot:.2f}')
+        # 경로선 및 원본 waypoint (큰 원)
+        xs, ys = [w[0] for w in wps], [w[1] for w in wps]
+        ax.plot(xs, ys, '-', color=color, lw=2.5, zorder=5, alpha=0.9)
+        ax.plot(xs, ys, 'o', color=color, markersize=7, zorder=7)
+
+        # 보간점 (작은 점)
+        xi, yi = [w[0] for w in interp_wps], [w[1] for w in interp_wps]
+        ax.plot(xi, yi, '.', color=color, markersize=4, zorder=6, alpha=0.7)
+
+        ax.plot([], [], '-o', color=color, lw=2.5,
+                label=f'{robot_key} pivot={path.pivot:.2f} ({len(interp_wps)}wp)')
 
     total_pct = 100 * len(seen) / len(all_cells) if all_cells else 0
     ax.legend(loc='upper left', fontsize=8, framealpha=0.9)

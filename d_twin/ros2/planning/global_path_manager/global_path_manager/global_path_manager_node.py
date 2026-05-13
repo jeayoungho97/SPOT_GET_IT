@@ -15,20 +15,51 @@ Publish:
 
 import math
 import os
-from typing import Dict
+from typing import Dict, List, Tuple
 
 import rclpy
 from ament_index_python.packages import get_package_share_directory
-from geometry_msgs.msg import Pose, Point, Quaternion
+from geometry_msgs.msg import Point, Quaternion
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 
 from robot_interfaces.msg import GlobalPathWaypoints, LocalizedRobotPose
 from .path_set import GlobalPath, MapConfig, build_path_set, select_paths, validate_path_set
 
+INTERP_MAX_DIST = 0.5   # 보간 최대 구간 거리 (m)
+
+Waypoint = Tuple[float, float]
+
 
 def _yaw_between(p1, p2) -> float:
     return math.atan2(p2[1] - p1[1], p2[0] - p1[0])
+
+
+def _interpolate(wps: List[Waypoint]) -> List[Tuple[Waypoint, float]]:
+    """
+    waypoints 리스트를 받아 각 선분을 INTERP_MAX_DIST 이하로 보간한다.
+    반환: [(point, yaw), ...]
+    마지막 점의 yaw는 직전 선분 방향을 그대로 사용한다.
+    """
+    result: List[Tuple[Waypoint, float]] = []
+
+    for i in range(len(wps) - 1):
+        p1, p2 = wps[i], wps[i + 1]
+        yaw = _yaw_between(p1, p2)
+        length = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+        n = math.ceil(length / INTERP_MAX_DIST)  # 구간 수
+
+        for k in range(n):
+            t = k / n
+            x = round(p1[0] + t * (p2[0] - p1[0]), 2)
+            y = round(p1[1] + t * (p2[1] - p1[1]), 2)
+            result.append(((x, y), yaw))
+
+    # 마지막 점 추가 (직전 선분 yaw 유지)
+    last_yaw = _yaw_between(wps[-2], wps[-1]) if len(wps) >= 2 else 0.0
+    result.append((wps[-1], last_yaw))
+
+    return result
 
 
 def _to_waypoints_msg(
@@ -42,24 +73,20 @@ def _to_waypoints_msg(
     msg.header.frame_id = frame_id
     msg.robot_id        = robot_id
 
-    wps = path.waypoints
-    for i, (x, y) in enumerate(wps):
-        yaw = (_yaw_between(wps[i], wps[i + 1]) if i < len(wps) - 1
-               else _yaw_between(wps[i - 1], wps[i]) if len(wps) > 1 else 0.0)
-
+    for (x, y), yaw in _interpolate(path.waypoints):
         half = yaw / 2.0
         q = Quaternion(x=0.0, y=0.0, z=math.sin(half), w=math.cos(half))
 
         wp = LocalizedRobotPose()
-        wp.header.stamp    = stamp
-        wp.header.frame_id = frame_id
-        wp.robot_id        = robot_id
-        wp.base_frame      = 'base_link'
-        wp.x_m             = float(x)
-        wp.y_m             = float(y)
-        wp.z_m             = 0.05
-        wp.yaw_rad         = float(yaw)
-        wp.pose.position   = Point(x=float(x), y=float(y), z=0.05)
+        wp.header.stamp     = stamp
+        wp.header.frame_id  = frame_id
+        wp.robot_id         = robot_id
+        wp.base_frame       = 'base_link'
+        wp.x_m              = float(x)
+        wp.y_m              = float(y)
+        wp.z_m              = 0.05
+        wp.yaw_rad          = float(yaw)
+        wp.pose.position    = Point(x=float(x), y=float(y), z=0.05)
         wp.pose.orientation = q
 
         msg.waypoints.append(wp)
@@ -125,11 +152,11 @@ class GlobalPathManagerNode(Node):
         # ── 발행 ──
         stamp = self.get_clock().now().to_msg()
         for robot_key, path in selected.items():
-            pubs[robot_key].publish(
-                _to_waypoints_msg(path, robot_key, stamp, self.frame_id)
-            )
+            wp_msg = _to_waypoints_msg(path, robot_key, stamp, self.frame_id)
+            pubs[robot_key].publish(wp_msg)
             self.get_logger().info(
-                f"  [{robot_key}] {path.path_id}  waypoints: {path.waypoints}"
+                f"  [{robot_key}] {path.path_id} "
+                f"원본 {len(path.waypoints)}wp → 보간 후 {len(wp_msg.waypoints)}wp"
             )
 
         self.get_logger().info("발행 완료.")

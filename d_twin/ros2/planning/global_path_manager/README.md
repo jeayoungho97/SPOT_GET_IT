@@ -14,6 +14,7 @@
 * **물리적 제약과 커버리지의 분리:** 경로 유효성 검증 시에는 벽 및 장애물로부터 0.3m의 안전거리를 엄격히 적용합니다. 반면 가시 영역(Coverage) 계산 시에는 Clearance를 무시하여 실제 벽면 끝까지 도달하는 것으로 평가합니다.
 * **다중 로봇 공간 분산 (Spatial Distribution):** 로봇들이 맵 전체에 고르게 퍼지도록 각도 기반 shape 배정(x_first / diagonal / y_first)을 적용합니다.
 * **병렬 주행 제어 및 선간 이격:** 로봇 간 최소 안전 이격 거리(1.2m)를 강제하고, 경로 선분에 반발장(Separation Radius 0.6m)을 적용하여 경로 겹침을 방지합니다. 출발지 및 도착지 반경 1.5m 이내는 수렴/발산 구역으로 간주하여 해당 페널티를 면제합니다.
+* **발행 전 waypoint 보간:** 선정된 경로의 각 선분을 0.5m 이하 간격으로 균일하게 보간하여 발행합니다. 좌표는 소수점 2자리로 반올림합니다.
 
 ---
 
@@ -54,6 +55,7 @@ global_path_manager/
 | `/planning/global_path/spot_03` | `robot_interfaces/GlobalPathWaypoints` | RELIABLE, TRANSIENT_LOCAL |
 
 > 토픽은 `map.yaml`의 `starts` 키 기준으로 자동 생성됩니다.
+> `waypoints` 배열은 보간 후 기준이며, 인접 waypoint 간 거리는 0.5m 이하입니다.
 
 ---
 
@@ -115,3 +117,5 @@ python3 visualize_paths.py
 ## 경로 시각화 예시
 
 ![경로 시각화 결과물](path_result_01_05.png)
+
+![경로 보간점 시각화 결과물](path_result_02_05.png)
