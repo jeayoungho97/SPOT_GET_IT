@@ -11,19 +11,32 @@ class OakCameraDriverNode(Node):
         super().__init__('oak_camera_driver_node')
 
         # 파라미터 선언
-        self.declare_parameter('fps', 15)
-        self.declare_parameter('rgb_width', 480)
-        self.declare_parameter('rgb_height', 270)
-        self.declare_parameter('show_preview', False)
-        self.declare_parameter('preview_width', 1280)
+        self.declare_parameter('fps',            15)
+        self.declare_parameter('publish_fps',     5)
+        self.declare_parameter('rgb_width',      480)
+        self.declare_parameter('rgb_height',     270)
+        self.declare_parameter('show_preview',   False)
+        self.declare_parameter('preview_width',  1280)
         self.declare_parameter('preview_height', 720)
 
         self.fps            = self.get_parameter('fps').value
+        self.publish_fps    = self.get_parameter('publish_fps').value
         self.rgb_width      = self.get_parameter('rgb_width').value
         self.rgb_height     = self.get_parameter('rgb_height').value
         self.show_preview   = self.get_parameter('show_preview').value
         self.preview_width  = self.get_parameter('preview_width').value
         self.preview_height = self.get_parameter('preview_height').value
+
+        # publish_fps는 fps보다 클 수 없음
+        if self.publish_fps > self.fps:
+            self.get_logger().warn(
+                f'publish_fps({self.publish_fps}) > fps({self.fps}), fps로 클램프'
+            )
+            self.publish_fps = self.fps
+
+        # 카메라 캡처 주기마다 몇 프레임에 1번 publish할지
+        self._skip_interval = round(self.fps / self.publish_fps)  # 15/5 = 3
+        self._frame_count   = 0
 
         # Publisher
         self.rgb_pub     = self.create_publisher(Image,           '/vendor/camera/image_raw', 1)
@@ -34,9 +47,12 @@ class OakCameraDriverNode(Node):
         self.pipeline = self._build_pipeline()
         self.pipeline.start()
         self.get_logger().info(
-            f'OAK 카메라 시작 | {self.rgb_width}x{self.rgb_height} @ {self.fps}fps'
+            f'OAK 카메라 시작 | {self.rgb_width}x{self.rgb_height} '
+            f'@ 캡처 {self.fps}fps / publish {self.publish_fps}fps '
+            f'(1/{self._skip_interval} 프레임)'
         )
 
+        # 타이머는 캡처 fps로 동작 (큐 비워주기 위함)
         self.timer = self.create_timer(1.0 / self.fps, self.timer_callback)
 
     def _build_pipeline(self) -> dai.Pipeline:
@@ -70,28 +86,29 @@ class OakCameraDriverNode(Node):
         return pipeline
 
     def timer_callback(self):
+        self._frame_count += 1
+        do_publish = (self._frame_count % self._skip_interval == 0)
+
         now = self.get_clock().now().to_msg()
 
-        # RAW RGB publish
         rgb_data = self.rgb_queue.tryGet()
-        if rgb_data is not None:
+        if rgb_data is not None and do_publish:
             frame = rgb_data.getCvFrame()
             msg = self.bridge.cv2_to_imgmsg(frame, encoding='bgr8')
-            msg.header.stamp = now
+            msg.header.stamp    = now
             msg.header.frame_id = 'oak_camera'
             self.rgb_pub.publish(msg)
 
-        # MJPEG 인코딩 스트림 publish
         encoded_data = self.encoded_queue.tryGet()
-        if encoded_data is not None:
+        if encoded_data is not None and do_publish:
             msg = CompressedImage()
-            msg.header.stamp = now
+            msg.header.stamp    = now
             msg.header.frame_id = 'oak_camera'
-            msg.format = 'jpeg'
-            msg.data = encoded_data.getData().tobytes()
+            msg.format          = 'jpeg'
+            msg.data            = encoded_data.getData().tobytes()
             self.encoded_pub.publish(msg)
 
-        # 미리보기
+        # 미리보기 (publish 여부와 무관하게 매 프레임)
         if self.show_preview and rgb_data is not None:
             import cv2
             preview = cv2.resize(rgb_data.getCvFrame(), (self.preview_width, self.preview_height))

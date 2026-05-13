@@ -1,6 +1,7 @@
 oak_camera_driver_node:
   ros__parameters:
-    fps: 15
+    fps: 15                # 카메라 캡처 fps (OAK 디바이스 설정)
+    publish_fps: 5         # ROS2 토픽 publish fps (Jetson 부하 경감)
     # victim_detection bbox 좌표 정규화 기준 해상도
     rgb_width: 480
     rgb_height: 270
