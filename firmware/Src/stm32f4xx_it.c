@@ -20,6 +20,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "stm32f4xx_it.h"
+#include "uart_jetson.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 /* USER CODE END Includes */
@@ -55,9 +56,9 @@
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
-extern DMA_HandleTypeDef hdma_spi1_rx;
-extern DMA_HandleTypeDef hdma_spi1_tx;
-extern SPI_HandleTypeDef hspi1;
+extern DMA_HandleTypeDef hdma_usart1_rx;
+extern DMA_HandleTypeDef hdma_usart1_tx;
+extern UART_HandleTypeDef huart_jetson;
 extern DMA_HandleTypeDef hdma_uart5_rx;
 extern DMA_HandleTypeDef hdma_uart5_tx;
 extern DMA_HandleTypeDef hdma_usart3_rx;
@@ -294,17 +295,11 @@ void UART5_IRQHandler(void)
 }
 
 /**
-  * @brief This function handles DMA2 stream0 global interrupt.
+  * @brief This function handles DMA2 stream2 global interrupt (USART1 RX).
   */
-void DMA2_Stream0_IRQHandler(void)
+void DMA2_Stream2_IRQHandler(void)
 {
-  /* USER CODE BEGIN DMA2_Stream0_IRQn 0 */
-
-  /* USER CODE END DMA2_Stream0_IRQn 0 */
-  HAL_DMA_IRQHandler(&hdma_spi1_rx);
-  /* USER CODE BEGIN DMA2_Stream0_IRQn 1 */
-
-  /* USER CODE END DMA2_Stream0_IRQn 1 */
+  HAL_DMA_IRQHandler(&hdma_usart1_rx);
 }
 
 /**
@@ -322,17 +317,11 @@ void DMA2_Stream1_IRQHandler(void)
 }
 
 /**
-  * @brief This function handles DMA2 stream3 global interrupt.
+  * @brief This function handles DMA2 stream7 global interrupt (USART1 TX).
   */
-void DMA2_Stream3_IRQHandler(void)
+void DMA2_Stream7_IRQHandler(void)
 {
-  /* USER CODE BEGIN DMA2_Stream3_IRQn 0 */
-
-  /* USER CODE END DMA2_Stream3_IRQn 0 */
-  HAL_DMA_IRQHandler(&hdma_spi1_tx);
-  /* USER CODE BEGIN DMA2_Stream3_IRQn 1 */
-
-  /* USER CODE END DMA2_Stream3_IRQn 1 */
+  HAL_DMA_IRQHandler(&hdma_usart1_tx);
 }
 
 /**
@@ -363,9 +352,17 @@ void USART6_IRQHandler(void)
   /* USER CODE END USART6_IRQn 1 */
 }
 
-void SPI1_IRQHandler(void)
+/**
+  * @brief USART1 global interrupt — IDLE 감지 + HAL 처리.
+  */
+void USART1_IRQHandler(void)
 {
-  HAL_SPI_IRQHandler(&hspi1);
+  /* IDLE 인터럽트: Jetson 이 프레임 전송 완료 후 bus idle 감지 */
+  if (__HAL_UART_GET_FLAG(&huart_jetson, UART_FLAG_IDLE)) {
+    __HAL_UART_CLEAR_IDLEFLAG(&huart_jetson);
+    uart_jetson_idle_callback();
+  }
+  HAL_UART_IRQHandler(&huart_jetson);
 }
 
 /* USER CODE BEGIN 1 */
