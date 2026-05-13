@@ -1,17 +1,20 @@
 actuator_bridge_node:
   ros__parameters:
     control_rate_hz: 50.0
-
     spi_device: "/dev/spidev0.0"
     spi_speed_hz: 5000000
     spi_mode: 0
     spi_bits_per_word: 8
 
+    use_data_ready: True
+    data_ready_gpiochip: "/dev/gpiochip0"
+    data_ready_line: 105              # 실제 연결한 Jetson GPIO line 번호로 수정
+    data_ready_active_high: true
+    data_ready_timeout_us: 5000
+    data_ready_poll_interval_us: 50
+
     max_target_age_ms: 200.0
     freeze_seq_when_stale: true
-
-    # mux를 쓰는 구조면 이대로 둔다.
-    # mux 없이 RL만 바로 연결하려면 "/control/rl/joint_target"으로 바꾼다.
     target_topic: "/control/selected/joint_target"
 
     default_joint_angles:
