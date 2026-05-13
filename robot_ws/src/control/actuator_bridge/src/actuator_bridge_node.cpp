@@ -15,12 +15,9 @@
 #include "robot_interfaces/msg/stm_motion.hpp"
 
 #include "actuator_bridge/packet_codec.hpp"
-#include "actuator_bridge/spi_transport.hpp"
+#include "actuator_bridge/uart_transport.hpp"
 
-using namespace std::chrono_literals;
-
-namespace
-{
+namespace {
 
 constexpr uint8_t MODE_DISABLE = 0;
 
@@ -28,72 +25,61 @@ constexpr uint8_t STATUS_OK = 0;
 constexpr uint8_t STATUS_WARN = 1;
 constexpr uint8_t STATUS_FAULT = 2;
 
-constexpr uint8_t STM_STATUS_TORQUE_ON      = (1 << 0);
-constexpr uint8_t STM_STATUS_IMU_OK         = (1 << 1);
-constexpr uint8_t STM_STATUS_ALL_SERVOS_OK  = (1 << 2);
-constexpr uint8_t STM_STATUS_CMD_FRESH      = (1 << 3);
-constexpr uint8_t STM_STATUS_IN_SAFE_STATE  = (1 << 4);
-constexpr uint8_t STM_STATUS_CALIBRATING    = (1 << 5);
+constexpr uint8_t STM_STATUS_TORQUE_ON = (1U << 0U);
+constexpr uint8_t STM_STATUS_IMU_OK = (1U << 1U);
+constexpr uint8_t STM_STATUS_ALL_SERVOS_OK = (1U << 2U);
+constexpr uint8_t STM_STATUS_CMD_FRESH = (1U << 3U);
+constexpr uint8_t STM_STATUS_IN_SAFE_STATE = (1U << 4U);
+constexpr uint8_t STM_STATUS_CALIBRATING = (1U << 5U);
 
 constexpr uint8_t FAULT_NONE = 0;
 constexpr uint8_t FAULT_STALE_TARGET = 1;
-constexpr uint8_t FAULT_SPI_OPEN_FAILED = 10;
-constexpr uint8_t FAULT_SPI_TRANSFER_FAILED = 11;
+constexpr uint8_t FAULT_LINK_OPEN_FAILED = 10;
+constexpr uint8_t FAULT_LINK_WRITE_FAILED = 11;
 constexpr uint8_t FAULT_FEEDBACK_DECODE_FAILED = 12;
 constexpr uint8_t FAULT_SEQ_MISMATCH = 13;
+constexpr uint8_t FAULT_LINK_TIMEOUT = 14;
 
 // ROS JointTarget semantic mode
 constexpr uint8_t JT_MODE_DISABLE = 0;
-constexpr uint8_t JT_MODE_STAND   = 1;
-constexpr uint8_t JT_MODE_RL      = 2;
-constexpr uint8_t JT_MODE_CROUCH  = 3;
-constexpr uint8_t JT_MODE_E_STOP  = 4;
+constexpr uint8_t JT_MODE_STAND = 1;
+constexpr uint8_t JT_MODE_RL = 2;
+constexpr uint8_t JT_MODE_CROUCH = 3;
+constexpr uint8_t JT_MODE_E_STOP = 4;
 
-// SPI wire mode: STM이 실제로 이해하는 최소 mode
-constexpr uint8_t SPI_MODE_DISABLE = 0;
-constexpr uint8_t SPI_MODE_OPERATE = 1;
+// Wire mode: STM firmware가 실제로 이해하는 최소 mode
+constexpr uint8_t WIRE_MODE_DISABLE = 0;
+constexpr uint8_t WIRE_MODE_OPERATE = 1;
 
-// SPI flags
-constexpr uint8_t SPI_FLAG_E_STOP = 0x08;
+// Wire flags
+constexpr uint8_t WIRE_FLAG_E_STOP = 0x08;
 
-
-uint8_t mapRosModeToSpiMode(uint8_t ros_mode, uint8_t ros_flags)
+uint8_t mapRosModeToWireMode(uint8_t ros_mode, uint8_t ros_flags)
 {
   // E-STOP flag가 이미 들어와 있으면 mode와 무관하게 disable
-  if ((ros_flags & SPI_FLAG_E_STOP) != 0) {
-    return SPI_MODE_DISABLE;
+  if ((ros_flags & WIRE_FLAG_E_STOP) != 0U) {
+    return WIRE_MODE_DISABLE;
   }
 
   switch (ros_mode) {
     case JT_MODE_STAND:
     case JT_MODE_RL:
     case JT_MODE_CROUCH:
-      return SPI_MODE_OPERATE;
+      return WIRE_MODE_OPERATE;
 
     case JT_MODE_DISABLE:
     case JT_MODE_E_STOP:
     default:
-      return SPI_MODE_DISABLE;
+      return WIRE_MODE_DISABLE;
   }
 }
 
-uint8_t mapRosModeToSpiFlags(uint8_t ros_mode, uint8_t ros_flags)
+uint8_t mapRosModeToWireFlags(uint8_t ros_mode, uint8_t ros_flags)
 {
   uint8_t wire_flags = ros_flags;
 
   if (ros_mode == JT_MODE_E_STOP) {
-    wire_flags |= SPI_FLAG_E_STOP;
-  }
-
-  switch (ros_mode) {
-    case JT_MODE_STAND:
-    case JT_MODE_RL:
-    case JT_MODE_CROUCH:
-      break;
-
-    case JT_MODE_DISABLE:
-    default:
-      break;
+    wire_flags |= WIRE_FLAG_E_STOP;
   }
 
   return wire_flags;
@@ -114,46 +100,30 @@ public:
   {
     control_rate_hz_ = this->declare_parameter("control_rate_hz", 50.0);
     max_target_age_ms_ = this->declare_parameter("max_target_age_ms", 200.0);
-
-    spi_device_ = this->declare_parameter("spi_device", "/dev/spidev0.0");
-    spi_speed_hz_ = this->declare_parameter("spi_speed_hz", 5000000);
-    spi_mode_ = this->declare_parameter("spi_mode", 0);
-    spi_bits_per_word_ = this->declare_parameter("spi_bits_per_word", 8);
-
-    use_data_ready_ = this->declare_parameter("use_data_ready", true);
-    data_ready_gpiochip_ = this->declare_parameter(
-      "data_ready_gpiochip", "/dev/gpiochip0");
-    data_ready_line_ = this->declare_parameter("data_ready_line", 0);
-    data_ready_active_high_ = this->declare_parameter("data_ready_active_high", true);
-    data_ready_timeout_us_ = this->declare_parameter("data_ready_timeout_us", 5000);
-    data_ready_poll_interval_us_ = this->declare_parameter("data_ready_poll_interval_us", 50);
-
     freeze_seq_when_stale_ = this->declare_parameter("freeze_seq_when_stale", true);
 
-    const std::vector<double> default_joint_angles =
-      this->declare_parameter<std::vector<double>>(
-      "default_joint_angles",
-      {
-        0.0, -0.6, 1.1,
-        0.0, -0.6, 1.1,
-        0.0, -0.6, 1.1,
-        0.0, -0.6, 1.1
-      });
+    uart_device_ = this->declare_parameter("uart_device", "/dev/ttyTHS1");
+    uart_baudrate_ = this->declare_parameter("uart_baudrate", 921600);
+    feedback_timeout_ms_ = this->declare_parameter("feedback_timeout_ms", 100.0);
+    max_rx_buffer_size_ = this->declare_parameter("max_rx_buffer_size", 4096);
 
-    const std::vector<double> default_max_delta_rad =
-      this->declare_parameter<std::vector<double>>(
+    const std::vector<double> default_joint_angles = this->declare_parameter<std::vector<double>>(
+      "default_joint_angles",
+      {0.0, -0.6, 1.1,
+       0.0, -0.6, 1.1,
+       0.0, -0.6, 1.1,
+       0.0, -0.6, 1.1});
+
+    const std::vector<double> default_max_delta_rad = this->declare_parameter<std::vector<double>>(
       "default_max_delta_rad",
-      {
-        0.03, 0.03, 0.03,
-        0.03, 0.03, 0.03,
-        0.03, 0.03, 0.03,
-        0.03, 0.03, 0.03
-      });
+      {0.03, 0.03, 0.03,
+       0.03, 0.03, 0.03,
+       0.03, 0.03, 0.03,
+       0.03, 0.03, 0.03});
 
     if (default_joint_angles.size() != actuator_bridge::NUM_JOINTS) {
       throw std::runtime_error("default_joint_angles must have 12 elements");
     }
-
     if (default_max_delta_rad.size() != actuator_bridge::NUM_JOINTS) {
       throw std::runtime_error("default_max_delta_rad must have 12 elements");
     }
@@ -161,98 +131,58 @@ public:
     for (std::size_t i = 0; i < actuator_bridge::NUM_JOINTS; ++i) {
       default_target_rad_[i] = static_cast<float>(default_joint_angles[i]);
       latest_target_rad_[i] = default_target_rad_[i];
-
       default_max_delta_rad_[i] = static_cast<float>(default_max_delta_rad[i]);
       latest_max_delta_rad_[i] = default_max_delta_rad_[i];
     }
 
     target_topic_ = this->declare_parameter(
-      "target_topic",
-      "/control/selected/joint_target");
+      "target_topic", "/control/selected/joint_target");
 
     target_sub_ = this->create_subscription<robot_interfaces::msg::JointTarget>(
       target_topic_,
       control_qos(),
       std::bind(&ActuatorBridgeNode::targetCallback, this, std::placeholders::_1));
 
-    joint_feedback_pub_ =
-      this->create_publisher<robot_interfaces::msg::JointFeedback>(
-      "/control/actuator/joint_feedback",
-      control_qos());
+    joint_feedback_pub_ = this->create_publisher<robot_interfaces::msg::JointFeedback>(
+      "/control/actuator/joint_feedback", control_qos());
+    imu_pub_ = this->create_publisher<sensor_msgs::msg::Imu>(
+      "/control/actuator/imu", control_qos());
+    status_pub_ = this->create_publisher<robot_interfaces::msg::RobotStatus>(
+      "/control/actuator/status", control_qos());
+    odom_source_pub_ = this->create_publisher<robot_interfaces::msg::StmMotion>(
+      "/localization/spot_motion",
+      rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile());
 
-    imu_pub_ =
-      this->create_publisher<sensor_msgs::msg::Imu>(
-      "/control/actuator/imu",
-      control_qos());
+    const bool uart_ok = uart_.open_device(
+      uart_device_,
+      static_cast<int>(uart_baudrate_),
+      static_cast<std::size_t>(max_rx_buffer_size_));
 
-    status_pub_ =
-      this->create_publisher<robot_interfaces::msg::RobotStatus>(
-      "/control/actuator/status",
-      control_qos());
-
-    odom_source_pub_ =
-      this->create_publisher<robot_interfaces::msg::StmMotion>(
-        "/localization/spot_motion",
-        rclcpp::QoS(rclcpp::KeepLast(1)).best_effort());
-
-    const bool spi_ok = spi_.open_device(
-      spi_device_,
-      static_cast<uint32_t>(spi_speed_hz_),
-      static_cast<uint8_t>(spi_mode_),
-      static_cast<uint8_t>(spi_bits_per_word_));
-
-    if (!spi_ok) {
-      spi_open_failed_ = true;
+    if (!uart_ok) {
+      link_open_failed_ = true;
       RCLCPP_ERROR(
         this->get_logger(),
-        "SPI open failed: %s",
-        spi_.last_error().c_str());
+        "UART open failed: %s",
+        uart_.last_error().c_str());
     } else {
-      const bool dr_ok = spi_.configure_data_ready(
-      use_data_ready_,
-      data_ready_gpiochip_,
-      static_cast<unsigned int>(data_ready_line_),
-      data_ready_active_high_,
-      data_ready_timeout_us_,
-      data_ready_poll_interval_us_);
-
-      if (!dr_ok) {
-        spi_open_failed_ = true;
-        RCLCPP_ERROR(
-          this->get_logger(),
-          "DATA_READY setup failed: %s",
-          spi_.last_error().c_str());
-      } else if (use_data_ready_) {
-        RCLCPP_INFO(
-          this->get_logger(),
-          "DATA_READY enabled: chip=%s, line=%d, active_high=%d, timeout=%dus",
-          data_ready_gpiochip_.c_str(),
-          data_ready_line_,
-          data_ready_active_high_,
-          data_ready_timeout_us_);
-      }
       RCLCPP_INFO(
         this->get_logger(),
-        "SPI opened: device=%s, speed=%d Hz, mode=%d, bits=%d, frame=%zu bytes",
-        spi_device_.c_str(),
-        spi_speed_hz_,
-        spi_mode_,
-        spi_bits_per_word_,
-        actuator_bridge::SPI_FRAME_SIZE);
+        "UART opened: device=%s, baudrate=%d, command=%zu bytes, feedback=%zu bytes",
+        uart_device_.c_str(),
+        uart_baudrate_,
+        actuator_bridge::COMMAND_PACKET_SIZE,
+        actuator_bridge::FEEDBACK_PACKET_SIZE);
     }
 
     last_target_time_ = this->now();
 
     const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::duration<double>(1.0 / control_rate_hz_));
-
-    timer_ = this->create_wall_timer(
-      period,
-      std::bind(&ActuatorBridgeNode::controlLoop, this));
+    timer_ = this->create_wall_timer(period, std::bind(&ActuatorBridgeNode::controlLoop, this));
 
     RCLCPP_INFO(
       this->get_logger(),
-      "actuator_bridge_node started: rate=%.1f Hz, target_topic=%s",
+      "actuator_bridge_node started with UART transport: rate=%.1f Hz, target_topic=%s",
       control_rate_hz_,
       target_topic_.c_str());
   }
@@ -264,9 +194,7 @@ private:
       msg->max_delta_rad.size() != actuator_bridge::NUM_JOINTS)
     {
       RCLCPP_WARN_THROTTLE(
-        this->get_logger(),
-        *this->get_clock(),
-        1000,
+        this->get_logger(), *this->get_clock(), 1000,
         "invalid JointTarget array size");
       return;
     }
@@ -292,10 +220,10 @@ private:
   {
     const auto loop_start = std::chrono::steady_clock::now();
 
-    if (spi_open_failed_ || !spi_.is_open()) {
+    if (link_open_failed_ || !uart_.is_open()) {
       publishBridgeFaultStatus(
         last_sent_seq_,
-        FAULT_SPI_OPEN_FAILED,
+        FAULT_LINK_OPEN_FAILED,
         0.0F,
         loop_start);
       return;
@@ -304,52 +232,50 @@ private:
     actuator_bridge::CommandPacket command;
     const bool stale = fillCommandPacket(command);
 
-    const std::vector<uint8_t> tx = actuator_bridge::make_spi_tx_frame(command);
-    std::vector<uint8_t> rx;
+    const std::vector<uint8_t> tx = actuator_bridge::encode_command_packet(command);
 
-    const auto spi_start = std::chrono::steady_clock::now();
-    const bool transfer_ok = spi_.transfer(tx, rx);
-    const auto spi_end = std::chrono::steady_clock::now();
+    const auto write_start = std::chrono::steady_clock::now();
+    const bool write_ok = uart_.write_packet(tx);
+    const auto write_end = std::chrono::steady_clock::now();
+    const float write_latency_ms = static_cast<float>(
+      std::chrono::duration<double, std::milli>(write_end - write_start).count());
 
-    const float spi_latency_ms = static_cast<float>(
-      std::chrono::duration<double, std::milli>(spi_end - spi_start).count());
-
-    if (!transfer_ok) {
+    if (!write_ok) {
       packet_drop_count_++;
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 1000,
+        "UART write failed: %s", uart_.last_error().c_str());
       publishBridgeFaultStatus(
         command.seq,
-        FAULT_SPI_TRANSFER_FAILED,
-        spi_latency_ms,
+        FAULT_LINK_WRITE_FAILED,
+        write_latency_ms,
         loop_start);
       return;
     }
 
     actuator_bridge::FeedbackPacket feedback;
-    const auto decode_result = actuator_bridge::decode_feedback_packet(rx, feedback);
+    std::chrono::steady_clock::time_point feedback_stamp;
+    const bool have_feedback = uart_.get_latest_feedback(feedback, feedback_stamp);
 
-    if (decode_result != actuator_bridge::DecodeResult::OK) {
-      crc_error_count_++;
+    const auto now = std::chrono::steady_clock::now();
+    const float feedback_age_ms = have_feedback ?
+      static_cast<float>(std::chrono::duration<double, std::milli>(now - feedback_stamp).count()) :
+      9999.0F;
 
-      RCLCPP_WARN_THROTTLE(
-        this->get_logger(),
-        *this->get_clock(),
-        1000,
-        "feedback decode failed: %s",
-        actuator_bridge::to_string(decode_result));
-
+    if (!have_feedback || feedback_age_ms > feedback_timeout_ms_) {
+      packet_drop_count_++;
       publishBridgeFaultStatus(
         command.seq,
-        FAULT_FEEDBACK_DECODE_FAILED,
-        spi_latency_ms,
+        FAULT_LINK_TIMEOUT,
+        feedback_age_ms,
         loop_start);
       return;
     }
 
     checkSequence(command.seq, feedback.seq_echo);
-
     publishJointFeedbackFromPacket(feedback);
     publishImuFromPacket(feedback);
-    publishStatusFromPacket(feedback, stale, loop_start, spi_latency_ms);
+    publishStatusFromPacket(feedback, stale, loop_start, feedback_age_ms);
     publishOdomSourceFromPacket(feedback);
   }
 
@@ -363,10 +289,10 @@ private:
 
     if (stale) {
       command.seq = freeze_seq_when_stale_ ? last_sent_seq_ : latest_seq_;
+      command.mode = WIRE_MODE_DISABLE;
+      command.flags = 0U;
       command.gait_phase = latest_gait_phase_;
       command.gait_cycle_count = latest_gait_cycle_count_;
-      command.mode = SPI_MODE_DISABLE;
-      command.flags = 0;
 
       for (std::size_t i = 0; i < actuator_bridge::NUM_JOINTS; ++i) {
         command.target_rad[i] = default_target_rad_[i];
@@ -374,49 +300,24 @@ private:
       }
     } else {
       command.seq = latest_seq_;
-      command.mode = mapRosModeToSpiMode(latest_mode_, latest_flags_);
-      command.flags = mapRosModeToSpiFlags(latest_mode_, latest_flags_);
+      command.mode = mapRosModeToWireMode(latest_mode_, latest_flags_);
+      command.flags = mapRosModeToWireFlags(latest_mode_, latest_flags_);
+      command.gait_phase = latest_gait_phase_;
+      command.gait_cycle_count = latest_gait_cycle_count_;
 
       for (std::size_t i = 0; i < actuator_bridge::NUM_JOINTS; ++i) {
         command.target_rad[i] = latest_target_rad_[i];
         command.max_delta_rad[i] = latest_max_delta_rad_[i];
       }
-
-      command.gait_phase = latest_gait_phase_;
-      command.gait_cycle_count = latest_gait_cycle_count_;
     }
 
     command.timestamp_us = static_cast<uint32_t>(
       static_cast<uint64_t>(now.nanoseconds()) / 1000ULL);
 
     last_sent_seq_ = command.seq;
-
     return stale;
   }
-  /*
-  void checkSequence(uint16_t sent_seq, uint16_t seq_echo)
-  {
-    // SPI full-duplex 구조에서는 STM이 현재 transaction에서 받은 seq가 아니라
-    // 직전 또는 2~3 frame 전 command seq를 echo할 수 있다.
-    constexpr uint16_t kAllowedSeqLag = 3;
 
-    const uint16_t lag = static_cast<uint16_t>(sent_seq - seq_echo);
-
-    if (lag > kAllowedSeqLag) {
-      packet_drop_count_++;
-      RCLCPP_WARN_THROTTLE(
-        this->get_logger(),
-        *this->get_clock(),
-        1000,
-        "seq mismatch: sent=%u, echo=%u, lag=%u",
-        sent_seq,
-        seq_echo,
-        lag);
-    }
-  }
-  */
-
-  
   void checkSequence(uint16_t sent_seq, uint16_t seq_echo)
   {
     constexpr uint16_t kAllowedSeqLag = 5;
@@ -424,16 +325,11 @@ private:
 
     if (lag > kAllowedSeqLag) {
       RCLCPP_WARN_THROTTLE(
-        this->get_logger(),
-        *this->get_clock(),
-        1000,
-        "seq mismatch: sent=%u, echo=%u, lag=%u",
-        sent_seq,
-        seq_echo,
-        lag);
+        this->get_logger(), *this->get_clock(), 1000,
+        "seq lag too large: sent=%u, echo=%u, lag=%u",
+        sent_seq, seq_echo, lag);
     }
   }
-  
 
   void publishJointFeedbackFromPacket(const actuator_bridge::FeedbackPacket & feedback)
   {
@@ -458,8 +354,7 @@ private:
     msg.header.stamp = this->now();
     msg.header.frame_id = "imu_link";
 
-    // FeedbackPacket: wxyz
-    // ROS sensor_msgs/Imu: xyzw
+    // FeedbackPacket: wxyz, ROS sensor_msgs/Imu: xyzw
     msg.orientation.w = feedback.quat_wxyz[0];
     msg.orientation.x = feedback.quat_wxyz[1];
     msg.orientation.y = feedback.quat_wxyz[2];
@@ -480,12 +375,19 @@ private:
     const actuator_bridge::FeedbackPacket & feedback,
     bool stale,
     const std::chrono::steady_clock::time_point & loop_start,
-    float spi_latency_ms)
+    float feedback_age_ms)
   {
     const auto loop_end = std::chrono::steady_clock::now();
-
     const float loop_time_ms = static_cast<float>(
       std::chrono::duration<double, std::milli>(loop_end - loop_start).count());
+
+    const bool torque_on = (feedback.status & STM_STATUS_TORQUE_ON) != 0U;
+    const bool imu_ok = (feedback.status & STM_STATUS_IMU_OK) != 0U;
+    const bool servos_ok = (feedback.status & STM_STATUS_ALL_SERVOS_OK) != 0U;
+    const bool cmd_fresh = (feedback.status & STM_STATUS_CMD_FRESH) != 0U;
+    const bool in_safe_state = (feedback.status & STM_STATUS_IN_SAFE_STATE) != 0U;
+    const bool calibrating = (feedback.status & STM_STATUS_CALIBRATING) != 0U;
+    const bool fault_ok = (feedback.fault_code == FAULT_NONE);
 
     robot_interfaces::msg::RobotStatus msg;
     msg.header.stamp = this->now();
@@ -496,16 +398,8 @@ private:
       msg.status = STATUS_WARN;
       msg.fault_code = FAULT_STALE_TARGET;
       msg.torque_enabled = false;
-      msg.servo_connected = false;
+      msg.servo_connected = servos_ok;
     } else {
-      const bool torque_on = (feedback.status & STM_STATUS_TORQUE_ON) != 0;
-      const bool imu_ok = (feedback.status & STM_STATUS_IMU_OK) != 0;
-      const bool servos_ok = (feedback.status & STM_STATUS_ALL_SERVOS_OK) != 0;
-      const bool cmd_fresh = (feedback.status & STM_STATUS_CMD_FRESH) != 0;
-      const bool in_safe_state = (feedback.status & STM_STATUS_IN_SAFE_STATE) != 0;
-      const bool calibrating = (feedback.status & STM_STATUS_CALIBRATING) != 0;
-      const bool fault_ok = (feedback.fault_code == FAULT_NONE);
-
       msg.fault_code = feedback.fault_code;
       msg.torque_enabled = torque_on;
       msg.servo_connected = servos_ok;
@@ -523,11 +417,16 @@ private:
 
     msg.bus_voltage = feedback.bus_voltage;
     msg.loop_time_ms = loop_time_ms;
-    msg.spi_latency_ms = spi_latency_ms;
+
+    // RobotStatus.msg의 기존 필드명을 유지한다.
+    // UART 최종 구조에서는 spi_latency_ms = feedback_age_ms,
+    // spi_connected = UART link open 상태로 해석한다.
+    msg.spi_latency_ms = feedback_age_ms;
+    msg.spi_connected = uart_.is_open();
+
     msg.packet_drop_count = packet_drop_count_;
-    msg.crc_error_count = crc_error_count_;
+    msg.crc_error_count = totalCrcErrorCount();
     msg.missed_deadline_count = missed_deadline_count_;
-    msg.spi_connected = spi_.is_open();
 
     if (loop_time_ms > (1000.0 / control_rate_hz_)) {
       missed_deadline_count_++;
@@ -539,30 +438,26 @@ private:
   void publishOdomSourceFromPacket(const actuator_bridge::FeedbackPacket & feedback)
   {
     robot_interfaces::msg::StmMotion msg;
-
     msg.header.stamp = this->now();
     msg.header.frame_id = "base_link";
-
     msg.timestamp_ms = feedback.timestamp_us / 1000U;
     msg.seq = feedback.seq_echo;
-
     msg.motion_state = feedback.motion_state;
     msg.gait_phase = feedback.gait_phase;
     msg.gait_cycle_count = feedback.gait_cycle_count;
-
     msg.imu_yaw_rad = feedback.imu_yaw_rad;
     msg.gyro_z_rad_s = feedback.gyro_rad_s[2];
 
     odom_source_pub_->publish(msg);
   }
+
   void publishBridgeFaultStatus(
     uint16_t seq_echo,
     uint8_t fault_code,
-    float spi_latency_ms,
+    float feedback_age_or_latency_ms,
     const std::chrono::steady_clock::time_point & loop_start)
   {
     const auto loop_end = std::chrono::steady_clock::now();
-
     const float loop_time_ms = static_cast<float>(
       std::chrono::duration<double, std::milli>(loop_end - loop_start).count());
 
@@ -574,12 +469,12 @@ private:
     msg.fault_code = fault_code;
     msg.bus_voltage = 0.0F;
     msg.loop_time_ms = loop_time_ms;
-    msg.spi_latency_ms = spi_latency_ms;
+    msg.spi_latency_ms = feedback_age_or_latency_ms;
     msg.packet_drop_count = packet_drop_count_;
-    msg.crc_error_count = crc_error_count_;
+    msg.crc_error_count = totalCrcErrorCount();
     msg.missed_deadline_count = missed_deadline_count_;
     msg.torque_enabled = false;
-    msg.spi_connected = spi_.is_open();
+    msg.spi_connected = uart_.is_open();
     msg.servo_connected = false;
 
     if (loop_time_ms > (1000.0 / control_rate_hz_)) {
@@ -589,22 +484,25 @@ private:
     status_pub_->publish(msg);
   }
 
+  uint32_t totalCrcErrorCount() const
+  {
+    return crc_error_count_ + uart_.crc_error_count();
+  }
+
 private:
   double control_rate_hz_{50.0};
   double max_target_age_ms_{200.0};
-
-  std::string spi_device_{"/dev/spidev0.0"};
-  int spi_speed_hz_{5000000};
-  int spi_mode_{0};
-  int spi_bits_per_word_{8};
-
   bool freeze_seq_when_stale_{true};
 
-  actuator_bridge::SpiTransport spi_;
-  bool spi_open_failed_{false};
+  std::string uart_device_{"/dev/ttyTHS1"};
+  int uart_baudrate_{921600};
+  double feedback_timeout_ms_{100.0};
+  int max_rx_buffer_size_{4096};
+
+  actuator_bridge::UartTransport uart_;
+  bool link_open_failed_{false};
 
   std::mutex mutex_;
-
   bool have_target_{false};
   uint16_t latest_seq_{0};
   uint16_t last_sent_seq_{0};
@@ -625,13 +523,6 @@ private:
   uint32_t packet_drop_count_{0};
   uint32_t crc_error_count_{0};
   uint32_t missed_deadline_count_{0};
-
-  bool use_data_ready_{true};
-  std::string data_ready_gpiochip_{"/dev/gpiochip0"};
-  int data_ready_line_{0};
-  bool data_ready_active_high_{true};
-  int data_ready_timeout_us_{5000};
-  int data_ready_poll_interval_us_{50};
 
   rclcpp::Subscription<robot_interfaces::msg::JointTarget>::SharedPtr target_sub_;
   rclcpp::Publisher<robot_interfaces::msg::JointFeedback>::SharedPtr joint_feedback_pub_;

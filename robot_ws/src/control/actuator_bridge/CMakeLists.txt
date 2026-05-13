@@ -9,53 +9,42 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(robot_interfaces REQUIRED)
-
-find_library(GPIOD_LIBRARY gpiod REQUIRED)
-find_path(GPIOD_INCLUDE_DIR gpiod.h REQUIRED)
+find_package(Threads REQUIRED)
 
 add_library(packet_codec
   src/packet_codec.cpp
 )
-
 target_compile_features(packet_codec PUBLIC cxx_std_17)
-
 target_include_directories(packet_codec PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
 
-add_library(spi_transport
-  src/spi_transport.cpp
+add_library(uart_transport
+  src/uart_transport.cpp
 )
-
-target_compile_features(spi_transport PUBLIC cxx_std_17)
-
-target_include_directories(spi_transport PUBLIC
+target_compile_features(uart_transport PUBLIC cxx_std_17)
+target_include_directories(uart_transport PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
-  ${GPIOD_INCLUDE_DIR}
 )
-
-target_link_libraries(spi_transport
-  ${GPIOD_LIBRARY}
+target_link_libraries(uart_transport
+  packet_codec
+  Threads::Threads
 )
 
 add_executable(actuator_bridge_node
   src/actuator_bridge_node.cpp
 )
-
 target_compile_features(actuator_bridge_node PUBLIC cxx_std_17)
-
 target_include_directories(actuator_bridge_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
-
 target_link_libraries(actuator_bridge_node
   packet_codec
-  spi_transport
+  uart_transport
 )
-
 ament_target_dependencies(actuator_bridge_node
   rclcpp
   sensor_msgs
@@ -64,21 +53,18 @@ ament_target_dependencies(actuator_bridge_node
 
 install(TARGETS
   packet_codec
-  spi_transport
+  uart_transport
   actuator_bridge_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
-install(DIRECTORY
-  include/
+install(DIRECTORY include/
   DESTINATION include
 )
 
-install(DIRECTORY
-  launch
-  config
+install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
 )
 
