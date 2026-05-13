@@ -386,16 +386,7 @@ class RlLocomotionNode(Node):
             self.last_joint_feedback_time = time.perf_counter()
 
     def imu_callback(self, msg: Imu):
-        qx = float(msg.orientation.x)
-        qy = float(msg.orientation.y)
-        qz = float(msg.orientation.z)
-        qw = float(msg.orientation.w)
-
-        q_norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
-        if not math.isfinite(q_norm) or q_norm < 1e-6:
-            self._warn_throttled("imu_quat", "invalid IMU quaternion")
-            return
-
+        # === Raw IMU 값 추출 ===
         ang_raw = [
             float(msg.angular_velocity.x),
             float(msg.angular_velocity.y),
@@ -406,18 +397,19 @@ class RlLocomotionNode(Node):
             self._warn_throttled("imu_ang", "invalid IMU angular velocity")
             return
 
-        pg_raw = list(
-            projected_gravity_from_ros_quat_xyzw(
-                qx=qx,
-                qy=qy,
-                qz=qz,
-                qw=qw,
-            )
-        )
-
-        if not finite_list(pg_raw, 3):
-            self._warn_throttled("imu_gravity", "invalid projected gravity")
+        ax = float(msg.linear_acceleration.x)
+        ay = float(msg.linear_acceleration.y)
+        az = float(msg.linear_acceleration.z)
+        accel_mag = math.sqrt(ax * ax + ay * ay + az * az)
+        if not math.isfinite(accel_mag) or accel_mag < 1.0:
+            self._warn_throttled("imu_accel", "invalid IMU linear acceleration")
             return
+
+        # === projected gravity: raw accel 기반 (BNO055 quat 의 reference drift 우회) ===
+        # 정지 상태에서 accel = -gravity_in_imu_frame.
+        # projected_gravity (unit vector) = -accel / |accel|
+        # 보행 시 약간의 노이즈 (linear acc) 가 섞이지만 50Hz 평균적으로 OK.
+        pg_raw = [-ax / accel_mag, -ay / accel_mag, -az / accel_mag]
 
         # === IMU mount-frame -> robot body-frame axis remap ===
         # 실제 mount 관측 (gravity 방향 기준):
