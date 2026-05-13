@@ -1,5 +1,5 @@
 #include "system_hal.h"
-#include "spi.h"
+#include "uart_jetson.h"
 
 /* === Global handle definitions === */
 UART_HandleTypeDef huart3, huart4, huart5, huart6;
@@ -57,8 +57,10 @@ static void MX_GPIO_Init(void) {
 
 static void MX_I2C1_Init(void) {
     __HAL_RCC_I2C1_CLK_ENABLE();
+    /* I2C1 핀: PB8 (SCL) / PB9 (SDA) — Arduino D15/D14 위치.
+     * PB6/PB7 은 USART1 alternate (PA9/PA10 의 USB OTG 충돌 회피용) 으로 양보. */
     GPIO_InitTypeDef gp = {0};
-    gp.Pin = GPIO_PIN_6 | GPIO_PIN_7;
+    gp.Pin = GPIO_PIN_8 | GPIO_PIN_9;
     gp.Mode = GPIO_MODE_AF_OD;
     gp.Pull = GPIO_PULLUP;
     gp.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
@@ -147,17 +149,6 @@ static void MX_USART2_Init(void) {
     if (HAL_UART_Init(&huart2) != HAL_OK) Error_Handler();
 }
 
-static void MX_DATA_READY_GPIO_Init(void) {
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
-
-    GPIO_InitTypeDef gp = {0};
-    gp.Pin = GPIO_PIN_0;
-    gp.Mode = GPIO_MODE_OUTPUT_PP;
-    gp.Pull = GPIO_NOPULL;
-    gp.Speed = GPIO_SPEED_FREQ_HIGH;
-    HAL_GPIO_Init(GPIOB, &gp);
-}
-
 void system_hal_init_all(void) {
     SystemClock_Config();
     MX_GPIO_Init();
@@ -167,7 +158,6 @@ void system_hal_init_all(void) {
     MX_USART3_HDSEL_Init();
     MX_UART5_HDSEL_Init();
     MX_I2C1_Init();
-    MX_DATA_READY_GPIO_Init();
-    MX_SPI1_Init();
+    MX_USART1_Jetson_Init();
     HAL_Delay(200);
 }

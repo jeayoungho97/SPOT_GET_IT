@@ -6,9 +6,14 @@
 #include "robot_state.h"
 
 /*
- * SPI 프레임 정의 — Jetson actuator_bridge와 binary-compatible.
- * Full-duplex 261 byte, 50 Hz, SPI Mode 0, 5 MHz.
+ * Wire protocol 정의 — Jetson actuator_bridge 와 binary-compatible.
+ * Command (Jetson → STM): 116 byte
+ * Feedback (STM → Jetson): 261 byte
+ * 50 Hz, UART 921600 8N1 (이전: SPI Mode 0 5MHz 261B padded full-duplex)
  * Endianness: little-endian (양쪽 ARM).
+ *
+ * "SPI" 라는 이름은 역사적 — 실제 transport 는 UART 이며 frame 자체는
+ * transport-agnostic. 매크로/타입명은 Jetson 코드와의 호환을 위해 유지.
  */
 
 #define SPI_NUM_JOINTS          12
@@ -16,13 +21,14 @@
 #define SPI_MOSI_MAGIC          0xA55A
 #define SPI_MISO_MAGIC          0x5AA5
 
-/* MOSI payload size (magic ~ crc16, padding 제외) */
+/* MOSI (command) frame: 116 byte, padding 없음 */
 #define MOSI_PAYLOAD_SIZE       116
 
-/* MISO payload size = SPI_FRAME_SIZE (패딩 없음) */
+/* MISO (feedback) frame: 261 byte, padding 없음 */
 #define MISO_PAYLOAD_SIZE       261
 
-/* SPI full-duplex: 양쪽 중 큰 쪽(MISO)에 맞춤 */
+/* SPI_FRAME_SIZE — 레거시 alias (MISO 크기와 동일).
+ * control_loop.c 등에서 TX buffer 크기로 아직 사용 중. Step C 후 제거 예정. */
 #define SPI_FRAME_SIZE          MISO_PAYLOAD_SIZE
 
 /* Jetson -> STM wire mode
@@ -52,7 +58,7 @@
 #define SPI_FLAG_TORQUE_EN      (1 << 0)   /* reserved (unused) */
 #define SPI_FLAG_E_STOP         (1 << 3)   /* reserved (unused) */
 
-/* MOSI: Jetson -> STM (116 payload + 145 padding = 261) */
+/* MOSI: Jetson -> STM (116 byte, no padding) */
 typedef struct __attribute__((packed)) {
     uint16_t magic;                             /* 0xA55A */
     uint16_t seq;
@@ -64,7 +70,6 @@ typedef struct __attribute__((packed)) {
     float    gait_phase;                        /* 4  */
     uint32_t gait_cycle_count;                  /* 4  */
     uint16_t crc16;
-    uint8_t  _pad[145];
 } spi_mosi_frame_t;
 
 /* MISO: STM -> Jetson (261 byte, 패딩 없음) */
@@ -89,8 +94,8 @@ typedef struct __attribute__((packed)) {
     uint16_t crc16;                             /* 2  */
 } spi_miso_frame_t;
 
-_Static_assert(sizeof(spi_mosi_frame_t) == SPI_FRAME_SIZE, "MOSI frame size mismatch");
-_Static_assert(sizeof(spi_miso_frame_t) == SPI_FRAME_SIZE, "MISO frame size mismatch");
+_Static_assert(sizeof(spi_mosi_frame_t) == MOSI_PAYLOAD_SIZE, "MOSI frame size mismatch");
+_Static_assert(sizeof(spi_miso_frame_t) == MISO_PAYLOAD_SIZE, "MISO frame size mismatch");
 
 /* === Decode 결과 === */
 typedef enum {
