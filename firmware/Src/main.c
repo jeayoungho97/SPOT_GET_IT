@@ -9,10 +9,8 @@
 #include "joint_control.h"
 #include "calibration.h"
 #include "spi_protocol.h"
-#include "uart_jetson.h"
 #include "control_loop.h"
 #include <stdio.h>
-#include <string.h>
 #include <math.h>
 
 int main(void) {
@@ -36,8 +34,6 @@ int main(void) {
     printf("  Demo: CALIBRATION  (ESC to exit)\r\n");
 #elif DEMO_MODE == MODE_RL_CONTROL
     printf("  Demo: RL-CONTROL  (Jetson 50Hz control loop)\r\n");
-#elif DEMO_MODE == MODE_UART_HELLO
-    printf("  Demo: UART-HELLO  (USART1 hello/echo — 통신 검증)\r\n");
 #endif
 #if IN_HAND_MODE
     printf("  Safety: IN-HAND  (비활성, 손에 들고 시연)\r\n");
@@ -61,97 +57,6 @@ int main(void) {
     printf("  >>> 평면 위에 두고 catch 준비 <<<\r\n");
 #endif
     printf("=================================================\r\n");
-
-#if DEMO_MODE == MODE_UART_HELLO
-    /* === USART1 (Jetson 통신) hello/echo 테스트 ===
-     * 서보/IMU 의존 없이 UART 만 검증.
-     * STM→Jetson: 1초마다 "hello UART N" 송신 (UART TX DMA)
-     * Jetson→STM: 받은 바이트는 ST-Link VCP 콘솔에 hex dump
-     *
-     * Jetson 측 검증 명령:
-     *   screen /dev/ttyTHS1 921600
-     *   (또는 picocom -b 921600 /dev/ttyTHS1)
-     * 키 입력하면 STM 콘솔에 [RX] XX XX ... 로 찍힘.
-     * 종료: 보드 리셋.
-     */
-    printf("\r\n=== UART Hello Test (USART1, 921600 8N1) ===\r\n");
-    printf("    PB6 (TX, CN10-17)  -> Jetson Pin 10 (RX)\r\n");
-    printf("    PB7 (RX, CN7-21)   <- Jetson Pin 8  (TX)\r\n");
-    printf("    Loopback: PB6 <-> PB7 (점퍼 와이어)\r\n");
-    printf("    Jetson:  picocom -b 921600 /dev/ttyTHS1\r\n\r\n");
-
-    uart_jetson_start_rx();
-
-    uint16_t tail = 0;
-    uint32_t cnt = 0;
-    uint32_t last_tx = 0;
-    uint32_t last_diag = 0;
-    char msg[64];
-    while (1) {
-        if (check_esc()) emergency_stop();
-
-        uint32_t now = HAL_GetTick();
-
-        /* 1초마다 UART 상태 진단 출력 */
-        if (now - last_diag >= 1000) {
-            last_diag = now;
-            uint16_t ndtr = (uint16_t)__HAL_DMA_GET_COUNTER(huart_jetson.hdmarx);
-            uint16_t idr  = (uint16_t)(GPIOB->IDR & 0xFFFF);
-            printf("[DIAG] NDTR=%u gState=0x%02X RxState=0x%02X head=%u tail=%u\r\n"
-                   "       SR=0x%04lX CR1=0x%04lX CR3=0x%04lX BRR=0x%04lX\r\n"
-                   "       GPIOB: AFR0=0x%08lX MODER=0x%08lX PUPDR=0x%08lX IDR=0x%04X (PB6=%u PB7=%u)\r\n",
-                   (unsigned)ndtr,
-                   (unsigned)huart_jetson.gState,
-                   (unsigned)huart_jetson.RxState,
-                   (unsigned)uart_jetson_rx_head(),
-                   (unsigned)tail,
-                   (unsigned long)USART1->SR,
-                   (unsigned long)USART1->CR1,
-                   (unsigned long)USART1->CR3,
-                   (unsigned long)USART1->BRR,
-                   (unsigned long)GPIOB->AFR[0],
-                   (unsigned long)GPIOB->MODER,
-                   (unsigned long)GPIOB->PUPDR,
-                   (unsigned)idr,
-                   (unsigned)((idr >> 6) & 1),
-                   (unsigned)((idr >> 7) & 1));
-        }
-
-        /* 1초마다 hello 송신 — DMA + Blocking 두 방식 모두 시도해 진단 */
-        if (now - last_tx >= 1000) {
-            last_tx = now;
-            int n = snprintf(msg, sizeof(msg),
-                             "hello UART %lu\r\n",
-                             (unsigned long)cnt++);
-            if (n > 0 && uart_jetson_transmit_dma((const uint8_t *)msg, (uint16_t)n)) {
-                printf("[TX %lu DMA] %s", (unsigned long)cnt, msg);
-            } else {
-                printf("[TX %lu DMA] BUSY (skip)\r\n", (unsigned long)cnt);
-            }
-
-            /* Blocking TX — DMA 우회해서 USART 자체가 송신 가능한지 검증 */
-            const char *blk = "BLOCK\r\n";
-            HAL_StatusTypeDef ret = HAL_UART_Transmit(&huart_jetson,
-                                                     (uint8_t *)blk, 7, 100);
-            printf("[TX %lu BLOCK] ret=%d\r\n", (unsigned long)cnt, (int)ret);
-        }
-
-        /* RX 도착 바이트 hex dump (head 가 갱신됐을 때만) */
-        uint16_t head = uart_jetson_rx_head();
-        if (head != tail) {
-            const uint8_t *buf = uart_jetson_rx_buffer();
-            printf("[RX] ");
-            while (tail != head) {
-                printf("%02X ", buf[tail]);
-                tail = (uint16_t)((tail + 1) % JETSON_UART_RX_BUF_SIZE);
-            }
-            printf("\r\n");
-        }
-
-        HAL_Delay(10);
-    }
-    /* 도달 안 함 */
-#endif
 
     /* === Boot sequence === */
     printf("\r\n[1] Pinging 12 servos...\r\n");
