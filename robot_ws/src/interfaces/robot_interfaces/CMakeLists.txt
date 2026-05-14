@@ -25,8 +25,6 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/LocalizedRobotPose.msg"
   "msg/LocalPlannerStatus.msg"
   "msg/PathProgress.msg"
-  "msg/VictimDetection.msg"
-  "msg/RobotLocalization.msg"
   "msg/JointTarget.msg"
   "msg/JointFeedback.msg"
   "msg/RobotStatus.msg"
