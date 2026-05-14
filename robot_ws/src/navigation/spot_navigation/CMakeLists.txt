@@ -66,8 +66,8 @@ ament_target_dependencies(navigation_debug_visualizer_node
 # - 역할:
 #   실제 planning/global_path_manager가 publish하는
 #   /planning/global_path/spot_01 토픽을 mock 데이터로 재현한다.
-# - Input : 없음
-# - Output : /planning/global_path/spot_01
+# - Input: 없음
+# - Output: /planning/global_path/spot_01
 #     Type: robot_interfaces/msg/GlobalPathWaypoints
 # ============================================================
 add_executable(mock_global_path_publisher_node
@@ -144,6 +144,64 @@ ament_target_dependencies(path_progress_tracker_node
   robot_interfaces
 )
 
+# ============================================================
+# [4] navigation_fsm_node
+# ------------------------------------------------------------
+# - 역할:
+#   path_progress, obstacle, free_space, pose를 보고
+#   현재 자율보행 FSM 상태를 결정하여 publish한다.
+# - Input :
+#   - /navigation/path_progress/spot_01
+#   - /localization/pose
+#   - /perception/lidar/obstacle_model
+#   - /perception/lidar/free_space_model
+# - Output : /navigation/state/spot_01
+#     Type: robot_interfaces/msg/NavigationState
+# ============================================================
+add_executable(navigation_fsm_node
+  src/navigation_fsm_node.cpp
+)
+
+target_include_directories(navigation_fsm_node PRIVATE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+
+ament_target_dependencies(navigation_fsm_node
+  rclcpp
+  std_msgs
+  geometry_msgs
+  robot_interfaces
+)
+
+# ============================================================
+# [5] path_follower_node
+# ------------------------------------------------------------
+# - 역할:
+#   local path와 현재 pose를 보고 heading error를 계산하여
+#   cmd_vel_raw를 publish한다.
+# - Input :
+#   - /planning/local_path/spot_01
+#   - /localization/pose
+#   - /navigation/state/spot_01
+# - Output : /control/cmd_vel_raw/spot_01
+#     Type: geometry_msgs/msg/TwistStamped
+# ============================================================
+add_executable(path_follower_node
+  src/path_follower_node.cpp
+)
+
+target_include_directories(path_follower_node PRIVATE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+
+ament_target_dependencies(path_follower_node
+  rclcpp
+  std_msgs
+  geometry_msgs
+  nav_msgs
+  robot_interfaces
+)
+
 # 추가 노드 구현 후 add_executable(), ament_target_dependencies() 추가
 
 
@@ -154,10 +212,12 @@ ament_target_dependencies(path_progress_tracker_node
 # 추후 노드 구현 후에 개발한 노드 추가하기
 # ============================================================
 install(TARGETS
-  mock_global_path_publisher_node
   navigation_debug_visualizer_node
+  mock_global_path_publisher_node
   mock_localization_pose_publisher_node
   path_progress_tracker_node
+  navigation_fsm_node
+  path_follower_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
