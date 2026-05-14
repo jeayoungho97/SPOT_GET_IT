@@ -24,9 +24,10 @@ joint_target_mux_node:
   ros__parameters:
     rate_hz: 50.0
 
-    # RL 보행 통합 테스트용 — RL 추론 결과가 mux 를 통과해 STM 으로 전달됨.
-    # 안전 운영 시엔 "STAND" 로 변경 (RL 정책 죽으면 자동 fallback).
-    default_mode: "RL"
+    # 안전 디버그 모드 — RL 노드는 돌지만 출력 무시, robot 은 stand 자세만 유지.
+    # RL 의 observation/디버그 토픽 (rl/debug) 은 그대로 확인 가능.
+    # 실 RL 보행 시도할 땐 "RL" 로 변경.
+    default_mode: "STAND"
 
     rl_timeout_ms: 100.0
     stand_timeout_ms: 100.0
