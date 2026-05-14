@@ -24,9 +24,11 @@ joint_target_mux_node:
   ros__parameters:
     rate_hz: 50.0
 
-    # RL 보행 활성. RL 노드의 /control/rl/joint_target 을 robot 으로 흘림.
-    # 문제 시 ESTOP 또는 "STAND" 로 되돌리면 stand_motion 만 적용됨.
-    default_mode: "RL"
+    # 안전 default — launch 직후 robot 은 stand pose 만 유지.
+    # RL 노드는 띄워져 있지만 /control/rl/joint_target 은 mux 에서 무시됨.
+    # RL 보행 활성화는 runtime 에 mode topic 으로:
+    #   ros2 topic pub /control/behavior/mode std_msgs/msg/String "data: 'RL'" --once
+    default_mode: "STAND"
 
     rl_timeout_ms: 100.0
     stand_timeout_ms: 100.0
