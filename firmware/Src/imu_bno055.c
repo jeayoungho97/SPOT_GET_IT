@@ -1,6 +1,5 @@
 #include "imu_bno055.h"
 #include <math.h>
-#include <stdio.h>
 
 #define BNO055_I2C_ADDR_DEFAULT   0x28
 #define BNO055_I2C_ADDR_ALT       0x29
@@ -89,17 +88,6 @@ bool bno055_init_imuplus(I2C_HandleTypeDef *hi2c) {
     bno_write_byte(hi2c, BNO055_AXIS_MAP_SIGN, BNO055_AXIS_SIGN);
     HAL_Delay(10);
 
-    /* === 진단: P6 remap register read-back (boot 1회만) ===
-     * write 가 실제 chip 에 들어갔는지 확인.
-     * IMUPLUS 모드 진입 전이므로 register access 안전. */
-    uint8_t cfg_rb = 0xFF, sign_rb = 0xFF;
-    bool cfg_ok  = bno_read_byte(hi2c, BNO055_AXIS_MAP_CONFIG, &cfg_rb);
-    bool sign_ok = bno_read_byte(hi2c, BNO055_AXIS_MAP_SIGN, &sign_rb);
-    printf("[BNO055] AXIS_MAP_CONFIG read-back: 0x%02X (expected 0x%02X, read_ok=%d)\r\n",
-           cfg_rb, BNO055_AXIS_CONFIG, (int)cfg_ok);
-    printf("[BNO055] AXIS_MAP_SIGN   read-back: 0x%02X (expected 0x%02X, read_ok=%d)\r\n",
-           sign_rb, BNO055_AXIS_SIGN, (int)sign_ok);
-
     bno_write_byte(hi2c, BNO055_OPR_MODE, BNO055_OPR_IMUPLUS);
     HAL_Delay(20);
     return true;
@@ -135,35 +123,34 @@ bool bno055_read_body(I2C_HandleTypeDef *hi2c, body_attitude_t *body) {
     int16_t qy_raw = (int16_t)((uint16_t)buf[28] | ((uint16_t)buf[29] << 8));
     int16_t qz_raw = (int16_t)((uint16_t)buf[30] | ((uint16_t)buf[31] << 8));
 
-    /* Euler — 기존 본체 마운팅 보정 유지 */
-    body->yaw   =  h_raw * BNO055_EULER_SCALE;
-    body->pitch = -(r_raw * BNO055_EULER_SCALE);
-    body->roll  = -(p_raw * BNO055_EULER_SCALE);
+    /* Euler — chip 출력이 ROS REP-103 과 부호 반대 (3축 모두 검증 완료).
+     * SW 에서 sign flip 으로 정합. register naming swap 은 유지:
+     *   BNO055 EUL_ROLL  register = standard pitch (rotation around Y, ±90°)
+     *   BNO055 EUL_PITCH register = standard roll  (rotation around X, ±180°)
+     */
+    body->yaw   = -(h_raw * BNO055_EULER_SCALE);
+    body->pitch =  r_raw * BNO055_EULER_SCALE;
+    body->roll  =  p_raw * BNO055_EULER_SCALE;
 
-    /* Gyro → rad/s. Chip P6 remap 적용 후 출력이 이미 body frame.
-     * SW remap 불필요 — chip output 그대로 사용 (identity). */
+    /* yaw wrap to ±180° — chip HEADING register 가 0~360° unsigned 라
+     * sign flip 결과 -360~0 범위. ROS 표준 ±π 형태로 정리. */
+    if (body->yaw < -180.0f) body->yaw += 360.0f;
+
+    /* Gyro → rad/s. axis_map (0x24+0x06) 적용 후 output frame 이 left-handed
+     * (det(T)=-1) 라 axial vector 부호가 vector 변환과 차이 발생.
+     * 측정 검증 결과 gy 만 REP-103 과 부호 반대 → SW flip. gx, gz 는 일치. */
     float gx = gx_raw * BNO055_GYRO_SCALE;
     float gy = gy_raw * BNO055_GYRO_SCALE;
     float gz = gz_raw * BNO055_GYRO_SCALE;
-    body->gyro[0] = gx;
-    body->gyro[1] = gy;
-    body->gyro[2] = gz;
+    body->gyro[0] =  gx;
+    body->gyro[1] = -gy;   /* sign flip — REP-103 정합 */
+    body->gyro[2] =  gz;
 
     /* Accel → m/s². Chip P6 remap 후 출력이 이미 body frame.
      * 정자세 검증: az ≈ -9.8 (Z up → 중력은 -Z 방향). */
     float ax = ax_raw * BNO055_ACCEL_SCALE;
     float ay = ay_raw * BNO055_ACCEL_SCALE;
     float az = az_raw * BNO055_ACCEL_SCALE;
-
-    /* === 진단: chip output (= body frame), 1Hz 출력 ===
-     * 다른 자세 (왼쪽 눕힘, 머리 위) 검증 후 제거 예정. */
-    static uint32_t last_print_tick = 0;
-    uint32_t now_tick = HAL_GetTick();
-    if (now_tick - last_print_tick >= 1000) {
-        last_print_tick = now_tick;
-        printf("[BNO055-RAW] ax=%+.2f ay=%+.2f az=%+.2f\r\n",
-               (double)ax, (double)ay, (double)az);
-    }
 
     body->accel[0] = ax;
     body->accel[1] = ay;
