@@ -386,17 +386,22 @@ class RlLocomotionNode(Node):
             self.last_joint_feedback_time = time.perf_counter()
 
     def imu_callback(self, msg: Imu):
-        # === Raw IMU 값 추출 ===
-        ang_raw = [
+        # IMU 데이터는 이미 robot body frame 으로 들어옴.
+        # (STM 펌웨어의 BNO055 P6 axis remap 이 chip 차원에서 변환 적용됨)
+
+        ang = [
             float(msg.angular_velocity.x),
             float(msg.angular_velocity.y),
             float(msg.angular_velocity.z),
         ]
 
-        if not finite_list(ang_raw, 3):
+        if not finite_list(ang, 3):
             self._warn_throttled("imu_ang", "invalid IMU angular velocity")
             return
 
+        # projected_gravity 는 raw accel 기반.
+        # BNO055 quat 의 fusion reference drift 회피 (IMUPLUS 모드 한계).
+        # 보행 중 linear accel 노이즈는 작아서 50Hz 통계적으로 OK.
         ax = float(msg.linear_acceleration.x)
         ay = float(msg.linear_acceleration.y)
         az = float(msg.linear_acceleration.z)
@@ -405,26 +410,7 @@ class RlLocomotionNode(Node):
             self._warn_throttled("imu_accel", "invalid IMU linear acceleration")
             return
 
-        # === projected gravity: raw accel 기반 (BNO055 quat 의 reference drift 우회) ===
-        # 정지 상태에서 accel = -gravity_in_imu_frame.
-        # projected_gravity (unit vector) = -accel / |accel|
-        # 보행 시 약간의 노이즈 (linear acc) 가 섞이지만 50Hz 평균적으로 OK.
-        pg_raw = [-ax / accel_mag, -ay / accel_mag, -az / accel_mag]
-
-        # === IMU mount-frame -> robot body-frame axis remap ===
-        # 실제 mount 관측 (gravity 방향 기준):
-        #   정자세           : gravity along +Y_imu  -> robot +Z (up) = -Y_imu
-        #   left side down   : gravity along +Z_imu  -> robot +Y (right) = -Z_imu
-        #   head up vertical : gravity along +X_imu  -> robot +X (forward) = -X_imu
-        # Rotation (IMU -> body): R = [[-1,0,0],[0,0,-1],[0,-1,0]]  (det = +1)
-        #   new_x = -old_x
-        #   new_y = -old_z
-        #   new_z = -old_y
-        def remap_imu_to_body(v):
-            return [-v[0], -v[2], -v[1]]
-
-        ang = remap_imu_to_body(ang_raw)
-        projected_gravity = remap_imu_to_body(pg_raw)
+        projected_gravity = [-ax / accel_mag, -ay / accel_mag, -az / accel_mag]
 
         with self.state_lock:
             self.base_ang_vel = ang

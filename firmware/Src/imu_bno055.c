@@ -13,6 +13,27 @@
 #define BNO055_OPR_IMUPLUS        0x08
 #define BNO055_CHIP_ID_EXPECTED   0xA0
 
+/* === Axis remap registers (BNO055 datasheet 4.4.1) ===
+ * 실제 마운트 (사용자 측정):
+ *   gravity along +Y_imu  (정자세)  -> robot +Z (up) = -Y_imu
+ *   gravity along +Z_imu  (왼쪽 눕힘) -> robot +Y (right) = -Z_imu
+ *   gravity along +X_imu  (머리 위)   -> robot +X (forward) = -X_imu
+ *
+ * BNO055 의 placement P6 와 일치:
+ *   AXIS_MAP_CONFIG bits [5:4]=NEW_X, [3:2]=NEW_Y, [1:0]=NEW_Z
+ *     00=physical X, 01=physical Y, 10=physical Z
+ *   NEW_X = physical X (00), NEW_Y = physical Z (10), NEW_Z = physical Y (01)
+ *   -> 0b00 10 01 = 0x21
+ *   AXIS_MAP_SIGN bit2=X_neg, bit1=Y_neg, bit0=Z_neg
+ *   세 축 모두 negate -> 0x07
+ *
+ * 효과: chip 이 자체적으로 robot body frame 으로 출력. STM/Jetson 측 변환 불필요.
+ */
+#define BNO055_AXIS_MAP_CONFIG    0x41
+#define BNO055_AXIS_MAP_SIGN      0x42
+#define BNO055_AXIS_CONFIG_P6     0x21
+#define BNO055_AXIS_SIGN_P6       0x07
+
 #define BNO055_ACCEL_SCALE        (1.0f / 100.0f)
 #define BNO055_GYRO_SCALE         (1.0f / 16.0f * ((float)M_PI / 180.0f))
 #define BNO055_QUAT_SCALE         (1.0f / 16384.0f)
@@ -52,6 +73,14 @@ bool bno055_init_imuplus(I2C_HandleTypeDef *hi2c) {
     }
     bno_write_byte(hi2c, BNO055_OPR_MODE, BNO055_OPR_CONFIG);
     HAL_Delay(25);
+
+    /* Axis remap — CONFIG 모드에서만 변경 가능.
+     * P6 placement: chip 출력이 robot body frame 으로 통일됨 (모든 downstream 일관). */
+    bno_write_byte(hi2c, BNO055_AXIS_MAP_CONFIG, BNO055_AXIS_CONFIG_P6);
+    HAL_Delay(10);
+    bno_write_byte(hi2c, BNO055_AXIS_MAP_SIGN, BNO055_AXIS_SIGN_P6);
+    HAL_Delay(10);
+
     bno_write_byte(hi2c, BNO055_OPR_MODE, BNO055_OPR_IMUPLUS);
     HAL_Delay(20);
     return true;
