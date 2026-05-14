@@ -23,31 +23,31 @@
  *   - 정자세 IMU accel = (0, 0, +9.8)   (proper accel, 중력 반대 방향)
  *   - projected_gravity = -accel / |accel| = (0, 0, -1)
  *
- * 실제 마운트 (사용자 측정 — chip physical 축 기준):
- *   gravity along +Y_phys (정자세)    -> robot +Z (up)
- *   gravity along +Z_phys (왼쪽 눕힘) -> robot left 가 아래 (FLU +Y down)
- *   gravity along +X_phys (머리 위)   -> robot +X (forward) 가 위
+ * 실제 마운트 (chip 0x09+0x02 임시 빌드의 3자세 측정으로 역산):
+ *   정자세                  -> 중력 along +phys_Z
+ *   왼쪽 눕힘 (left 바닥)    -> 중력 along +phys_X
+ *   머리 위 (forward 하늘)   -> 중력 along -phys_Y
  *
  * 도출된 remap (학습 컨벤션 출력 만들기):
- *   out_X = +phys_X   (정자세 0, 왼쪽 0,    머리위 +9.8)
- *   out_Y = -phys_Z   (정자세 0, 왼쪽 -9.8, 머리위 0)
- *   out_Z = +phys_Y   (정자세 +9.8, 왼쪽 0, 머리위 0)
+ *   out_X = -phys_Y   (정자세 0,    왼쪽 0,    머리위 +9.8)
+ *   out_Y = -phys_X   (정자세 0,    왼쪽 -9.8, 머리위 0)
+ *   out_Z = +phys_Z   (정자세 +9.8, 왼쪽 0,    머리위 0)
  *
  *   AXIS_MAP_CONFIG bits [5:4]=NEW_X, [3:2]=NEW_Y, [1:0]=NEW_Z
  *     00=physical X, 01=physical Y, 10=physical Z
- *   -> NEW_X=00(X), NEW_Y=10(Z), NEW_Z=01(Y) = 0b00_00_10_01 = 0x09
+ *   -> NEW_X=01(Y), NEW_Y=00(X), NEW_Z=10(Z) = 0b00_01_00_10 = 0x12
  *   AXIS_MAP_SIGN bit2=X_neg, bit1=Y_neg, bit0=Z_neg
- *   -> Y만 negate = 0b00000_010 = 0x02
+ *   -> X,Y negate, Z positive = 0b00000_110 = 0x06
  *
  * 참고: datasheet table 3-7 의 표준 P0~P7 placement 어디에도 해당하지 않는
- *       custom orientation. 직접 계산값.
+ *       custom orientation. 측정 기반 직접 계산값.
  *
  * 효과: chip 이 학습 frame 으로 직접 출력 → SW remap 불필요.
  */
 #define BNO055_AXIS_MAP_CONFIG    0x41
 #define BNO055_AXIS_MAP_SIGN      0x42
-#define BNO055_AXIS_CONFIG        0x09
-#define BNO055_AXIS_SIGN          0x02
+#define BNO055_AXIS_CONFIG        0x12
+#define BNO055_AXIS_SIGN          0x06
 
 #define BNO055_ACCEL_SCALE        (1.0f / 100.0f)
 #define BNO055_GYRO_SCALE         (1.0f / 16.0f * ((float)M_PI / 180.0f))
