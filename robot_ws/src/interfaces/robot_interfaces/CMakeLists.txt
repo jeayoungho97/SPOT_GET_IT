@@ -30,6 +30,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/RobotStatus.msg"
   "msg/RlDebug.msg"
   "msg/GlobalPathWaypoints.msg"
+  "msg/NavigationState.msg"
+  "msg/SafetyStatus.msg"
 	DEPENDENCIES 
   std_msgs
   geometry_msgs
