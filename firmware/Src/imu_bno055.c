@@ -1,5 +1,6 @@
 #include "imu_bno055.h"
 #include <math.h>
+#include <stdio.h>
 
 #define BNO055_I2C_ADDR_DEFAULT   0x28
 #define BNO055_I2C_ADDR_ALT       0x29
@@ -14,25 +15,39 @@
 #define BNO055_CHIP_ID_EXPECTED   0xA0
 
 /* === Axis remap registers (BNO055 datasheet 4.4.1) ===
- * 실제 마운트 (사용자 측정):
- *   gravity along +Y_imu  (정자세)  -> robot +Z (up) = -Y_imu
- *   gravity along +Z_imu  (왼쪽 눕힘) -> robot +Y (right) = -Z_imu
- *   gravity along +X_imu  (머리 위)   -> robot +X (forward) = -X_imu
+ * 목표: chip output 을 RL 학습 컨벤션 (FLU body frame + 표준 proper accel)
+ *       으로 출력. STM/ROS 측 변환 모두 identity 유지.
  *
- * BNO055 의 placement P6 와 일치:
+ * 학습 컨벤션 (legged_gym/legged_robot.py:518, :533):
+ *   - body frame: X=forward, Y=left, Z=up
+ *   - 정자세 IMU accel = (0, 0, +9.8)   (proper accel, 중력 반대 방향)
+ *   - projected_gravity = -accel / |accel| = (0, 0, -1)
+ *
+ * 실제 마운트 (사용자 측정 — chip physical 축 기준):
+ *   gravity along +Y_phys (정자세)    -> robot +Z (up)
+ *   gravity along +Z_phys (왼쪽 눕힘) -> robot left 가 아래 (FLU +Y down)
+ *   gravity along +X_phys (머리 위)   -> robot +X (forward) 가 위
+ *
+ * 도출된 remap (학습 컨벤션 출력 만들기):
+ *   out_X = +phys_X   (정자세 0, 왼쪽 0,    머리위 +9.8)
+ *   out_Y = -phys_Z   (정자세 0, 왼쪽 -9.8, 머리위 0)
+ *   out_Z = +phys_Y   (정자세 +9.8, 왼쪽 0, 머리위 0)
+ *
  *   AXIS_MAP_CONFIG bits [5:4]=NEW_X, [3:2]=NEW_Y, [1:0]=NEW_Z
  *     00=physical X, 01=physical Y, 10=physical Z
- *   NEW_X = physical X (00), NEW_Y = physical Z (10), NEW_Z = physical Y (01)
- *   -> 0b00 10 01 = 0x21
+ *   -> NEW_X=00(X), NEW_Y=10(Z), NEW_Z=01(Y) = 0b00_00_10_01 = 0x09
  *   AXIS_MAP_SIGN bit2=X_neg, bit1=Y_neg, bit0=Z_neg
- *   세 축 모두 negate -> 0x07
+ *   -> Y만 negate = 0b00000_010 = 0x02
  *
- * 효과: chip 이 자체적으로 robot body frame 으로 출력. STM/Jetson 측 변환 불필요.
+ * 참고: datasheet table 3-7 의 표준 P0~P7 placement 어디에도 해당하지 않는
+ *       custom orientation. 직접 계산값.
+ *
+ * 효과: chip 이 학습 frame 으로 직접 출력 → SW remap 불필요.
  */
 #define BNO055_AXIS_MAP_CONFIG    0x41
 #define BNO055_AXIS_MAP_SIGN      0x42
-#define BNO055_AXIS_CONFIG_P6     0x21
-#define BNO055_AXIS_SIGN_P6       0x07
+#define BNO055_AXIS_CONFIG        0x09
+#define BNO055_AXIS_SIGN          0x02
 
 #define BNO055_ACCEL_SCALE        (1.0f / 100.0f)
 #define BNO055_GYRO_SCALE         (1.0f / 16.0f * ((float)M_PI / 180.0f))
@@ -76,10 +91,21 @@ bool bno055_init_imuplus(I2C_HandleTypeDef *hi2c) {
 
     /* Axis remap — CONFIG 모드에서만 변경 가능.
      * P6 placement: chip 출력이 robot body frame 으로 통일됨 (모든 downstream 일관). */
-    bno_write_byte(hi2c, BNO055_AXIS_MAP_CONFIG, BNO055_AXIS_CONFIG_P6);
+    bno_write_byte(hi2c, BNO055_AXIS_MAP_CONFIG, BNO055_AXIS_CONFIG);
     HAL_Delay(10);
-    bno_write_byte(hi2c, BNO055_AXIS_MAP_SIGN, BNO055_AXIS_SIGN_P6);
+    bno_write_byte(hi2c, BNO055_AXIS_MAP_SIGN, BNO055_AXIS_SIGN);
     HAL_Delay(10);
+
+    /* === 진단: P6 remap register read-back (boot 1회만) ===
+     * write 가 실제 chip 에 들어갔는지 확인.
+     * IMUPLUS 모드 진입 전이므로 register access 안전. */
+    uint8_t cfg_rb = 0xFF, sign_rb = 0xFF;
+    bool cfg_ok  = bno_read_byte(hi2c, BNO055_AXIS_MAP_CONFIG, &cfg_rb);
+    bool sign_ok = bno_read_byte(hi2c, BNO055_AXIS_MAP_SIGN, &sign_rb);
+    printf("[BNO055] AXIS_MAP_CONFIG read-back: 0x%02X (expected 0x%02X, read_ok=%d)\r\n",
+           cfg_rb, BNO055_AXIS_CONFIG, (int)cfg_ok);
+    printf("[BNO055] AXIS_MAP_SIGN   read-back: 0x%02X (expected 0x%02X, read_ok=%d)\r\n",
+           sign_rb, BNO055_AXIS_SIGN, (int)sign_ok);
 
     bno_write_byte(hi2c, BNO055_OPR_MODE, BNO055_OPR_IMUPLUS);
     HAL_Delay(20);
@@ -121,34 +147,42 @@ bool bno055_read_body(I2C_HandleTypeDef *hi2c, body_attitude_t *body) {
     body->pitch = -(r_raw * BNO055_EULER_SCALE);
     body->roll  = -(p_raw * BNO055_EULER_SCALE);
 
-    /* Gyro → rad/s, 본체 마운팅 보정 (Euler와 동일: X↔X, Y↔Z swap, 부호 반전) */
+    /* Gyro → rad/s. Chip P6 remap 적용 후 출력이 이미 body frame.
+     * SW remap 불필요 — chip output 그대로 사용 (identity). */
     float gx = gx_raw * BNO055_GYRO_SCALE;
     float gy = gy_raw * BNO055_GYRO_SCALE;
     float gz = gz_raw * BNO055_GYRO_SCALE;
-    body->gyro[0] =  gx;       /* body X (forward) */
-    body->gyro[1] = -gz;       /* body Y (left) — BNO Z → body Y, 부호 반전 */
-    body->gyro[2] = -gy;       /* body Z (up)   — BNO Y → body Z, 부호 반전 */
+    body->gyro[0] = gx;
+    body->gyro[1] = gy;
+    body->gyro[2] = gz;
 
-    /* Accel → m/s², 본체 마운팅 보정 (gyro와 동일 축 매핑) */
+    /* Accel → m/s². Chip P6 remap 후 출력이 이미 body frame.
+     * 정자세 검증: az ≈ -9.8 (Z up → 중력은 -Z 방향). */
     float ax = ax_raw * BNO055_ACCEL_SCALE;
     float ay = ay_raw * BNO055_ACCEL_SCALE;
     float az = az_raw * BNO055_ACCEL_SCALE;
-    body->accel[0] =  ax;      /* body X (forward) */
-    body->accel[1] = -az;      /* body Y (left) */
-    body->accel[2] = -ay;      /* body Z (up) */
 
-    /* Quaternion → normalized, 본체 마운팅 보정 (gyro와 동일 축 매핑) */
+    /* === 진단: chip output (= body frame), 1Hz 출력 ===
+     * 다른 자세 (왼쪽 눕힘, 머리 위) 검증 후 제거 예정. */
+    static uint32_t last_print_tick = 0;
+    uint32_t now_tick = HAL_GetTick();
+    if (now_tick - last_print_tick >= 1000) {
+        last_print_tick = now_tick;
+        printf("[BNO055-RAW] ax=%+.2f ay=%+.2f az=%+.2f\r\n",
+               (double)ax, (double)ay, (double)az);
+    }
+
+    body->accel[0] = ax;
+    body->accel[1] = ay;
+    body->accel[2] = az;
+
+    /* Quaternion → normalized. Chip P6 remap 후 출력이 이미 body frame. */
     float qw = qw_raw * BNO055_QUAT_SCALE;
     float qx = qx_raw * BNO055_QUAT_SCALE;
     float qy = qy_raw * BNO055_QUAT_SCALE;
     float qz = qz_raw * BNO055_QUAT_SCALE;
 
-    /* 축 swap: BNO(x,y,z) → body(x,-z,-y) */
-    float bqx =  qx;
-    float bqy = -qz;
-    float bqz = -qy;
-
-    float norm = sqrtf(qw * qw + bqx * bqx + bqy * bqy + bqz * bqz);
+    float norm = sqrtf(qw * qw + qx * qx + qy * qy + qz * qz);
     if (norm < QUAT_NORM_MIN) {
         body->quat[0] = 1.0f;
         body->quat[1] = 0.0f;
@@ -156,10 +190,10 @@ bool bno055_read_body(I2C_HandleTypeDef *hi2c, body_attitude_t *body) {
         body->quat[3] = 0.0f;
     } else {
         float inv = 1.0f / norm;
-        body->quat[0] = qw  * inv;
-        body->quat[1] = bqx * inv;
-        body->quat[2] = bqy * inv;
-        body->quat[3] = bqz * inv;
+        body->quat[0] = qw * inv;
+        body->quat[1] = qx * inv;
+        body->quat[2] = qy * inv;
+        body->quat[3] = qz * inv;
     }
 
     body->data_valid = true;
