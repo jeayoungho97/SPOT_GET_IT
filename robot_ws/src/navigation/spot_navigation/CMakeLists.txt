@@ -173,6 +173,35 @@ ament_target_dependencies(navigation_fsm_node
   robot_interfaces
 )
 
+# ============================================================
+# [5] path_follower_node
+# ------------------------------------------------------------
+# - 역할:
+#   local path와 현재 pose를 보고 heading error를 계산하여
+#   cmd_vel_raw를 publish한다.
+# - Input :
+#   - /planning/local_path/spot_01
+#   - /localization/pose
+#   - /navigation/state/spot_01
+# - Output : /control/cmd_vel_raw/spot_01
+#     Type: geometry_msgs/msg/TwistStamped
+# ============================================================
+add_executable(path_follower_node
+  src/path_follower_node.cpp
+)
+
+target_include_directories(path_follower_node PRIVATE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+
+ament_target_dependencies(path_follower_node
+  rclcpp
+  std_msgs
+  geometry_msgs
+  nav_msgs
+  robot_interfaces
+)
+
 # 추가 노드 구현 후 add_executable(), ament_target_dependencies() 추가
 
 
@@ -188,6 +217,7 @@ install(TARGETS
   mock_localization_pose_publisher_node
   path_progress_tracker_node
   navigation_fsm_node
+  path_follower_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
