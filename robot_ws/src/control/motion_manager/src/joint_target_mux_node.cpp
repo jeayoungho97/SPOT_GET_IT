@@ -135,7 +135,11 @@ private:
     if (behavior_mode_ == "RL") {
       if (isRlFresh()) {
         selected = latest_rl_.value();
-        selected.mode = MODE_RL;
+        // mode 는 RL 이 명시한 값 그대로 사용 (덮어쓰지 않음).
+        // RL 이 정상 inference 시 MODE_RL, safe_target 시 MODE_DISABLE/E_STOP
+        // 등을 보내는데, 이전엔 mux 가 강제로 MODE_RL 로 덮어써서 RL 의
+        // 안전 의도가 STM 에 전달되지 못했음 (RL disabled 인데도 STM 이
+        // RL 모드로 처리 → cmd_vel=0 에도 robot 안 멈춤).
         return true;
       }
 
