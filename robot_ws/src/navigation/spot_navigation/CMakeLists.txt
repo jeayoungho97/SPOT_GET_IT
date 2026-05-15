@@ -168,6 +168,7 @@ target_include_directories(navigation_fsm_node PRIVATE
 
 ament_target_dependencies(navigation_fsm_node
   rclcpp
+  nav_msgs
   std_msgs
   geometry_msgs
   robot_interfaces
@@ -247,6 +248,7 @@ install(TARGETS
   mock_global_path_publisher_node
   mock_localization_pose_publisher_node
   path_progress_tracker_node
+  local_path_planner_node
   navigation_fsm_node
   path_follower_node
   safety_supervisor_node

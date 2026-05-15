@@ -31,7 +31,7 @@ NavigationFsmNode::NavigationFsmNode(const rclcpp::NodeOptions & options)
     std::bind(&NavigationFsmNode::on_path_progress, this, std::placeholders::_1));
 
   pose_sub_ = create_subscription<robot_interfaces::msg::LocalizedRobotPose>(
-    "/localization/pose", 10,
+    "/localization/mock_pose", 10,
     std::bind(&NavigationFsmNode::on_pose, this, std::placeholders::_1));
 
   obstacle_sub_ = create_subscription<robot_interfaces::msg::ObstacleModel>(
@@ -41,6 +41,10 @@ NavigationFsmNode::NavigationFsmNode(const rclcpp::NodeOptions & options)
   free_space_sub_ = create_subscription<robot_interfaces::msg::FreeSpaceModel>(
     "/perception/lidar/free_space_model", 10,
     std::bind(&NavigationFsmNode::on_free_space, this, std::placeholders::_1));
+
+  local_path_sub_ = create_subscription<nav_msgs::msg::Path>(
+    "/navigation/local_path/" + robot_id_, 10,
+    std::bind(&NavigationFsmNode::on_local_path, this, std::placeholders::_1));
 
   // ============================================================
   // Publisher
@@ -90,6 +94,12 @@ void NavigationFsmNode::on_free_space(
   robot_interfaces::msg::FreeSpaceModel::SharedPtr msg)
 {
   latest_free_space_ = msg;
+}
+
+void NavigationFsmNode::on_local_path(
+  nav_msgs::msg::Path::SharedPtr msg)
+{
+  latest_local_path_ = msg;
 }
 
 // ============================================================
@@ -176,23 +186,27 @@ uint8_t NavigationFsmNode::determine_nav_state()
   }
 
   // ----------------------------------------------------------
-  // 8. NAV_PLANNING_LOCAL_PATH
+  // 8. NAV_FOLLOWING_LOCAL_PATH / NAV_PLANNING_LOCAL_PATH
   //    전방이 막혔고 free space는 있음
+  //    local path가 이미 수신된 경우 FOLLOWING, 아직 없으면 PLANNING
   // ----------------------------------------------------------
   if (front_blocked_) {
+    const bool local_path_available =
+      latest_local_path_ && !latest_local_path_->poses.empty();
+    if (local_path_available) {
+      return NS::NAV_FOLLOWING_LOCAL_PATH;
+    }
     return NS::NAV_PLANNING_LOCAL_PATH;
   }
 
   // ----------------------------------------------------------
   // 9. NAV_REJOINING_GLOBAL_PATH
-  //    global path로 복귀 가능한 거리 이내
-  //    이전 state가 회피 계열인 경우에만 적용
+  //    이전 state가 회피 계열이고 global path와 가까워진 경우
   // ----------------------------------------------------------
   const bool was_avoiding =
     (current_nav_state_ == NS::NAV_FOLLOWING_LOCAL_PATH ||
      current_nav_state_ == NS::NAV_AVOIDING_OBSTACLE ||
-     current_nav_state_ == NS::NAV_PLANNING_LOCAL_PATH ||
-     current_nav_state_ == NS::NAV_REJOINING_GLOBAL_PATH);
+     current_nav_state_ == NS::NAV_PLANNING_LOCAL_PATH);
 
   if (was_avoiding &&
       latest_path_progress_->distance_to_nearest_m < static_cast<float>(rejoin_tolerance_m_))
@@ -230,6 +244,8 @@ void NavigationFsmNode::update_front_blocked(float front_clearance)
       if (clear_duration >= clear_hold_time_sec_) {
         front_blocked_            = false;
         front_clear_timer_active_ = false;
+        // local_path도 초기화 — 회피 경로가 유효하지 않을 수 있으므로
+        latest_local_path_        = nullptr;
         RCLCPP_INFO(get_logger(), "front_blocked = false (clearance: %.2fm)", front_clearance);
       }
     } else {
@@ -255,15 +271,13 @@ NavigationFsmNode::build_nav_state_msg(uint8_t nav_state)
   msg.nav_state       = nav_state;
 
   // 입력 상태
-  msg.path_received   = (latest_path_progress_ != nullptr);
-  msg.pose_valid      = (latest_pose_ != nullptr);
-  msg.perception_valid= (latest_obstacle_ != nullptr);
+  msg.path_received    = (latest_path_progress_ != nullptr);
+  msg.pose_valid       = (latest_pose_ != nullptr);
+  msg.perception_valid = (latest_obstacle_ != nullptr);
 
-  // 장애물 상태
+  // 장애물 상태 — front_blocked는 hysteresis 적용된 내부 상태를 그대로 반영
+  msg.front_blocked = front_blocked_;
   if (latest_obstacle_) {
-    msg.front_blocked = latest_obstacle_->front.valid &&
-      (latest_obstacle_->front.nearest_distance_xy <
-       static_cast<float>(front_block_distance_m_));
     msg.left_blocked  = latest_obstacle_->left.valid &&
       (latest_obstacle_->left.nearest_distance_xy <
        static_cast<float>(side_block_distance_m_));
@@ -281,8 +295,8 @@ NavigationFsmNode::build_nav_state_msg(uint8_t nav_state)
 
   // 경로 상태
   if (latest_path_progress_) {
-    msg.goal_reached          = latest_path_progress_->goal_reached;
-    msg.distance_to_goal_m    = latest_path_progress_->distance_to_goal_m;
+    msg.goal_reached              = latest_path_progress_->goal_reached;
+    msg.distance_to_goal_m        = latest_path_progress_->distance_to_goal_m;
     msg.distance_to_global_path_m = latest_path_progress_->distance_to_nearest_m;
   }
 
@@ -302,7 +316,7 @@ NavigationFsmNode::build_nav_state_msg(uint8_t nav_state)
     case NS::NAV_WAITING_FOR_PATH:      msg.reason = "waiting for global path"; break;
     case NS::NAV_TRACKING_GLOBAL_PATH:  msg.reason = "tracking global path"; break;
     case NS::NAV_PLANNING_LOCAL_PATH:   msg.reason = "front blocked, planning local path"; break;
-    case NS::NAV_FOLLOWING_LOCAL_PATH:  msg.reason = "following local path"; break;
+    case NS::NAV_FOLLOWING_LOCAL_PATH:  msg.reason = "front blocked, following local path"; break;
     case NS::NAV_AVOIDING_OBSTACLE:     msg.reason = "avoiding obstacle"; break;
     case NS::NAV_REJOINING_GLOBAL_PATH: msg.reason = "rejoining global path"; break;
     case NS::NAV_STOPPED_BY_OBSTACLE:   msg.reason = "stopped: no free space"; break;
