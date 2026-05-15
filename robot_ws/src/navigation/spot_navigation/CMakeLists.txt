@@ -248,7 +248,6 @@ install(TARGETS
   mock_global_path_publisher_node
   mock_localization_pose_publisher_node
   path_progress_tracker_node
-  local_path_planner_node
   navigation_fsm_node
   path_follower_node
   safety_supervisor_node
