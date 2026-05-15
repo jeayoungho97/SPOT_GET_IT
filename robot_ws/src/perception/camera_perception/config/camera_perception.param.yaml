@@ -8,4 +8,5 @@ camera_perception_node:
     preview_width: 640
     preview_height: 480
     robot_id: "spot_01"      # 기기 식별자. 기기마다 다른 값 설정
-    detect_consec_n: 5       # N프레임 연속 탐지 시 person_detected 발행 (5fps 기준 1초)
+    confirm_frames: 5    # 탐지 확정 연속 프레임 수
+    dismiss_frames: 5    # 미탐지 확정 연속 프레임 수
