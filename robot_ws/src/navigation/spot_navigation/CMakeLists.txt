@@ -168,6 +168,7 @@ target_include_directories(navigation_fsm_node PRIVATE
 
 ament_target_dependencies(navigation_fsm_node
   rclcpp
+  nav_msgs
   std_msgs
   geometry_msgs
   robot_interfaces

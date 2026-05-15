@@ -2,6 +2,7 @@
 #define SPOT_NAVIGATION__NAVIGATION_FSM_NODE_HPP_
 
 #include <rclcpp/rclcpp.hpp>
+#include <nav_msgs/msg/path.hpp>
 
 #include <robot_interfaces/msg/path_progress.hpp>
 #include <robot_interfaces/msg/localized_robot_pose.hpp>
@@ -25,6 +26,7 @@ private:
   rclcpp::Subscription<robot_interfaces::msg::LocalizedRobotPose>::SharedPtr pose_sub_;
   rclcpp::Subscription<robot_interfaces::msg::ObstacleModel>::SharedPtr obstacle_sub_;
   rclcpp::Subscription<robot_interfaces::msg::FreeSpaceModel>::SharedPtr free_space_sub_;
+  rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr local_path_sub_;
 
   // ============================================================
   // Publisher
@@ -43,6 +45,7 @@ private:
   robot_interfaces::msg::LocalizedRobotPose::SharedPtr latest_pose_;
   robot_interfaces::msg::ObstacleModel::SharedPtr latest_obstacle_;
   robot_interfaces::msg::FreeSpaceModel::SharedPtr latest_free_space_;
+  nav_msgs::msg::Path::SharedPtr latest_local_path_;
 
   // ============================================================
   // Timestamps for stale check
@@ -86,6 +89,7 @@ private:
   void on_pose(robot_interfaces::msg::LocalizedRobotPose::SharedPtr msg);
   void on_obstacle(robot_interfaces::msg::ObstacleModel::SharedPtr msg);
   void on_free_space(robot_interfaces::msg::FreeSpaceModel::SharedPtr msg);
+  void on_local_path(nav_msgs::msg::Path::SharedPtr msg);
   void on_timer();
 
   // ============================================================

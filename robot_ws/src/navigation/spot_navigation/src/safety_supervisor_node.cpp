@@ -269,7 +269,7 @@ SafetySupervisorNode::build_safety_status(
   msg.robot_id        = robot_id_;
 
   msg.safe_to_move            = !emergency_stop && !cmd_stale &&
-                                !pose_stale && !perception_stale;
+                                !pose_stale && !perception_stale && !goal_reached;
   msg.soft_stop_required      = soft_stop;
   msg.emergency_stop_required = emergency_stop;
   msg.pose_stale              = pose_stale;

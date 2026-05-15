@@ -7,7 +7,9 @@ namespace spot_navigation
 {
 
 PathFollowerNode::PathFollowerNode(const rclcpp::NodeOptions & options)
-: Node("path_follower_node", options)
+: Node("path_follower_node", options),
+  current_waypoint_index_(0),
+  path_completed_(false)
 {
   // ============================================================
   // Parameters
@@ -18,10 +20,9 @@ PathFollowerNode::PathFollowerNode(const rclcpp::NodeOptions & options)
   max_angular_z_radps_         = declare_parameter<double>("max_angular_z_radps", 0.40);
   k_yaw_                       = declare_parameter<double>("k_yaw", 1.0);
   heading_tolerance_rad_       = declare_parameter<double>("heading_tolerance_rad", 0.15);
-  turn_in_place_threshold_rad_ = declare_parameter<double>("turn_in_place_threshold_rad", 0.5);
-  slow_down_angle_rad_         = declare_parameter<double>("slow_down_angle_rad", 0.7);
-  slowdown_distance_m_         = declare_parameter<double>("slowdown_distance_m", 0.5);
-  path_lookahead_distance_m_   = declare_parameter<double>("path_lookahead_distance_m", 0.3);
+  turn_in_place_threshold_rad_ = declare_parameter<double>("turn_in_place_threshold_rad", 0.7);
+  slow_down_angle_rad_         = declare_parameter<double>("slow_down_angle_rad", 0.5);
+  waypoint_reach_tolerance_m_  = declare_parameter<double>("waypoint_reach_tolerance_m", 0.2);
   timer_period_sec_            = declare_parameter<double>("timer_period_sec", 0.1);
 
   // ============================================================
@@ -61,7 +62,11 @@ PathFollowerNode::PathFollowerNode(const rclcpp::NodeOptions & options)
 
 void PathFollowerNode::on_local_path(nav_msgs::msg::Path::SharedPtr msg)
 {
-  latest_local_path_ = msg;
+  // 새 local path 수신 시 index 리셋
+  latest_local_path_       = msg;
+  current_waypoint_index_  = 0;
+  path_completed_          = false;
+  RCLCPP_INFO(get_logger(), "local path 수신 : %zu waypoints", msg->poses.size());
 }
 
 void PathFollowerNode::on_pose(robot_interfaces::msg::LocalizedRobotPose::SharedPtr msg)
@@ -96,7 +101,6 @@ void PathFollowerNode::on_timer()
 
   // ----------------------------------------------------------
   // FSM state 확인
-  // TRACKING_GLOBAL_PATH 또는 FOLLOWING_LOCAL_PATH 아니면 정지
   // ----------------------------------------------------------
   const uint8_t nav_state = latest_nav_state_->nav_state;
   if (nav_state != NS::NAV_TRACKING_GLOBAL_PATH &&
@@ -115,15 +119,39 @@ void PathFollowerNode::on_timer()
   }
 
   // ----------------------------------------------------------
-  // nearest point 탐색
+  // 경로 완료 여부 확인
   // ----------------------------------------------------------
-  const size_t nearest_idx = find_nearest_index();
+  if (path_completed_) {
+    cmd_vel_raw_pub_->publish(cmd);  // v=0, w=0
+    return;
+  }
+
+  const size_t path_size = latest_local_path_->poses.size();
 
   // ----------------------------------------------------------
-  // lookahead target 선택
+  // 현재 waypoint 도달 여부 확인 → 다음 waypoint로 전진
   // ----------------------------------------------------------
-  const size_t target_idx = find_lookahead_index(nearest_idx);
-  const auto & target_pose = latest_local_path_->poses[target_idx];
+  while (current_waypoint_index_ < path_size) {
+    const double dist = distance_to_waypoint(current_waypoint_index_);
+    if (dist < waypoint_reach_tolerance_m_) {
+      if (current_waypoint_index_ + 1 >= path_size) {
+        // 마지막 waypoint 도달
+        path_completed_ = true;
+        RCLCPP_INFO(get_logger(), "local path 완료");
+        cmd_vel_raw_pub_->publish(cmd);  // v=0, w=0
+        return;
+      }
+      current_waypoint_index_++;
+      RCLCPP_DEBUG(get_logger(), "waypoint %zu 도달 → 다음으로", current_waypoint_index_);
+    } else {
+      break;
+    }
+  }
+
+  // ----------------------------------------------------------
+  // target waypoint 선택
+  // ----------------------------------------------------------
+  const auto & target_pose = latest_local_path_->poses[current_waypoint_index_];
   const double target_x = target_pose.pose.position.x;
   const double target_y = target_pose.pose.position.y;
 
@@ -135,8 +163,7 @@ void PathFollowerNode::on_timer()
   // ----------------------------------------------------------
   // v, w 계산
   // ----------------------------------------------------------
-  const float distance_to_goal = latest_nav_state_->distance_to_goal_m;
-  const double v_cmd = compute_linear_velocity(heading_error, distance_to_goal);
+  const double v_cmd = compute_linear_velocity(heading_error);
   const double w_cmd = compute_angular_velocity(heading_error);
 
   cmd.twist.linear.x  = v_cmd;
@@ -147,52 +174,18 @@ void PathFollowerNode::on_timer()
 }
 
 // ============================================================
-// nearest point 탐색
+// 현재 위치와 waypoint 간 거리 계산
 // ============================================================
 
-size_t PathFollowerNode::find_nearest_index()
+double PathFollowerNode::distance_to_waypoint(size_t index)
 {
   const double cx = latest_pose_->x_m;
   const double cy = latest_pose_->y_m;
-
-  size_t nearest_idx = 0;
-  double min_dist = std::numeric_limits<double>::max();
-
-  for (size_t i = 0; i < latest_local_path_->poses.size(); ++i) {
-    const double dx = latest_local_path_->poses[i].pose.position.x - cx;
-    const double dy = latest_local_path_->poses[i].pose.position.y - cy;
-    const double dist = std::sqrt(dx * dx + dy * dy);
-    if (dist < min_dist) {
-      min_dist    = dist;
-      nearest_idx = i;
-    }
-  }
-
-  return nearest_idx;
-}
-
-// ============================================================
-// lookahead target 선택
-// ============================================================
-
-size_t PathFollowerNode::find_lookahead_index(size_t nearest_index)
-{
-  const double cx = latest_pose_->x_m;
-  const double cy = latest_pose_->y_m;
-  const size_t path_size = latest_local_path_->poses.size();
-
-  // nearest_index 이후 waypoint 중 lookahead_distance_m 이상 떨어진 첫 번째 선택
-  for (size_t i = nearest_index; i < path_size; ++i) {
-    const double dx = latest_local_path_->poses[i].pose.position.x - cx;
-    const double dy = latest_local_path_->poses[i].pose.position.y - cy;
-    const double dist = std::sqrt(dx * dx + dy * dy);
-    if (dist >= path_lookahead_distance_m_) {
-      return i;
-    }
-  }
-
-  // lookahead 거리 내에 없으면 마지막 waypoint
-  return path_size - 1;
+  const double wx = latest_local_path_->poses[index].pose.position.x;
+  const double wy = latest_local_path_->poses[index].pose.position.y;
+  const double dx = wx - cx;
+  const double dy = wy - cy;
+  return std::sqrt(dx * dx + dy * dy);
 }
 
 // ============================================================
@@ -216,12 +209,10 @@ double PathFollowerNode::compute_heading_error(double target_x, double target_y)
 }
 
 // ============================================================
-// v 계산
-// heading_error 기반 감속 + 거리 기반 감속 중 더 작은 값 사용
+// v 계산 (heading_error 기반 감속)
 // ============================================================
 
-double PathFollowerNode::compute_linear_velocity(
-  double heading_error, float distance_to_goal_m)
+double PathFollowerNode::compute_linear_velocity(double heading_error)
 {
   // 제자리 회전 구간
   if (std::abs(heading_error) > turn_in_place_threshold_rad_) {
@@ -229,25 +220,11 @@ double PathFollowerNode::compute_linear_velocity(
   }
 
   // heading_error 기반 감속
-  // heading_error가 slow_down_angle_rad에 가까울수록 v 감소
-  double v_angle = max_linear_x_mps_;
+  // 0.15 ~ turn_in_place(0.7) 구간에서 선형 감속, min_v 항상 보장
+  double v_cmd = max_linear_x_mps_;
   if (std::abs(heading_error) > heading_tolerance_rad_) {
     const double ratio = 1.0 - std::abs(heading_error) / slow_down_angle_rad_;
-    v_angle = max_linear_x_mps_ * std::max(ratio, 0.0);
-  }
-
-  // 거리 기반 감속
-  double v_distance = max_linear_x_mps_;
-  if (distance_to_goal_m < static_cast<float>(slowdown_distance_m_)) {
-    v_distance = max_linear_x_mps_ *
-      (static_cast<double>(distance_to_goal_m) / slowdown_distance_m_);
-  }
-
-  // 둘 중 더 작은 값
-  double v_cmd = std::min(v_angle, v_distance);
-
-  // min_v clamp (너무 느리면 못 걸으니까)
-  if (v_cmd > 0.0) {
+    v_cmd = max_linear_x_mps_ * ratio;
     v_cmd = std::max(v_cmd, min_linear_x_mps_);
   }
 
@@ -262,7 +239,6 @@ double PathFollowerNode::compute_angular_velocity(double heading_error)
 {
   double w_cmd = k_yaw_ * heading_error;
 
-  // clamp
   if (w_cmd >  max_angular_z_radps_) { w_cmd =  max_angular_z_radps_; }
   if (w_cmd < -max_angular_z_radps_) { w_cmd = -max_angular_z_radps_; }
 
