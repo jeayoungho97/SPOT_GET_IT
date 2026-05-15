@@ -1,0 +1,39 @@
+safety_supervisor_node:
+  ros__parameters:
+    # 로봇 식별자
+    robot_id: "spot_01"
+
+    # 감속 시작 전방 거리 (m)
+    # front_clearance < soft_stop_distance_m → v 점진 감속
+    soft_stop_distance_m: 0.65
+
+    # 즉시 정지 전방 거리 (m)
+    # front_clearance < emergency_stop_distance_m → v=0, w=0 즉시
+    emergency_stop_distance_m: 0.30
+
+    # safety 통과 후 허용 최대 선속도 (m/s)
+    max_safe_linear_x_mps: 0.40
+
+    # safety 통과 후 허용 최대 각속도 (rad/s)
+    max_safe_angular_z_radps: 0.40
+
+    # 선속도 최대 가속도 (m/s²)
+    max_linear_accel_mps2: 0.33
+
+    # 선속도 최대 감속도 (m/s²)
+    max_linear_decel_mps2: 0.20
+
+    # 각속도 최대 변화율 (rad/s²)
+    max_angular_accel_radps2: 1.0
+
+    # cmd_vel_raw stale 판단 시간 (s)
+    cmd_timeout_sec: 0.30
+
+    # pose stale 판단 시간 (s)
+    pose_timeout_sec: 0.50
+
+    # perception stale 판단 시간 (s)
+    perception_timeout_sec: 0.50
+
+    # 제어 주기 (s) : 0.1 = 10Hz
+    timer_period_sec: 0.1

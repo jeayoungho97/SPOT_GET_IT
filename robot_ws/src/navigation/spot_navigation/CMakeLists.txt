@@ -202,6 +202,37 @@ ament_target_dependencies(path_follower_node
   robot_interfaces
 )
 
+# ============================================================
+# [6] safety_supervisor_node
+# ------------------------------------------------------------
+# - 역할:
+#   cmd_vel_raw를 받아 안전 조건 검사 후 가감속을 적용하여
+#   최종 cmd_vel을 publish한다.
+# - Input :
+#   - /control/cmd_vel_raw/spot_01
+#   - /navigation/state/spot_01
+#   - /perception/lidar/obstacle_model
+#   - /perception/lidar/free_space_model
+#   - /localization/pose
+# - Output :
+#   - /control/cmd_vel/spot_01
+#   - /safety/status/spot_01
+# ============================================================
+add_executable(safety_supervisor_node
+  src/safety_supervisor_node.cpp
+)
+
+target_include_directories(safety_supervisor_node PRIVATE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+
+ament_target_dependencies(safety_supervisor_node
+  rclcpp
+  std_msgs
+  geometry_msgs
+  robot_interfaces
+)
+
 # 추가 노드 구현 후 add_executable(), ament_target_dependencies() 추가
 
 
@@ -218,6 +249,7 @@ install(TARGETS
   path_progress_tracker_node
   navigation_fsm_node
   path_follower_node
+  safety_supervisor_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
