@@ -17,7 +17,7 @@ from ament_index_python.packages import get_package_share_directory
 from robot_interfaces.msg import JointTarget, RlDebug, JointFeedback, RobotStatus
 
 from rl_locomotion.gait_phase import GaitPhaseGenerator
-from rl_locomotion.ik_reference import TrotIkReference
+from rl_locomotion.ik_reference import make_ik_reference
 from rl_locomotion.obs_builder import ObsBuilder
 from rl_locomotion.imu_utils import projected_gravity_from_ros_quat_xyzw
 from rl_locomotion.policy_runner import PolicyRunner
@@ -79,6 +79,17 @@ class RlLocomotionNode(Node):
         self.declare_parameter("robot_width", 0.15)
         self.declare_parameter("phase_cmd_norm", 0.1)
         self.declare_parameter("blend_cmd_norm", 0.1)
+
+        self.declare_parameter("ik_profile", "exp043")
+
+        self.declare_parameter("max_stride_x", 0.12)
+        self.declare_parameter("max_stride_y", 0.03)
+        self.declare_parameter("shoulder_y_gain", 1.0)
+        self.declare_parameter("shoulder_ref_limit", 0.1)
+
+        self.declare_parameter("leg_origin_x", [0.093, 0.093, -0.093, -0.093])
+        self.declare_parameter("leg_origin_y", [0.036, -0.036, 0.036, -0.036])
+        self.declare_parameter("shoulder_sign", [1.0, -1.0, 1.0, -1.0])
 
         self.declare_parameter("debug_publish_rate_hz", 2.0)
 
@@ -162,6 +173,17 @@ class RlLocomotionNode(Node):
         self.phase_cmd_norm = float(self.get_parameter("phase_cmd_norm").value)
         self.blend_cmd_norm = float(self.get_parameter("blend_cmd_norm").value)
 
+        self.ik_profile = str(self.get_parameter("ik_profile").value).lower().strip()
+
+        self.max_stride_x = float(self.get_parameter("max_stride_x").value)
+        self.max_stride_y = float(self.get_parameter("max_stride_y").value)
+        self.shoulder_y_gain = float(self.get_parameter("shoulder_y_gain").value)
+        self.shoulder_ref_limit = float(self.get_parameter("shoulder_ref_limit").value)
+
+        self.leg_origin_x = [float(x) for x in self.get_parameter("leg_origin_x").value]
+        self.leg_origin_y = [float(x) for x in self.get_parameter("leg_origin_y").value]
+        self.shoulder_sign = [float(x) for x in self.get_parameter("shoulder_sign").value]
+
         self.debug_publish_rate_hz = float(self.get_parameter("debug_publish_rate_hz").value)
 
         self.feedback_timeout_ms = float(self.get_parameter("feedback_timeout_ms").value)
@@ -192,7 +214,8 @@ class RlLocomotionNode(Node):
             phase_cmd_norm=self.phase_cmd_norm,
         )
 
-        self.ik_reference = TrotIkReference(
+        self.ik_reference = make_ik_reference(
+            profile=self.ik_profile,
             default_joint_angles=self.default_joint_angles,
             gait_period=self.gait_period,
             duty_factor=self.duty_factor,
@@ -200,6 +223,13 @@ class RlLocomotionNode(Node):
             body_height=self.body_height,
             robot_width=self.robot_width,
             blend_cmd_norm=self.blend_cmd_norm,
+            leg_origin_x=self.leg_origin_x,
+            leg_origin_y=self.leg_origin_y,
+            shoulder_sign=self.shoulder_sign,
+            max_stride_x=self.max_stride_x,
+            max_stride_y=self.max_stride_y,
+            shoulder_y_gain=self.shoulder_y_gain,
+            shoulder_ref_limit=self.shoulder_ref_limit,
         )
 
         self.obs_builder = ObsBuilder(obs_dim=self.obs_dim)
@@ -297,6 +327,7 @@ class RlLocomotionNode(Node):
         self.get_logger().info(
             "rl_locomotion_node FINAL started: "
             f"{self.policy_rate_hz:.1f} Hz, "
+            f"ik_profile={self.ik_profile}, "
             f"backend={self.policy_runner.backend_name()}, "
             f"providers={self.policy_runner.provider_names()}, "
             f"model={resolved_model_path}, "
@@ -350,6 +381,25 @@ class RlLocomotionNode(Node):
         }
         if self.safe_mode not in valid_safe_modes:
             raise RuntimeError(f"invalid safe_mode: {self.safe_mode}")
+
+        valid_ik_profiles = {"exp043", "legacy", "old", "lateral", "lateral_ik", "spotmicro_test"}
+        if self.ik_profile not in valid_ik_profiles:
+            raise RuntimeError(f"invalid ik_profile: {self.ik_profile}")
+
+        for name, arr in [
+            ("leg_origin_x", self.leg_origin_x),
+            ("leg_origin_y", self.leg_origin_y),
+            ("shoulder_sign", self.shoulder_sign),
+        ]:
+            if len(arr) != 4:
+                raise RuntimeError(f"{name} must have 4 elements, got {len(arr)}")
+
+        if self.max_stride_x <= 0.0:
+            raise RuntimeError("max_stride_x must be positive")
+        if self.max_stride_y < 0.0:
+            raise RuntimeError("max_stride_y must be non-negative")
+        if self.shoulder_ref_limit < 0.0:
+            raise RuntimeError("shoulder_ref_limit must be non-negative")
 
     def resolve_model_path(self, model_path: str) -> str:
         if not model_path:
