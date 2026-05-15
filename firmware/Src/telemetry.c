@@ -23,10 +23,15 @@ static inline float position_raw_to_rad(uint16_t raw, int joint_idx) {
          * (2.0f * (float)M_PI / 4096.0f);
 }
 
-/* STS3215 speed: sign-magnitude, 0.732 RPM/LSB → rad/s. JOINT_SIGN 적용. */
+/* STS3215 speed: sign-magnitude, 0.732 RPM/LSB → rad/s. JOINT_SIGN 적용.
+ * Raw 형식: bit15 = sign (1=negative), bits14:0 = magnitude.
+ * 이전 코드는 2's complement int16 으로 해석해서 음수 속도 시 ±32768 근처로
+ * 잘못 변환됨 → ROS velocity_rad_s 에 ±2500 rad/s 같은 spike 발생. */
 static inline float speed_raw_to_rad_s(int16_t raw, int joint_idx) {
+    uint16_t u = (uint16_t)raw;
+    int16_t  value = (u & 0x8000) ? -(int16_t)(u & 0x7FFF) : (int16_t)u;
     return (float)JOINT_SIGN[joint_idx]
-         * (float)raw * 0.732f * (2.0f * (float)M_PI / 60.0f);
+         * (float)value * 0.732f * (2.0f * (float)M_PI / 60.0f);
 }
 
 /* load raw → -1.0 ~ +1.0 정규화 */
