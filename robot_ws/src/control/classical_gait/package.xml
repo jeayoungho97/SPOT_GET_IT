@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>classical_gait</name>
+  <version>0.1.0</version>
+  <description>
+    Classical (deterministic) trot gait controller for Spot Micro.
+    Subscribes /cmd_vel and publishes /control/classical/joint_target
+    using IK-based trot pattern. Designed to be used in hybrid mode
+    alongside rl_locomotion (mux selects based on terrain/state).
+  </description>
+  <maintainer email="jeayoungho@gmail.com">SSAFY S14P21A206</maintainer>
+  <license>MIT</license>
+
+  <depend>rclpy</depend>
+  <depend>geometry_msgs</depend>
+  <depend>robot_interfaces</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
