@@ -15,6 +15,7 @@ using JointTarget = robot_interfaces::msg::JointTarget;
 
 constexpr uint8_t MODE_STAND = 1;
 constexpr uint8_t MODE_RL = 2;
+constexpr uint8_t MODE_CLASSICAL = 3;
 
 std::string toUpper(std::string value)
 {
@@ -39,6 +40,7 @@ public:
     rate_hz_ = this->declare_parameter<double>("rate_hz", 50.0);
     rl_timeout_ms_ = this->declare_parameter<double>("rl_timeout_ms", 100.0);
     stand_timeout_ms_ = this->declare_parameter<double>("stand_timeout_ms", 100.0);
+    classical_timeout_ms_ = this->declare_parameter<double>("classical_timeout_ms", 100.0);
     behavior_mode_ = toUpper(this->declare_parameter<std::string>("default_mode", "STAND"));
 
     mode_sub_ = this->create_subscription<std_msgs::msg::String>(
@@ -55,6 +57,11 @@ public:
       "/control/stand/joint_target",
       rclcpp::QoS(rclcpp::KeepLast(1)).best_effort(),
       std::bind(&JointTargetMuxNode::standCallback, this, std::placeholders::_1));
+
+    classical_sub_ = this->create_subscription<JointTarget>(
+      "/control/classical/joint_target",
+      rclcpp::QoS(rclcpp::KeepLast(1)).best_effort(),
+      std::bind(&JointTargetMuxNode::classicalCallback, this, std::placeholders::_1));
 
     selected_pub_ = this->create_publisher<JointTarget>(
       "/control/selected/joint_target",
@@ -83,10 +90,10 @@ private:
       return;
     }
 
-    if (new_mode != "RL" && new_mode != "STAND") {
+    if (new_mode != "RL" && new_mode != "STAND" && new_mode != "CLASSICAL") {
       RCLCPP_WARN(
         this->get_logger(),
-        "unsupported mode '%s'. Allowed modes: RL, STAND. Keeping current mode=%s",
+        "unsupported mode '%s'. Allowed modes: RL, STAND, CLASSICAL. Keeping current mode=%s",
         msg->data.c_str(),
         behavior_mode_.c_str());
       return;
@@ -112,6 +119,12 @@ private:
   {
     latest_stand_ = *msg;
     latest_stand_time_ = this->now();
+  }
+
+  void classicalCallback(const JointTarget::SharedPtr msg)
+  {
+    latest_classical_ = *msg;
+    latest_classical_time_ = this->now();
   }
 
   void timerCallback()
@@ -158,6 +171,29 @@ private:
       return false;
     }
 
+    if (behavior_mode_ == "CLASSICAL") {
+      if (isClassicalFresh()) {
+        selected = latest_classical_.value();
+        // RL 케이스와 동일하게 classical_gait_node 가 명시한 mode 그대로 사용.
+        // (정상 시 MODE_CLASSICAL=3, 향후 fault 시 MODE_DISABLE 가능성)
+        return true;
+      }
+
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(),
+        *this->get_clock(),
+        1000,
+        "CLASSICAL target stale. Falling back to STAND.");
+
+      if (isStandFresh()) {
+        selected = latest_stand_.value();
+        selected.mode = MODE_STAND;
+        return true;
+      }
+
+      return false;
+    }
+
     // default: STAND
     if (isStandFresh()) {
       selected = latest_stand_.value();
@@ -194,24 +230,38 @@ private:
     return age_ms <= stand_timeout_ms_;
   }
 
+  bool isClassicalFresh() const
+  {
+    if (!latest_classical_.has_value()) {
+      return false;
+    }
+
+    const double age_ms = (this->now() - latest_classical_time_).seconds() * 1000.0;
+    return age_ms <= classical_timeout_ms_;
+  }
+
 private:
   double rate_hz_{50.0};
   double rl_timeout_ms_{100.0};
   double stand_timeout_ms_{100.0};
+  double classical_timeout_ms_{100.0};
 
   std::string behavior_mode_{"STAND"};
 
   std::optional<JointTarget> latest_rl_;
   std::optional<JointTarget> latest_stand_;
+  std::optional<JointTarget> latest_classical_;
 
   rclcpp::Time latest_rl_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time latest_stand_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time latest_classical_time_{0, 0, RCL_ROS_TIME};
 
   uint32_t seq_{0};
 
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mode_sub_;
   rclcpp::Subscription<JointTarget>::SharedPtr rl_sub_;
   rclcpp::Subscription<JointTarget>::SharedPtr stand_sub_;
+  rclcpp::Subscription<JointTarget>::SharedPtr classical_sub_;
   rclcpp::Publisher<JointTarget>::SharedPtr selected_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };

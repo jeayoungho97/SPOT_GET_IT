@@ -25,10 +25,13 @@ joint_target_mux_node:
     rate_hz: 50.0
 
     # 안전 default — launch 직후 robot 은 stand pose 만 유지.
-    # RL 노드는 띄워져 있지만 /control/rl/joint_target 은 mux 에서 무시됨.
-    # RL 보행 활성화는 runtime 에 mode topic 으로:
-    #   ros2 topic pub /control/behavior/mode std_msgs/msg/String "data: 'RL'" --once
+    # RL / classical_gait 노드는 띄워져 있지만 출력은 mux 에서 무시됨.
+    # Runtime 에 mode topic 으로 전환:
+    #   ros2 topic pub /control/behavior/mode std_msgs/msg/String "data: 'CLASSICAL'" --once
+    #   ros2 topic pub /control/behavior/mode std_msgs/msg/String "data: 'RL'"        --once
+    #   ros2 topic pub /control/behavior/mode std_msgs/msg/String "data: 'STAND'"     --once
     default_mode: "STAND"
 
     rl_timeout_ms: 100.0
     stand_timeout_ms: 100.0
+    classical_timeout_ms: 100.0
