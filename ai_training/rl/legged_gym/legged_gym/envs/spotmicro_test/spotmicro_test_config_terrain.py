@@ -9,10 +9,35 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         num_actions = 12
 
     class terrain(LeggedRobotCfg.terrain):
-        mesh_type = 'plane'
-        curriculum = False
-        measure_heights = False
+        mesh_type = 'trimesh'           # 'plane' → 'trimesh'
+        curriculum = True               # False → True
+        measure_heights = False          # False → True
         
+        # SpotMicro 스케일에 맞춘 높이 측정 범위 (몸체 ~0.22m)
+        # ANYmal 기본: [-0.8~0.8] x [-0.5~0.5] = 1.6m x 1.0m → 너무 큼
+        # SpotMicro용: [-0.25~0.25] x [-0.15~0.15] = 0.5m x 0.3m
+        measured_points_x = [-0.25, -0.2, -0.15, -0.1, -0.05, 0., 0.05, 0.1, 0.15, 0.2, 0.25]  # 11개
+        measured_points_y = [-0.15, -0.1, -0.05, 0., 0.05, 0.1, 0.15]                            # 7개
+        # → 11 x 7 = 77 포인트
+        
+        horizontal_scale = 0.05         # 0.1 → 0.05 (SpotMicro 발이 작으므로 지형 해상도 증가)
+        vertical_scale = 0.005          # 유지
+        
+        # SpotMicro 맞춤 지형 비율
+        # ANYmal: [0.1, 0.1, 0.35, 0.25, 0.2] = smooth_slope/rough_slope/stairs_up/stairs_down/discrete
+        # SpotMicro: 계단 비율 ↓, 경사/거친평지 ↑ (다리 짧고 토크 제한적)
+        terrain_proportions = [0.25, 0.30, 0.15, 0.10, 0.20, 0.0, 0.0]
+        
+        max_init_terrain_level = 2      # 5 → 3 (처음엔 쉬운 지형부터)
+        num_rows = 8                    # 10 → 8 (VRAM 절약)
+        num_cols = 16                   # 20 → 16
+        terrain_length = 6.             # 8 → 6
+        terrain_width = 6.              # 8 → 6
+        
+        static_friction = 1.0
+        dynamic_friction = 1.0
+        restitution = 0.0
+
     class init_state(LeggedRobotCfg.init_state):
         pos = [0.0, 0.0, 0.23]
         default_joint_angles = {
@@ -66,8 +91,8 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             no_stuck_feet = 0.0
             symmetric_gait = 0.0
             feet_clearance = 0.0
-            trot_contact = 0.5
-            tracking_ik = 1.0
+            trot_contact = 0.3
+            tracking_ik = 0.3
             stand_still = -0.5
         soft_dof_pos_limit = 0.9
         base_height_target = 0.206
@@ -95,7 +120,7 @@ class SpotmicroTestCfg(LeggedRobotCfg):
 
     class commands(LeggedRobotCfg.commands):
         curriculum = False
-        max_curriculum = 1.0
+        max_curriculum = 0.5
         num_commands = 4
         resampling_time = 10.0
         heading_command = False
@@ -123,8 +148,10 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v5_4_4_IK rollback'
+        run_name = 'spotmicro_v5_1_terrain_curriculum'
         experiment_name = 'spotmicro_test'
-        max_iterations = 1500
-        save_interval = 100
-
+        max_iterations = 4000
+        save_interval = 200
+        resume = True
+        load_run = 'spotmicro_v5_0_first_model'
+        checkpoint = -1

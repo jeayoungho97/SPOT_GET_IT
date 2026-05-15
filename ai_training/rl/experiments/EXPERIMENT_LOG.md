@@ -45,3 +45,18 @@
 | 041 | 05/06 | spotmicro_v4_6_lin_range_desc | V4.6: 속도 범위 감소시켜 토크에 영향 있는지 확인 | 92.1% | 0.042 | 23.4% | ✅ |
 | 042 | 05/11 | spotmicro_v3_2_noise_order | V5: v3.2 버전으로 롤백 | 96.2% | 0.046 | 20.3% | ✅ |
 | 043 | 05/11 | spotmicro_v3_2_noise_order | V5: v3.2 버전으로 롤백, 초기 모델 | 97.7% | 0.046 | 19.8% | ✅ |
+| 044 | 05/11 | spotmicro_v5_1_terrain_curriculum | V5.1: 복잡한 지형 학습 | 0.0% | 0.146 | 28.0% | ❌ |
+| 045 | 05/11 | spotmicro_v5_2_gait_period | V5.2: gait period, feet height 조정 | 81.5% | 0.112 | 6.3% | ✅ |
+| 046 | 05/11 | spotmicro_v5_2_1_gait_perioid | V5.2.1: gait period 수치 조정 | 90.7% | 0.078 | 11.0% | ✅ |
+| 047 | 05/12 | spotmicro_v5_2_2_tracking_ik_desc | V5.2.2: IK tracking 완화 | 90.7% | 0.078 | 11.0% | ✅ |
+| 048 | 05/12 | spotmicro_v5_2_2_tracking_ik_desc | V5.2.2: IK tracking 완화 | 94.8% | 0.049 | 16.8% | ✅ |
+| 049 | 05/12 | spotmicro_v5_2_2_tracking_ik_desc | V5.2.1: gait period 조정 | 94.8% | 0.049 | 16.8% | ✅ |
+| 050 | 05/12 | spotmicro_v5_2_2_tracking_ik_desc | V5.2.1: gait period 조정 | 94.8% | 0.050 | 14.5% | ✅ |
+| 051 | 05/12 | spotmicro_v5_3_stand_still | V5.3: 정지상태 yaw 오차 감소 | 89.5% | 0.046 | 17.4% | ✅ |
+| 052 | 05/12 | spotmicro_v5_4_IK_yaw | V5.4: yaw_ik 수정 | 98.5% | 0.049 | 14.2% | ✅ |
+| 053 | 05/12 | spotmicro_v5_4_1_shoulder_tuning | V5.4.1: shoulder ref 약화 | 27.3% | 0.060 | 17.4% | ❌ |
+| 054 | 05/12 | spotmicro_v5_4_2_stride_tuning | V5.4.2: shoulder reg delete | 92.8% | 0.049 | 14.4% | ✅ |
+| 055 | 05/12 | spotmicro_v5_4_3_turn_width | V5.4.3: half turn width parameter 추가 | 27.3% | 0.058 | 17.7% | ❌ |
+| 056 | 05/13 | spotmicro_v5_4_4_IK rollback | V5.4.4: IK rollback 후 각 체크포인트마다 확인 | 98.5% | 0.049 | 14.2% | ✅ |
+| 057 | 05/13 | spotmicro_v5_4_4_IK rollback | V5.4.4.1: IK rollback 후 각 체크포인트마다 확인 - 7... | 95.5% | 0.048 | 14.6% | ✅ |
+| 058 | 05/13 | spotmicro_v5_4_4_IK rollback | V5.4.4.2: IK rollback 후 각 체크포인트마다 확인 - w... | 99.2% | 0.050 | 14.0% | ✅ |
