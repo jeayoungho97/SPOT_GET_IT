@@ -13,6 +13,34 @@
 #define BNO055_OPR_IMUPLUS        0x08
 #define BNO055_CHIP_ID_EXPECTED   0xA0
 
+/* === Axis remap registers (BNO055 datasheet 4.4.1) ===
+ * 목표: chip output 을 RL 학습 컨벤션 (FLU body frame + 표준 proper accel)
+ *       으로 출력. STM/ROS 측 변환 모두 identity 유지.
+ *
+ * 학습 컨벤션 (legged_gym/legged_robot.py:518, :533):
+ *   - body frame: X=forward, Y=left, Z=up
+ *   - 정자세 IMU accel = (0, 0, +9.8)   (proper accel, 중력 반대 방향)
+ *   - projected_gravity = -accel / |accel| = (0, 0, -1)
+ *
+ * 사용자 마운트 확정 (0x24+0x00 P1 default 빌드의 3자세 측정):
+ *   정자세    -> az ≈ +9.6  (chip out_Z 가 robot +Z up 과 정렬)
+ *   왼다리 밑 -> ay ≈ +9.4  (chip out_Y 가 robot -Y right 와 정렬)
+ *   머리 위   -> ax ≈ -9.7  (chip out_X 가 robot -X backward 와 정렬)
+ *
+ * 즉 chip 의 P1 default output 이 robot FLU 와 비교해 X, Y 만 부호 반대.
+ * Z 는 정렬. 따라서 CONFIG 는 P1 default 그대로 두고 SIGN 만 X, Y negate.
+ *
+ *   AXIS_MAP_CONFIG = 0x24  (P1 default — datasheet table 3-7)
+ *   AXIS_MAP_SIGN bit2=X_neg, bit1=Y_neg, bit0=Z_neg
+ *     -> X, Y negate, Z positive = 0b00000_110 = 0x06
+ *
+ * 효과: chip 이 학습 frame 으로 직접 출력 → SW remap 불필요.
+ */
+#define BNO055_AXIS_MAP_CONFIG    0x41
+#define BNO055_AXIS_MAP_SIGN      0x42
+#define BNO055_AXIS_CONFIG        0x24
+#define BNO055_AXIS_SIGN          0x06
+
 #define BNO055_ACCEL_SCALE        (1.0f / 100.0f)
 #define BNO055_GYRO_SCALE         (1.0f / 16.0f * ((float)M_PI / 180.0f))
 #define BNO055_QUAT_SCALE         (1.0f / 16384.0f)
@@ -52,6 +80,14 @@ bool bno055_init_imuplus(I2C_HandleTypeDef *hi2c) {
     }
     bno_write_byte(hi2c, BNO055_OPR_MODE, BNO055_OPR_CONFIG);
     HAL_Delay(25);
+
+    /* Axis remap — CONFIG 모드에서만 변경 가능.
+     * P6 placement: chip 출력이 robot body frame 으로 통일됨 (모든 downstream 일관). */
+    bno_write_byte(hi2c, BNO055_AXIS_MAP_CONFIG, BNO055_AXIS_CONFIG);
+    HAL_Delay(10);
+    bno_write_byte(hi2c, BNO055_AXIS_MAP_SIGN, BNO055_AXIS_SIGN);
+    HAL_Delay(10);
+
     bno_write_byte(hi2c, BNO055_OPR_MODE, BNO055_OPR_IMUPLUS);
     HAL_Delay(20);
     return true;
@@ -87,39 +123,46 @@ bool bno055_read_body(I2C_HandleTypeDef *hi2c, body_attitude_t *body) {
     int16_t qy_raw = (int16_t)((uint16_t)buf[28] | ((uint16_t)buf[29] << 8));
     int16_t qz_raw = (int16_t)((uint16_t)buf[30] | ((uint16_t)buf[31] << 8));
 
-    /* Euler — 기존 본체 마운팅 보정 유지 */
-    body->yaw   =  h_raw * BNO055_EULER_SCALE;
-    body->pitch = -(r_raw * BNO055_EULER_SCALE);
-    body->roll  = -(p_raw * BNO055_EULER_SCALE);
+    /* Euler — chip 출력이 ROS REP-103 과 부호 반대 (3축 모두 검증 완료).
+     * SW 에서 sign flip 으로 정합. register naming swap 은 유지:
+     *   BNO055 EUL_ROLL  register = standard pitch (rotation around Y, ±90°)
+     *   BNO055 EUL_PITCH register = standard roll  (rotation around X, ±180°)
+     */
+    body->yaw   = -(h_raw * BNO055_EULER_SCALE);
+    body->pitch =  r_raw * BNO055_EULER_SCALE;
+    body->roll  =  p_raw * BNO055_EULER_SCALE;
 
-    /* Gyro → rad/s, 본체 마운팅 보정 (Euler와 동일: X↔X, Y↔Z swap, 부호 반전) */
+    /* yaw wrap to ±180° — chip HEADING register 가 0~360° unsigned 라
+     * sign flip 결과 -360~0 범위. ROS 표준 ±π 형태로 정리. */
+    if (body->yaw < -180.0f) body->yaw += 360.0f;
+
+    /* Gyro → rad/s. axis_map (0x24+0x06) 적용 후 output frame 이 left-handed
+     * (det(T)=-1) 라 axial vector 부호가 vector 변환과 차이 발생.
+     * 측정 검증 결과 gy 만 REP-103 과 부호 반대 → SW flip. gx, gz 는 일치. */
     float gx = gx_raw * BNO055_GYRO_SCALE;
     float gy = gy_raw * BNO055_GYRO_SCALE;
     float gz = gz_raw * BNO055_GYRO_SCALE;
-    body->gyro[0] =  gx;       /* body X (forward) */
-    body->gyro[1] = -gz;       /* body Y (left) — BNO Z → body Y, 부호 반전 */
-    body->gyro[2] = -gy;       /* body Z (up)   — BNO Y → body Z, 부호 반전 */
+    body->gyro[0] =  gx;
+    body->gyro[1] = -gy;   /* sign flip — REP-103 정합 */
+    body->gyro[2] =  gz;
 
-    /* Accel → m/s², 본체 마운팅 보정 (gyro와 동일 축 매핑) */
+    /* Accel → m/s². Chip P6 remap 후 출력이 이미 body frame.
+     * 정자세 검증: az ≈ -9.8 (Z up → 중력은 -Z 방향). */
     float ax = ax_raw * BNO055_ACCEL_SCALE;
     float ay = ay_raw * BNO055_ACCEL_SCALE;
     float az = az_raw * BNO055_ACCEL_SCALE;
-    body->accel[0] =  ax;      /* body X (forward) */
-    body->accel[1] = -az;      /* body Y (left) */
-    body->accel[2] = -ay;      /* body Z (up) */
 
-    /* Quaternion → normalized, 본체 마운팅 보정 (gyro와 동일 축 매핑) */
+    body->accel[0] = ax;
+    body->accel[1] = ay;
+    body->accel[2] = az;
+
+    /* Quaternion → normalized. Chip P6 remap 후 출력이 이미 body frame. */
     float qw = qw_raw * BNO055_QUAT_SCALE;
     float qx = qx_raw * BNO055_QUAT_SCALE;
     float qy = qy_raw * BNO055_QUAT_SCALE;
     float qz = qz_raw * BNO055_QUAT_SCALE;
 
-    /* 축 swap: BNO(x,y,z) → body(x,-z,-y) */
-    float bqx =  qx;
-    float bqy = -qz;
-    float bqz = -qy;
-
-    float norm = sqrtf(qw * qw + bqx * bqx + bqy * bqy + bqz * bqz);
+    float norm = sqrtf(qw * qw + qx * qx + qy * qy + qz * qz);
     if (norm < QUAT_NORM_MIN) {
         body->quat[0] = 1.0f;
         body->quat[1] = 0.0f;
@@ -127,10 +170,10 @@ bool bno055_read_body(I2C_HandleTypeDef *hi2c, body_attitude_t *body) {
         body->quat[3] = 0.0f;
     } else {
         float inv = 1.0f / norm;
-        body->quat[0] = qw  * inv;
-        body->quat[1] = bqx * inv;
-        body->quat[2] = bqy * inv;
-        body->quat[3] = bqz * inv;
+        body->quat[0] = qw * inv;
+        body->quat[1] = qx * inv;
+        body->quat[2] = qy * inv;
+        body->quat[3] = qz * inv;
     }
 
     body->data_valid = true;

@@ -94,21 +94,41 @@ static void check_safety(void) {
         g_robot_state.status &= ~STATUS_BIT_IN_SAFE_STATE;
     }
 
-    /* 2. 서보 온도 한계 */
+    /* 2. 서보 온도 한계 — hysteresis 적용 (연속 N cycle 임계치 초과해야 fault).
+     *   서보 telemetry UART 가 가끔 1 byte 노이즈로 가짜 high temp 읽음.
+     *   실제 과열은 초 단위로 천천히 올라가니까 N=3 cycle (60ms) 으로 충분히 잡힘. */
+    #define TEMP_HIGH_HYSTERESIS_CYCLES  3
+    static uint8_t temp_high_streak = 0;
     if (new_fault == FAULT_OK) {
+        bool any_too_hot = false;
         for (int i = 0; i < NUM_JOINTS; i++) {
             if (g_robot_state.temperature[i] > TEMP_LIMIT_C) {
-                new_fault = FAULT_TEMP_HIGH;
+                any_too_hot = true;
                 break;
             }
         }
+        if (any_too_hot) {
+            if (temp_high_streak < 0xFF) temp_high_streak++;
+            if (temp_high_streak >= TEMP_HIGH_HYSTERESIS_CYCLES) {
+                new_fault = FAULT_TEMP_HIGH;
+            }
+        } else {
+            temp_high_streak = 0;
+        }
     }
 
-    /* 3. 전압 한계 (ADC가 유효한 경우만) */
+    /* 3. 전압 한계 (ADC가 유효한 경우만) — 동일 hysteresis 패턴 */
+    #define VOLTAGE_LOW_HYSTERESIS_CYCLES  3
+    static uint8_t volt_low_streak = 0;
     if (new_fault == FAULT_OK
         && g_robot_state.bus_voltage > VOLTAGE_VALID_V
         && g_robot_state.bus_voltage < VOLTAGE_LOW_V) {
-        new_fault = FAULT_VOLTAGE_LOW;
+        if (volt_low_streak < 0xFF) volt_low_streak++;
+        if (volt_low_streak >= VOLTAGE_LOW_HYSTERESIS_CYCLES) {
+            new_fault = FAULT_VOLTAGE_LOW;
+        }
+    } else {
+        volt_low_streak = 0;
     }
 
     /* Sticky fault (CRC, NAN) 는 보존 — transient 조건 다 해소돼도 OK로 안 돌림.

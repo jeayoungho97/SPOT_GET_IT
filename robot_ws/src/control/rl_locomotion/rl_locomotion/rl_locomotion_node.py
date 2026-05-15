@@ -386,15 +386,8 @@ class RlLocomotionNode(Node):
             self.last_joint_feedback_time = time.perf_counter()
 
     def imu_callback(self, msg: Imu):
-        qx = float(msg.orientation.x)
-        qy = float(msg.orientation.y)
-        qz = float(msg.orientation.z)
-        qw = float(msg.orientation.w)
-
-        q_norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
-        if not math.isfinite(q_norm) or q_norm < 1e-6:
-            self._warn_throttled("imu_quat", "invalid IMU quaternion")
-            return
+        # IMU 데이터는 이미 robot body frame 으로 들어옴.
+        # (STM 펌웨어의 BNO055 P6 axis remap 이 chip 차원에서 변환 적용됨)
 
         ang = [
             float(msg.angular_velocity.x),
@@ -406,18 +399,18 @@ class RlLocomotionNode(Node):
             self._warn_throttled("imu_ang", "invalid IMU angular velocity")
             return
 
-        projected_gravity = list(
-            projected_gravity_from_ros_quat_xyzw(
-                qx=qx,
-                qy=qy,
-                qz=qz,
-                qw=qw,
-            )
-        )
-
-        if not finite_list(projected_gravity, 3):
-            self._warn_throttled("imu_gravity", "invalid projected gravity")
+        # projected_gravity 는 raw accel 기반.
+        # BNO055 quat 의 fusion reference drift 회피 (IMUPLUS 모드 한계).
+        # 보행 중 linear accel 노이즈는 작아서 50Hz 통계적으로 OK.
+        ax = float(msg.linear_acceleration.x)
+        ay = float(msg.linear_acceleration.y)
+        az = float(msg.linear_acceleration.z)
+        accel_mag = math.sqrt(ax * ax + ay * ay + az * az)
+        if not math.isfinite(accel_mag) or accel_mag < 1.0:
+            self._warn_throttled("imu_accel", "invalid IMU linear acceleration")
             return
+
+        projected_gravity = [-ax / accel_mag, -ay / accel_mag, -az / accel_mag]
 
         with self.state_lock:
             self.base_ang_vel = ang
