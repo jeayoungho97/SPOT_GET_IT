@@ -1,0 +1,35 @@
+rl_locomotion_node:
+  ros__parameters:
+    model_path: "models/v5_4_4_policy.onnx"
+
+    ik_profile: "lateral_ik"
+
+    # 반드시 새 모델 학습 config의 action_scale과 맞춰야 함
+    action_scale: 0.25
+    action_clip: 1.0
+
+    gait_period: 1.0
+    duty_factor: 0.55
+    step_height: 0.025
+    body_height: 0.206
+    robot_width: 0.15
+
+    phase_cmd_norm: 0.1
+    blend_cmd_norm: 0.1
+
+    # 새 모델이 vy를 학습했다면 0으로 막으면 안 됨
+    vx_min: 0.0
+    vx_max: 0.3
+    vy_min: 0.0
+    vy_max: 0.0
+    wz_min: -0.3
+    wz_max: 0.3
+
+    max_stride_x: 0.12
+    max_stride_y: 0.03
+    shoulder_y_gain: 1.0
+    shoulder_ref_limit: 0.1
+
+    leg_origin_x: [0.093, 0.093, -0.093, -0.093]
+    leg_origin_y: [0.036, -0.036, 0.036, -0.036]
+    shoulder_sign: [1.0, -1.0, 1.0, -1.0]
