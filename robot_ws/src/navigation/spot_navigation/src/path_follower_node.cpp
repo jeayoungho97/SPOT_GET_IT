@@ -28,7 +28,7 @@ PathFollowerNode::PathFollowerNode(const rclcpp::NodeOptions & options)
   // Subscribers
   // ============================================================
   local_path_sub_ = create_subscription<nav_msgs::msg::Path>(
-    "/planning/local_path/" + robot_id_, 10,
+    "/navigation/local_path/" + robot_id_, 10,
     std::bind(&PathFollowerNode::on_local_path, this, std::placeholders::_1));
 
   pose_sub_ = create_subscription<robot_interfaces::msg::LocalizedRobotPose>(
