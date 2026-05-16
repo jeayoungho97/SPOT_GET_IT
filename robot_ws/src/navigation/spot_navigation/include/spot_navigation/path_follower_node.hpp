@@ -42,6 +42,12 @@ private:
   robot_interfaces::msg::NavigationState::SharedPtr latest_nav_state_;
 
   // ============================================================
+  // Internal state
+  // ============================================================
+  size_t current_waypoint_index_;   // 현재 추종 중인 waypoint index
+  bool   path_completed_;           // 마지막 waypoint 도달 여부
+
+  // ============================================================
   // Parameters
   // ============================================================
   std::string robot_id_;
@@ -53,8 +59,7 @@ private:
   double heading_tolerance_rad_;
   double turn_in_place_threshold_rad_;
   double slow_down_angle_rad_;
-  double slowdown_distance_m_;
-  double path_lookahead_distance_m_;
+  double waypoint_reach_tolerance_m_;  // waypoint 도달 판단 거리
   double timer_period_sec_;
 
   // ============================================================
@@ -69,17 +74,14 @@ private:
   // Control logic
   // ============================================================
 
-  // local path에서 현재 pose와 가장 가까운 waypoint index 반환
-  size_t find_nearest_index();
-
-  // nearest index 기준 lookahead target index 반환
-  size_t find_lookahead_index(size_t nearest_index);
+  // 현재 위치와 waypoint 간 거리 계산
+  double distance_to_waypoint(size_t index);
 
   // heading error 계산 (-π ~ π wrap)
   double compute_heading_error(double target_x, double target_y);
 
-  // heading error, distance_to_goal 기반 v 계산
-  double compute_linear_velocity(double heading_error, float distance_to_goal_m);
+  // heading error 기반 v 계산
+  double compute_linear_velocity(double heading_error);
 
   // heading error 기반 w 계산
   double compute_angular_velocity(double heading_error);
