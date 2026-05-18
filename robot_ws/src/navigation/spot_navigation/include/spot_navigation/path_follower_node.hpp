@@ -17,6 +17,8 @@ public:
   explicit PathFollowerNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
 private:
+
+private:
   // ============================================================
   // Subscribers
   // ============================================================
@@ -45,12 +47,14 @@ private:
   // Internal state
   // ============================================================
   size_t current_waypoint_index_;   // 현재 추종 중인 waypoint index
-  bool   path_completed_;           // 마지막 waypoint 도달 여부
 
   // ============================================================
   // Parameters
   // ============================================================
   std::string robot_id_;
+
+  // Topic names (파라미터로 관리)
+  std::string topic_pose_;
 
   double max_linear_x_mps_;
   double min_linear_x_mps_;
@@ -59,7 +63,7 @@ private:
   double heading_tolerance_rad_;
   double turn_in_place_threshold_rad_;
   double slow_down_angle_rad_;
-  double waypoint_reach_tolerance_m_;  // waypoint 도달 판단 거리
+  double waypoint_reach_tolerance_m_;
   double timer_period_sec_;
 
   // ============================================================

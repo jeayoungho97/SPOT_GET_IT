@@ -19,6 +19,8 @@ public:
   explicit NavigationFsmNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
 private:
+
+private:
   // ============================================================
   // Subscribers
   // ============================================================
@@ -71,6 +73,11 @@ private:
   // Parameters
   // ============================================================
   std::string robot_id_;
+
+  // Topic names (파라미터로 관리)
+  std::string topic_pose_;
+  std::string topic_obstacle_;
+  std::string topic_free_space_;
 
   double front_block_distance_m_;
   double side_block_distance_m_;

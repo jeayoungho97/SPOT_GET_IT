@@ -2,6 +2,7 @@
 #define SPOT_NAVIGATION__SAFETY_SUPERVISOR_NODE_HPP_
 
 #include <rclcpp/rclcpp.hpp>
+#include <geometry_msgs/msg/twist.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
 
 #include <robot_interfaces/msg/navigation_state.hpp>
@@ -19,6 +20,8 @@ public:
   explicit SafetySupervisorNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
 private:
+
+private:
   // ============================================================
   // Subscribers
   // ============================================================
@@ -31,7 +34,7 @@ private:
   // ============================================================
   // Publishers
   // ============================================================
-  rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr cmd_vel_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
   rclcpp::Publisher<robot_interfaces::msg::SafetyStatus>::SharedPtr safety_status_pub_;
 
   // ============================================================
@@ -65,6 +68,11 @@ private:
   // Parameters
   // ============================================================
   std::string robot_id_;
+
+  // Topic names (파라미터로 관리)
+  std::string topic_pose_;
+  std::string topic_obstacle_;
+  std::string topic_free_space_;
 
   double soft_stop_distance_m_;
   double emergency_stop_distance_m_;
