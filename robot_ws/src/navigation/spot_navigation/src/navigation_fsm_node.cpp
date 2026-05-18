@@ -13,6 +13,9 @@ NavigationFsmNode::NavigationFsmNode(const rclcpp::NodeOptions & options)
   // Parameters
   // ============================================================
   robot_id_                 = declare_parameter<std::string>("robot_id", "spot_01");
+  topic_pose_               = declare_parameter<std::string>("topic_pose", "/localization/mock_pose");
+  topic_obstacle_           = declare_parameter<std::string>("topic_obstacle", "/perception/lidar/obstacle_model");
+  topic_free_space_         = declare_parameter<std::string>("topic_free_space", "/perception/lidar/free_space_model");
   front_block_distance_m_   = declare_parameter<double>("front_block_distance_m", 0.70);
   side_block_distance_m_    = declare_parameter<double>("side_block_distance_m", 0.50);
   front_clear_distance_m_   = declare_parameter<double>("front_clear_distance_m", 0.85);
@@ -31,15 +34,15 @@ NavigationFsmNode::NavigationFsmNode(const rclcpp::NodeOptions & options)
     std::bind(&NavigationFsmNode::on_path_progress, this, std::placeholders::_1));
 
   pose_sub_ = create_subscription<robot_interfaces::msg::LocalizedRobotPose>(
-    "/localization/mock_pose", 10,
+    topic_pose_, 10,
     std::bind(&NavigationFsmNode::on_pose, this, std::placeholders::_1));
 
   obstacle_sub_ = create_subscription<robot_interfaces::msg::ObstacleModel>(
-    "/perception/lidar/obstacle_model", 10,
+    topic_obstacle_, 10,
     std::bind(&NavigationFsmNode::on_obstacle, this, std::placeholders::_1));
 
   free_space_sub_ = create_subscription<robot_interfaces::msg::FreeSpaceModel>(
-    "/perception/lidar/free_space_model", 10,
+    topic_free_space_, 10,
     std::bind(&NavigationFsmNode::on_free_space, this, std::placeholders::_1));
 
   local_path_sub_ = create_subscription<nav_msgs::msg::Path>(

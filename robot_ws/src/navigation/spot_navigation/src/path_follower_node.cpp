@@ -8,13 +8,13 @@ namespace spot_navigation
 
 PathFollowerNode::PathFollowerNode(const rclcpp::NodeOptions & options)
 : Node("path_follower_node", options),
-  current_waypoint_index_(0),
-  path_completed_(false)
+  current_waypoint_index_(0)
 {
   // ============================================================
   // Parameters
   // ============================================================
   robot_id_                    = declare_parameter<std::string>("robot_id", "spot_01");
+  topic_pose_                  = declare_parameter<std::string>("topic_pose", "/localization/mock_pose");
   max_linear_x_mps_            = declare_parameter<double>("max_linear_x_mps", 0.40);
   min_linear_x_mps_            = declare_parameter<double>("min_linear_x_mps", 0.05);
   max_angular_z_radps_         = declare_parameter<double>("max_angular_z_radps", 0.40);
@@ -33,7 +33,7 @@ PathFollowerNode::PathFollowerNode(const rclcpp::NodeOptions & options)
     std::bind(&PathFollowerNode::on_local_path, this, std::placeholders::_1));
 
   pose_sub_ = create_subscription<robot_interfaces::msg::LocalizedRobotPose>(
-    "/localization/pose", 10,
+    topic_pose_, 10,
     std::bind(&PathFollowerNode::on_pose, this, std::placeholders::_1));
 
   nav_state_sub_ = create_subscription<robot_interfaces::msg::NavigationState>(
@@ -62,13 +62,9 @@ PathFollowerNode::PathFollowerNode(const rclcpp::NodeOptions & options)
 
 void PathFollowerNode::on_local_path(nav_msgs::msg::Path::SharedPtr msg)
 {
-  // 새 local path 수신 시 index 리셋
-  latest_local_path_       = msg;
-  current_waypoint_index_  = 0;
-  path_completed_          = false;
-  RCLCPP_INFO(get_logger(), "local path 수신 : %zu waypoints", msg->poses.size());
+  latest_local_path_ = msg;
+  RCLCPP_DEBUG(get_logger(), "local path 수신 : %zu waypoints", msg->poses.size());
 }
-
 void PathFollowerNode::on_pose(robot_interfaces::msg::LocalizedRobotPose::SharedPtr msg)
 {
   latest_pose_ = msg;
@@ -118,35 +114,26 @@ void PathFollowerNode::on_timer()
     return;
   }
 
-  // ----------------------------------------------------------
-  // 경로 완료 여부 확인
-  // ----------------------------------------------------------
-  if (path_completed_) {
-    cmd_vel_raw_pub_->publish(cmd);  // v=0, w=0
-    return;
-  }
-
   const size_t path_size = latest_local_path_->poses.size();
 
   // ----------------------------------------------------------
-  // 현재 waypoint 도달 여부 확인 → 다음 waypoint로 전진
+  // 현재 위치와 가장 가까운 waypoint 찾기 (nearest)
+  // nearest + 1을 target으로 설정
   // ----------------------------------------------------------
-  while (current_waypoint_index_ < path_size) {
-    const double dist = distance_to_waypoint(current_waypoint_index_);
-    if (dist < waypoint_reach_tolerance_m_) {
-      if (current_waypoint_index_ + 1 >= path_size) {
-        // 마지막 waypoint 도달
-        path_completed_ = true;
-        RCLCPP_INFO(get_logger(), "local path 완료");
-        cmd_vel_raw_pub_->publish(cmd);  // v=0, w=0
-        return;
-      }
-      current_waypoint_index_++;
-      RCLCPP_DEBUG(get_logger(), "waypoint %zu 도달 → 다음으로", current_waypoint_index_);
-    } else {
-      break;
+  size_t nearest = 0;
+  double min_dist = std::numeric_limits<double>::max();
+  for (size_t i = 0; i < path_size; ++i) {
+    const double dx = latest_local_path_->poses[i].pose.position.x - latest_pose_->x_m;
+    const double dy = latest_local_path_->poses[i].pose.position.y - latest_pose_->y_m;
+    const double d  = std::sqrt(dx * dx + dy * dy);
+    if (d < min_dist) {
+      min_dist = d;
+      nearest  = i;
     }
   }
+
+  // nearest가 마지막이면 마지막 waypoint가 target
+  current_waypoint_index_ = (nearest + 1 < path_size) ? nearest + 1 : path_size - 1;
 
   // ----------------------------------------------------------
   // target waypoint 선택

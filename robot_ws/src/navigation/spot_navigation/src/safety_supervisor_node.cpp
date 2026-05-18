@@ -15,6 +15,9 @@ SafetySupervisorNode::SafetySupervisorNode(const rclcpp::NodeOptions & options)
   // Parameters
   // ============================================================
   robot_id_                   = declare_parameter<std::string>("robot_id", "spot_01");
+  topic_pose_                 = declare_parameter<std::string>("topic_pose", "/localization/mock_pose");
+  topic_obstacle_             = declare_parameter<std::string>("topic_obstacle", "/perception/lidar/obstacle_model");
+  topic_free_space_           = declare_parameter<std::string>("topic_free_space", "/perception/lidar/free_space_model");
   soft_stop_distance_m_       = declare_parameter<double>("soft_stop_distance_m", 0.65);
   emergency_stop_distance_m_  = declare_parameter<double>("emergency_stop_distance_m", 0.30);
   max_safe_linear_x_mps_      = declare_parameter<double>("max_safe_linear_x_mps", 0.40);
@@ -39,21 +42,21 @@ SafetySupervisorNode::SafetySupervisorNode(const rclcpp::NodeOptions & options)
     std::bind(&SafetySupervisorNode::on_nav_state, this, std::placeholders::_1));
 
   obstacle_sub_ = create_subscription<robot_interfaces::msg::ObstacleModel>(
-    "/perception/lidar/obstacle_model", 10,
+    topic_obstacle_, 10,
     std::bind(&SafetySupervisorNode::on_obstacle, this, std::placeholders::_1));
 
   free_space_sub_ = create_subscription<robot_interfaces::msg::FreeSpaceModel>(
-    "/perception/lidar/free_space_model", 10,
+    topic_free_space_, 10,
     std::bind(&SafetySupervisorNode::on_free_space, this, std::placeholders::_1));
 
   pose_sub_ = create_subscription<robot_interfaces::msg::LocalizedRobotPose>(
-    "/localization/pose", 10,
+    topic_pose_, 10,
     std::bind(&SafetySupervisorNode::on_pose, this, std::placeholders::_1));
 
   // ============================================================
   // Publishers
   // ============================================================
-  cmd_vel_pub_ = create_publisher<geometry_msgs::msg::TwistStamped>(
+  cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>(
     "/control/cmd_vel/" + robot_id_, 10);
 
   safety_status_pub_ = create_publisher<robot_interfaces::msg::SafetyStatus>(
@@ -176,11 +179,9 @@ void SafetySupervisorNode::on_timer()
     prev_v_ = 0.0;
     prev_w_ = 0.0;
     // 바로 publish 후 종료
-    geometry_msgs::msg::TwistStamped cmd;
-    cmd.header.stamp    = now_time;
-    cmd.header.frame_id = "base_link";
-    cmd.twist.linear.x  = 0.0;
-    cmd.twist.angular.z = 0.0;
+    geometry_msgs::msg::Twist cmd;
+    cmd.linear.x  = 0.0;
+    cmd.angular.z = 0.0;
     cmd_vel_pub_->publish(cmd);
 
     auto status = build_safety_status(
@@ -218,11 +219,9 @@ void SafetySupervisorNode::on_timer()
   // ----------------------------------------------------------
   // 9 : publish
   // ----------------------------------------------------------
-  geometry_msgs::msg::TwistStamped cmd;
-  cmd.header.stamp    = now_time;
-  cmd.header.frame_id = "base_link";
-  cmd.twist.linear.x  = out_v;
-  cmd.twist.angular.z = out_w;
+  geometry_msgs::msg::Twist cmd;
+  cmd.linear.x  = out_v;
+  cmd.angular.z = out_w;
   cmd_vel_pub_->publish(cmd);
 
   auto status = build_safety_status(
@@ -269,7 +268,7 @@ SafetySupervisorNode::build_safety_status(
   msg.robot_id        = robot_id_;
 
   msg.safe_to_move            = !emergency_stop && !cmd_stale &&
-                                !pose_stale && !perception_stale && !goal_reached;
+                                !pose_stale && !perception_stale;
   msg.soft_stop_required      = soft_stop;
   msg.emergency_stop_required = emergency_stop;
   msg.pose_stale              = pose_stale;
