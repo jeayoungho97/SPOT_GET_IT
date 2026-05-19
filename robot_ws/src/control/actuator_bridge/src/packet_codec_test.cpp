@@ -27,12 +27,12 @@ int main()
   std::cout << "COMMAND_PACKET_SIZE = " << COMMAND_PACKET_SIZE << " bytes" << std::endl;
   std::cout << "FEEDBACK_PACKET_SIZE = " << FEEDBACK_PACKET_SIZE << " bytes" << std::endl;
 
-  if (COMMAND_PACKET_SIZE != 108) {
-    return fail("Command packet size must be 108 bytes");
+  if (COMMAND_PACKET_SIZE != 117) {
+    return fail("Command packet size must be 117 bytes");
   }
 
-  if (FEEDBACK_PACKET_SIZE != 236) {
-    return fail("Feedback packet size must be 236 bytes");
+  if (FEEDBACK_PACKET_SIZE != 261) {
+    return fail("Feedback packet size must be 261 bytes");
   }
 
   CommandPacket cmd;
@@ -40,6 +40,7 @@ int main()
   cmd.timestamp_us = 12345678;
   cmd.mode = 2;
   cmd.flags = 0x01;
+  cmd.motion_state = 3;
 
   for (std::size_t i = 0; i < NUM_JOINTS; ++i) {
     cmd.target_rad[i] = static_cast<float>(0.1 * static_cast<double>(i));
@@ -73,6 +74,10 @@ int main()
 
   if (decoded_cmd.flags != cmd.flags) {
     return fail("command flags mismatch");
+  }
+
+  if (decoded_cmd.motion_state != cmd.motion_state) {
+    return fail("command motion_state mismatch");
   }
 
   for (std::size_t i = 0; i < NUM_JOINTS; ++i) {

@@ -13,6 +13,8 @@ actuator_bridge_node:
     max_rx_buffer_size: 4096
 
     target_topic: "/control/selected/joint_target"
+    cmd_vel_topic: "/control/cmd_vel/spot_01"
+    motion_state_deadband: 0.05
 
     default_joint_angles:
       [0.0, -0.6, 1.1,

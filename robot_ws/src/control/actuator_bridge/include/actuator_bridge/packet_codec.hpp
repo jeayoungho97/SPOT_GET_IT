@@ -22,6 +22,7 @@ constexpr std::size_t COMMAND_PACKET_SIZE =
   4 * NUM_JOINTS +            // max_delta_rad[12
   4 +                         // gait_phase
   4 +                         // gait_cycle_count
+  1 +                         // motion_state
   2;                          // crc16
 
 constexpr std::size_t FEEDBACK_PACKET_SIZE =
@@ -57,6 +58,7 @@ struct CommandPacket
   std::array<float, NUM_JOINTS> max_delta_rad{};
   float gait_phase{0.0F};
   uint32_t gait_cycle_count{0};
+  uint8_t motion_state{0};
 };
 
 struct FeedbackPacket

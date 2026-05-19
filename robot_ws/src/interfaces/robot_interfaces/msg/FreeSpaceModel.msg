@@ -25,7 +25,7 @@ float32 best_heading_angle_rad
 float32 best_heading_angle_deg
 
 # 선택된 gap의 대표 정보
-float32 best_clearance
+float32 best_clearance          # 그 방향으로 갔을 때 확보된 최소 장애물 여유 거리
 float32 best_score
 float32 best_free_ratio
 float32 best_unknown_ratio

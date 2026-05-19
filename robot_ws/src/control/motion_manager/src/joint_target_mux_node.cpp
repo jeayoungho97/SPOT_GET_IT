@@ -14,7 +14,6 @@ namespace
 using JointTarget = robot_interfaces::msg::JointTarget;
 
 constexpr uint8_t MODE_STAND = 1;
-constexpr uint8_t MODE_RL = 2;
 
 std::string toUpper(std::string value)
 {
@@ -28,6 +27,15 @@ std::string toUpper(std::string value)
   return value;
 }
 
+std::string normalizeMode(std::string value)
+{
+  value = toUpper(value);
+  if (value == "CLASSIC_CONTROL") {
+    return "CLASSIC";
+  }
+  return value;
+}
+
 }  // namespace
 
 class JointTargetMuxNode : public rclcpp::Node
@@ -38,8 +46,9 @@ public:
   {
     rate_hz_ = this->declare_parameter<double>("rate_hz", 50.0);
     rl_timeout_ms_ = this->declare_parameter<double>("rl_timeout_ms", 100.0);
+    classic_timeout_ms_ = this->declare_parameter<double>("classic_timeout_ms", 100.0);
     stand_timeout_ms_ = this->declare_parameter<double>("stand_timeout_ms", 100.0);
-    behavior_mode_ = toUpper(this->declare_parameter<std::string>("default_mode", "STAND"));
+    behavior_mode_ = normalizeMode(this->declare_parameter<std::string>("default_mode", "STAND"));
 
     mode_sub_ = this->create_subscription<std_msgs::msg::String>(
       "/control/behavior/mode",
@@ -50,6 +59,11 @@ public:
       "/control/rl/joint_target",
       rclcpp::QoS(rclcpp::KeepLast(1)).best_effort(),
       std::bind(&JointTargetMuxNode::rlCallback, this, std::placeholders::_1));
+
+    classic_sub_ = this->create_subscription<JointTarget>(
+      "/control/classic_control/joint_target",
+      rclcpp::QoS(rclcpp::KeepLast(1)).best_effort(),
+      std::bind(&JointTargetMuxNode::classicCallback, this, std::placeholders::_1));
 
     stand_sub_ = this->create_subscription<JointTarget>(
       "/control/stand/joint_target",
@@ -77,16 +91,16 @@ public:
 private:
   void modeCallback(const std_msgs::msg::String::SharedPtr msg)
   {
-    const std::string new_mode = toUpper(msg->data);
+    const std::string new_mode = normalizeMode(msg->data);
 
     if (new_mode.empty()) {
       return;
     }
 
-    if (new_mode != "RL" && new_mode != "STAND") {
+    if (new_mode != "RL" && new_mode != "CLASSIC" && new_mode != "STAND") {
       RCLCPP_WARN(
         this->get_logger(),
-        "unsupported mode '%s'. Allowed modes: RL, STAND. Keeping current mode=%s",
+        "unsupported mode '%s'. Allowed modes: RL, CLASSIC, STAND. Keeping current mode=%s",
         msg->data.c_str(),
         behavior_mode_.c_str());
       return;
@@ -106,6 +120,12 @@ private:
   {
     latest_rl_ = *msg;
     latest_rl_time_ = this->now();
+  }
+
+  void classicCallback(const JointTarget::SharedPtr msg)
+  {
+    latest_classic_ = *msg;
+    latest_classic_time_ = this->now();
   }
 
   void standCallback(const JointTarget::SharedPtr msg)
@@ -139,7 +159,7 @@ private:
         // RL 이 정상 inference 시 MODE_RL, safe_target 시 MODE_DISABLE/E_STOP
         // 등을 보내는데, 이전엔 mux 가 강제로 MODE_RL 로 덮어써서 RL 의
         // 안전 의도가 STM 에 전달되지 못했음 (RL disabled 인데도 STM 이
-        // RL 모드로 처리 → cmd_vel=0 에도 robot 안 멈춤).
+        // RL 모드로 처리 → 속도 명령 0 에도 robot 안 멈춤).
         return true;
       }
 
@@ -148,6 +168,27 @@ private:
         *this->get_clock(),
         1000,
         "RL target stale. Falling back to STAND.");
+
+      if (isStandFresh()) {
+        selected = latest_stand_.value();
+        selected.mode = MODE_STAND;
+        return true;
+      }
+
+      return false;
+    }
+
+    if (behavior_mode_ == "CLASSIC") {
+      if (isClassicFresh()) {
+        selected = latest_classic_.value();
+        return true;
+      }
+
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(),
+        *this->get_clock(),
+        1000,
+        "CLASSIC target stale. Falling back to STAND.");
 
       if (isStandFresh()) {
         selected = latest_stand_.value();
@@ -184,6 +225,16 @@ private:
     return age_ms <= rl_timeout_ms_;
   }
 
+  bool isClassicFresh() const
+  {
+    if (!latest_classic_.has_value()) {
+      return false;
+    }
+
+    const double age_ms = (this->now() - latest_classic_time_).seconds() * 1000.0;
+    return age_ms <= classic_timeout_ms_;
+  }
+
   bool isStandFresh() const
   {
     if (!latest_stand_.has_value()) {
@@ -197,20 +248,24 @@ private:
 private:
   double rate_hz_{50.0};
   double rl_timeout_ms_{100.0};
+  double classic_timeout_ms_{100.0};
   double stand_timeout_ms_{100.0};
 
   std::string behavior_mode_{"STAND"};
 
   std::optional<JointTarget> latest_rl_;
+  std::optional<JointTarget> latest_classic_;
   std::optional<JointTarget> latest_stand_;
 
   rclcpp::Time latest_rl_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time latest_classic_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time latest_stand_time_{0, 0, RCL_ROS_TIME};
 
   uint32_t seq_{0};
 
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mode_sub_;
   rclcpp::Subscription<JointTarget>::SharedPtr rl_sub_;
+  rclcpp::Subscription<JointTarget>::SharedPtr classic_sub_;
   rclcpp::Subscription<JointTarget>::SharedPtr stand_sub_;
   rclcpp::Publisher<JointTarget>::SharedPtr selected_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
