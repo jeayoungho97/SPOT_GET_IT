@@ -19,8 +19,6 @@ public:
   explicit NavigationFsmNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
 private:
-
-private:
   // ============================================================
   // Subscribers
   // ============================================================

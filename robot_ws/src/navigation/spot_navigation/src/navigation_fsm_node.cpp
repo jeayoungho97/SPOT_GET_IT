@@ -13,7 +13,7 @@ NavigationFsmNode::NavigationFsmNode(const rclcpp::NodeOptions & options)
   // Parameters
   // ============================================================
   robot_id_                 = declare_parameter<std::string>("robot_id", "spot_01");
-  topic_pose_               = declare_parameter<std::string>("topic_pose", "/localization/mock_pose");
+  topic_pose_               = declare_parameter<std::string>("topic_pose", "/localization/pose");
   topic_obstacle_           = declare_parameter<std::string>("topic_obstacle", "/perception/lidar/obstacle_model");
   topic_free_space_         = declare_parameter<std::string>("topic_free_space", "/perception/lidar/free_space_model");
   front_block_distance_m_   = declare_parameter<double>("front_block_distance_m", 0.70);
@@ -25,7 +25,7 @@ NavigationFsmNode::NavigationFsmNode(const rclcpp::NodeOptions & options)
   perception_timeout_sec_   = declare_parameter<double>("perception_timeout_sec", 0.5);
   emergency_stop_distance_m_= declare_parameter<double>("emergency_stop_distance_m", 0.30);
   front_azimuth_limit_rad_  = declare_parameter<double>("front_azimuth_limit_rad", 0.5236);  // 30도
-  timer_period_sec_         = declare_parameter<double>("timer_period_sec", 0.1);  // 10Hz
+  timer_period_sec_         = declare_parameter<double>("timer_period_sec", 0.02);  // 50Hz
 
   // ============================================================
   // Subscribers

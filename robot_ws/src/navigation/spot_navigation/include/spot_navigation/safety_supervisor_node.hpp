@@ -20,8 +20,6 @@ public:
   explicit SafetySupervisorNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
 private:
-
-private:
   // ============================================================
   // Subscribers
   // ============================================================

@@ -17,8 +17,6 @@ public:
   explicit PathFollowerNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
 private:
-
-private:
   // ============================================================
   // Subscribers
   // ============================================================
@@ -47,6 +45,7 @@ private:
   // Internal state
   // ============================================================
   size_t current_waypoint_index_;   // 현재 추종 중인 waypoint index
+  double prev_heading_error_;       // 이전 tick heading_error (rate limiter용)
 
   // ============================================================
   // Parameters
@@ -64,6 +63,7 @@ private:
   double turn_in_place_threshold_rad_;
   double slow_down_angle_rad_;
   double waypoint_reach_tolerance_m_;
+  double heading_error_rate_limit_rad_;  // heading_error 틱당 최대 변화량 (보행 노이즈 차단)
   double timer_period_sec_;
 
   // ============================================================
