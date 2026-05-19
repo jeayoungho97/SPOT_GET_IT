@@ -38,7 +38,7 @@ import argparse, sys
 def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False):
     # ============ 환경 설정 ============
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
-    env_cfg.env.num_envs = min(env_cfg.env.num_envs, 64)
+    env_cfg.env.num_envs = min(env_cfg.env.num_envs, 256)
     env_cfg.terrain.num_rows = 5
     env_cfg.terrain.num_cols = 5
     env_cfg.terrain.curriculum = False
@@ -210,6 +210,113 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
     roll_list = []
     pitch_list = []
  
+
+    # ============================================================
+    # Recovery assist 분석용 상태 추적
+    # - reset 직후 일부러 기울어진 초기 상태가 1초 이내 안정화되는지 측정
+    # - eligible trial: 초기 |roll| 또는 |pitch|가 7도 이상인 trial
+    # - success: 1초 이내 안정 기준에 도달했고, horizon 시점에도 안정 상태 유지
+    # ============================================================
+    recovery_horizon_s = 1.0
+    recovery_horizon_steps = max(1, int(recovery_horizon_s / env.dt))
+    recovery_initial_tilt_threshold = np.radians(7.0)
+    recovery_stable_threshold = np.radians(5.0)
+    recovery_min_height = max(0.18, float(env.cfg.rewards.base_height_target) - 0.03)
+
+    recovery_age = np.zeros(num_envs, dtype=np.int32)
+    recovery_active = np.ones(num_envs, dtype=bool)
+    recovery_init_roll = np.full(num_envs, np.nan)
+    recovery_init_pitch = np.full(num_envs, np.nan)
+    recovery_max_roll = np.zeros(num_envs, dtype=np.float32)
+    recovery_max_pitch = np.zeros(num_envs, dtype=np.float32)
+    recovery_first_stable_step = np.full(num_envs, -1, dtype=np.int32)
+    recovery_trials = []
+
+    def _start_recovery_trials(env_ids_np, roll_abs_np, pitch_abs_np, height_np):
+        """새 episode/reset 직후 recovery trial 초기화"""
+        if len(env_ids_np) == 0:
+            return
+        recovery_age[env_ids_np] = 0
+        recovery_active[env_ids_np] = True
+        recovery_init_roll[env_ids_np] = roll_abs_np[env_ids_np]
+        recovery_init_pitch[env_ids_np] = pitch_abs_np[env_ids_np]
+        recovery_max_roll[env_ids_np] = roll_abs_np[env_ids_np]
+        recovery_max_pitch[env_ids_np] = pitch_abs_np[env_ids_np]
+        recovery_first_stable_step[env_ids_np] = -1
+
+    def _record_recovery_trial(env_i, success, end_roll, end_pitch, end_height, forced_failure=False):
+        """한 recovery trial 결과 기록"""
+        init_roll = recovery_init_roll[env_i]
+        init_pitch = recovery_init_pitch[env_i]
+        if np.isnan(init_roll) or np.isnan(init_pitch):
+            return
+
+        init_tilt = max(float(init_roll), float(init_pitch))
+        eligible = init_tilt >= recovery_initial_tilt_threshold
+
+        recovery_time_s = None
+        if success and recovery_first_stable_step[env_i] >= 0:
+            recovery_time_s = float(recovery_first_stable_step[env_i] * env.dt)
+
+        recovery_trials.append({
+            'eligible': bool(eligible),
+            'success': bool(success) if eligible else False,
+            'forced_failure': bool(forced_failure),
+            'init_roll_deg': float(np.degrees(init_roll)),
+            'init_pitch_deg': float(np.degrees(init_pitch)),
+            'init_tilt_deg': float(np.degrees(init_tilt)),
+            'max_roll_first_1s_deg': float(np.degrees(recovery_max_roll[env_i])),
+            'max_pitch_first_1s_deg': float(np.degrees(recovery_max_pitch[env_i])),
+            'end_roll_deg': float(np.degrees(end_roll)),
+            'end_pitch_deg': float(np.degrees(end_pitch)),
+            'end_height_m': float(end_height),
+            'recovery_time_s': recovery_time_s,
+        })
+
+    def _get_initial_tilt_for_trials(roll_abs_np, pitch_abs_np):
+        """env reset 때 저장한 roll/pitch가 있으면 그것을 initial로 사용"""
+        if hasattr(env, "last_reset_roll") and hasattr(env, "last_reset_pitch"):
+            init_roll = np.abs(env.last_reset_roll.cpu().numpy())
+            init_pitch = np.abs(env.last_reset_pitch.cpu().numpy())
+            return init_roll, init_pitch
+        return roll_abs_np, pitch_abs_np
+            
+    def _summarize_recovery_trials():
+        eligible = [t for t in recovery_trials if t['eligible']]
+        successes = [t for t in eligible if t['success']]
+        failures = [t for t in eligible if not t['success']]
+        times = [t['recovery_time_s'] for t in successes if t['recovery_time_s'] is not None]
+
+        def _mean(key, rows):
+            return float(np.mean([r[key] for r in rows])) if rows else None
+
+        def _median(values):
+            return float(np.median(values)) if values else None
+
+        return {
+            'horizon_s': float(recovery_horizon_s),
+            'initial_tilt_threshold_deg': float(np.degrees(recovery_initial_tilt_threshold)),
+            'stable_threshold_deg': float(np.degrees(recovery_stable_threshold)),
+            'min_height_m': float(recovery_min_height),
+            'total_trials': int(len(recovery_trials)),
+            'eligible_trials': int(len(eligible)),
+            'success_count': int(len(successes)),
+            'failure_count': int(len(failures)),
+            'success_rate_pct': float(len(successes) / len(eligible) * 100) if eligible else None,
+            'early_failure_rate_pct': float(
+                sum(1 for t in eligible if t.get('forced_failure')) / len(eligible) * 100
+            ) if eligible else None,
+            'mean_recovery_time_s': float(np.mean(times)) if times else None,
+            'median_recovery_time_s': _median(times),
+            'mean_initial_tilt_deg': _mean('init_tilt_deg', eligible),
+            'mean_initial_roll_deg': _mean('init_roll_deg', eligible),
+            'mean_initial_pitch_deg': _mean('init_pitch_deg', eligible),
+            'mean_max_roll_first_1s_deg': _mean('max_roll_first_1s_deg', eligible),
+            'mean_max_pitch_first_1s_deg': _mean('max_pitch_first_1s_deg', eligible),
+            'mean_end_roll_deg': _mean('end_roll_deg', eligible),
+            'mean_end_pitch_deg': _mean('end_pitch_deg', eligible),
+            'mean_end_height_m': _mean('end_height_m', eligible),
+        }
     # 에너지 추적
     power_list = []
 
@@ -295,10 +402,54 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
         data['roll_abs'].append(np.mean(np.abs(roll)))
         data['pitch_abs'].append(np.mean(np.abs(pitch)))
  
+
         # --- 높이/수직속도 ---
-        data['base_height'].append(env.root_states[:, 2].mean().item())
-        data['base_vel_z'].append(env.base_lin_vel[:, 2].mean().item())
- 
+        base_height_np = env.root_states[:, 2].cpu().numpy()
+        base_vel_z_np = env.base_lin_vel[:, 2].cpu().numpy()
+        data['base_height'].append(float(np.mean(base_height_np)))
+        data['base_vel_z'].append(float(np.mean(base_vel_z_np)))
+
+        # --- Recovery assist trial 추적 ---
+        roll_abs_np = np.abs(roll)
+        pitch_abs_np = np.abs(pitch)
+
+        # 최초 step 또는 reset 직후 아직 초기화되지 않은 env 초기화
+       
+            
+        uninitialized = np.where(np.isnan(recovery_init_roll))[0]
+        if len(uninitialized) > 0:
+            init_roll_np, init_pitch_np = _get_initial_tilt_for_trials(roll_abs_np, pitch_abs_np)
+            _start_recovery_trials(uninitialized, init_roll_np, init_pitch_np, base_height_np)
+
+        active_mask = recovery_active.copy()
+        if np.any(active_mask):
+            active_ids = np.where(active_mask)[0]
+            recovery_age[active_ids] += 1
+            recovery_max_roll[active_ids] = np.maximum(recovery_max_roll[active_ids], roll_abs_np[active_ids])
+            recovery_max_pitch[active_ids] = np.maximum(recovery_max_pitch[active_ids], pitch_abs_np[active_ids])
+
+            stable_now = (
+                (roll_abs_np < recovery_stable_threshold) &
+                (pitch_abs_np < recovery_stable_threshold) &
+                (base_height_np > recovery_min_height)
+            )
+            first_stable_ids = active_ids[
+                stable_now[active_ids] & (recovery_first_stable_step[active_ids] < 0)
+            ]
+            recovery_first_stable_step[first_stable_ids] = recovery_age[first_stable_ids]
+
+            horizon_ids = active_ids[recovery_age[active_ids] >= recovery_horizon_steps]
+            for env_i in horizon_ids:
+                success = bool(stable_now[env_i])
+                _record_recovery_trial(
+                    env_i,
+                    success=success,
+                    end_roll=roll_abs_np[env_i],
+                    end_pitch=pitch_abs_np[env_i],
+                    end_height=base_height_np[env_i],
+                    forced_failure=False,
+                )
+            recovery_active[horizon_ids] = False
         # --- 동작 부드러움 ---
         current_actions = env.actions.cpu().numpy()
         if prev_actions is not None:
@@ -331,16 +482,35 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
         step_total_power = np.sum(np.abs(torques_np * dof_vel_np), axis=1).mean()
         peak_power = max(peak_power, step_total_power)
  
+
         # --- 에피소드 통계 ---
         current_ep_return += rews
         current_ep_length += 1
         done_ids = dones.nonzero(as_tuple=False).flatten()
         if len(done_ids) > 0:
+            done_ids_np = done_ids.cpu().numpy().astype(np.int64)
+
+            # horizon 전에 reset된 active recovery trial은 실패로 기록
+            active_done_ids = done_ids_np[recovery_active[done_ids_np]]
+            for env_i in active_done_ids:
+                _record_recovery_trial(
+                    env_i,
+                    success=False,
+                    end_roll=roll_abs_np[env_i],
+                    end_pitch=pitch_abs_np[env_i],
+                    end_height=base_height_np[env_i],
+                    forced_failure=True,
+                )
+
+            # env.step() 내부에서 이미 reset_idx가 호출된 뒤이므로,
+            # 현재 관측값을 새 trial의 시작 상태로 사용
+            init_roll_np, init_pitch_np = _get_initial_tilt_for_trials(roll_abs_np, pitch_abs_np)
+            _start_recovery_trials(done_ids_np, init_roll_np, init_pitch_np, base_height_np)
+
             episode_lengths.extend(current_ep_length[done_ids].cpu().tolist())
             episode_returns.extend(current_ep_return[done_ids].cpu().tolist())
             current_ep_return[done_ids] = 0
             current_ep_length[done_ids] = 0
- 
         # --- alive 비율 ---
         alive = (env.reset_buf == 0).sum().item()
         data['alive_ratio'].append(alive / num_envs)
@@ -407,6 +577,9 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
         timeout_rate = np.sum(np.array(episode_lengths) >= env.max_episode_length) / len(episode_lengths) * 100
         early_death_rate = np.sum(np.array(episode_lengths) < 50) / len(episode_lengths) * 100
 
+
+    # --- Recovery assist 요약 ---
+    recovery_summary = _summarize_recovery_trials()
     # --- Gait FFT 주파수 (항목 3-A) ---
     contact_patterns = np.array(data['contact_pattern'])  # (steps, num_feet)
     gait_frequency = 0.0
@@ -416,7 +589,7 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
         signal = contact_patterns[:, 0].astype(float)  # FL foot
         signal = signal - signal.mean()  # DC 제거
 
-        dt_step = env.dt  # 1 step의 실제 시간(초)
+        dt_step = env.dt * env.cfg.control.decimation  # 1 step의 실제 시간(초)
 
         from numpy.fft import fft, fftfreq
         N = len(signal)
@@ -481,6 +654,9 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
             'mean_pitch_deg': float(np.degrees(mean_pitch)),
             'mean_power': float(mean_power),
             'episode_return': float(np.mean(episode_returns)) if episode_returns else 0.0,
+            'recovery_success_rate_pct': recovery_summary.get('success_rate_pct'),
+            'recovery_eligible_trials': recovery_summary.get('eligible_trials', 0),
+            'mean_recovery_time_s': recovery_summary.get('mean_recovery_time_s'),
             'feet_contact_pct': feet_contact_pct_dict,
             'diagonal_sync': float(overall_trot * 100),
         }
@@ -774,6 +950,34 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
         if abs(bias) > 0.1:
             print(f"    → ⚠ 한쪽으로 편향. 비대칭 보행 원인 가능")
 
+
+    # --- [15] Recovery assist 분석 ---
+    print(f"\n{'='*60}")
+    print(f"  [15] Recovery Assist 분석")
+    print(f"{'='*60}")
+    print(f"  평가 horizon: {recovery_summary['horizon_s']:.2f}s")
+    print(f"  eligible 기준: 초기 |roll| 또는 |pitch| ≥ {recovery_summary['initial_tilt_threshold_deg']:.1f}°")
+    print(f"  안정 기준: |roll|, |pitch| < {recovery_summary['stable_threshold_deg']:.1f}°, height > {recovery_summary['min_height_m']:.3f}m")
+    print(f"  전체 trial: {recovery_summary['total_trials']}")
+    print(f"  eligible trial: {recovery_summary['eligible_trials']}")
+    if recovery_summary['success_rate_pct'] is None:
+        print("  Recovery 성공률: N/A (eligible trial 없음)")
+    else:
+        print(f"  Recovery 성공률: {recovery_summary['success_rate_pct']:.1f}% "
+              f"({recovery_summary['success_count']}/{recovery_summary['eligible_trials']})")
+        print(f"  조기 실패율: {recovery_summary['early_failure_rate_pct']:.1f}%")
+        if recovery_summary['mean_recovery_time_s'] is not None:
+            print(f"  평균 회복 시간: {recovery_summary['mean_recovery_time_s']:.3f}s")
+        print(f"  평균 초기 tilt: {recovery_summary['mean_initial_tilt_deg']:.2f}°")
+        print(f"  1초 후 평균 |roll|/|pitch|: "
+              f"{recovery_summary['mean_end_roll_deg']:.2f}° / "
+              f"{recovery_summary['mean_end_pitch_deg']:.2f}°")
+        if recovery_summary['success_rate_pct'] >= 80 and recovery_summary['early_failure_rate_pct'] < 10:
+            print("  → ✓ Recovery assist 안정적")
+        elif recovery_summary['success_rate_pct'] >= 50:
+            print("  → △ 일부 회복 가능. perturbation curriculum 또는 reward 조정 필요")
+        else:
+            print("  → ⚠ Recovery 성공률 낮음. perturbation 강도/termination/reward 확인 필요")
     # ============ 그래프 1: 종합 대시보드 ============
     fig, axes = plt.subplots(4, 2, figsize=(16, 20))
     fig.suptitle('SpotMicro RL Diagnostic Report v3', fontsize=16, fontweight='bold')
@@ -899,6 +1103,65 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
         plt.savefig(save_path3, dpi=150)
         print(f"  동작 부드러움 그래프 저장: {save_path3}")
 
+
+    # ============ 그래프 4: Recovery assist ============
+    if recovery_trials:
+        eligible_trials = [t for t in recovery_trials if t['eligible']]
+        fig4, axes4 = plt.subplots(2, 2, figsize=(14, 10))
+        fig4.suptitle('Recovery Assist Analysis', fontsize=14)
+
+        ax = axes4[0, 0]
+        ax.plot(steps_range, [np.degrees(r) for r in data['roll_abs']], 'r-', alpha=0.7, label='|Roll|')
+        ax.plot(steps_range, [np.degrees(p) for p in data['pitch_abs']], 'b-', alpha=0.7, label='|Pitch|')
+        ax.axhline(y=recovery_summary['stable_threshold_deg'], color='green', linestyle='--', alpha=0.5, label='Stable threshold')
+        ax.axhline(y=recovery_summary['initial_tilt_threshold_deg'], color='orange', linestyle='--', alpha=0.5, label='Eligible threshold')
+        ax.set_xlabel('Step')
+        ax.set_ylabel('Angle (deg)')
+        ax.set_title('Roll/Pitch Stability During Diagnostic')
+        ax.legend()
+
+        ax = axes4[0, 1]
+        if eligible_trials:
+            init_tilts = [t['init_tilt_deg'] for t in eligible_trials]
+            end_tilts = [max(t['end_roll_deg'], t['end_pitch_deg']) for t in eligible_trials]
+            ax.hist(init_tilts, bins=20, alpha=0.6, label='Initial tilt')
+            ax.hist(end_tilts, bins=20, alpha=0.6, label='Tilt at 1s/end')
+            ax.set_xlabel('Tilt (deg)')
+            ax.set_ylabel('Count')
+            ax.set_title('Initial vs End Tilt Distribution')
+            ax.legend()
+        else:
+            ax.text(0.5, 0.5, 'No eligible trials', ha='center', va='center')
+            ax.set_axis_off()
+
+        ax = axes4[1, 0]
+        if eligible_trials:
+            success_count = recovery_summary['success_count']
+            failure_count = recovery_summary['failure_count']
+            ax.bar(['Success', 'Failure'], [success_count, failure_count])
+            ax.set_ylabel('Trials')
+            ax.set_title(f"Recovery Success Rate: {recovery_summary['success_rate_pct']:.1f}%")
+        else:
+            ax.text(0.5, 0.5, 'No eligible trials', ha='center', va='center')
+            ax.set_axis_off()
+
+        ax = axes4[1, 1]
+        times = [t['recovery_time_s'] for t in eligible_trials if t['success'] and t['recovery_time_s'] is not None]
+        if times:
+            ax.hist(times, bins=20, alpha=0.8)
+            ax.axvline(np.mean(times), linestyle='--', alpha=0.7, label=f"mean={np.mean(times):.2f}s")
+            ax.set_xlabel('Recovery time (s)')
+            ax.set_ylabel('Count')
+            ax.set_title('Recovery Time Distribution')
+            ax.legend()
+        else:
+            ax.text(0.5, 0.5, 'No successful recovery times', ha='center', va='center')
+            ax.set_axis_off()
+
+        plt.tight_layout()
+        save_path4 = os.path.join(diag_dir, 'recovery_report.png')
+        plt.savefig(save_path4, dpi=150)
+        print(f"  Recovery 그래프 저장: {save_path4}")
     print(f"\n{'='*60}")
     print(f"  진단 완료!")
     print(f"  그래프 위치: {diag_dir}/")
@@ -937,7 +1200,12 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
             'mean_episode_length': float(np.mean(episode_lengths)) if episode_lengths else 0.0,
             'mean_episode_return': float(np.mean(episode_returns)) if episode_returns else 0.0,
             'num_episodes': len(episode_lengths),
+            'recovery_success_rate_pct': recovery_summary.get('success_rate_pct'),
+            'recovery_eligible_trials': recovery_summary.get('eligible_trials', 0),
+            'mean_recovery_time_s': recovery_summary.get('mean_recovery_time_s'),
+            'recovery_early_failure_rate_pct': recovery_summary.get('early_failure_rate_pct'),
         },
+        'recovery': recovery_summary,
         'command_mode_metrics': command_mode_summary,
         'config': {
             'control_type': env.cfg.control.control_type,

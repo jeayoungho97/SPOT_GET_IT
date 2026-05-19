@@ -521,6 +521,7 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
     reward_scales = diag_data.get('reward_scales', {}) if diag_data else {}
     
     command_mode_metrics = diag_data.get('command_mode_metrics', {}) if diag_data else {}
+    recovery_data = diag_data.get('recovery', {}) if diag_data else {}
 
     # 자동 판정
     overall_judge, judgments = auto_judge(metrics, run_name)
@@ -580,7 +581,7 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
     diag_graph_dir = os.path.join(DIAG_DIR, task_name)
     diag_graphs_ref = ""
     if os.path.exists(diag_graph_dir):
-        for img_name in ['diagnostic_report.png', 'joint_detail.png', 'action_smoothness.png']:
+        for img_name in ['diagnostic_report.png', 'joint_detail.png', 'action_smoothness.png', 'recovery_report.png']:
             img_path = os.path.join(diag_graph_dir, img_name)
             if os.path.exists(img_path):
                 diag_graphs_ref += f"![{img_name}]({exp_dir_rel}/{img_name})\n"
@@ -613,14 +614,16 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
                 f"| {s.get('mean_roll_deg', 0):.1f} "
                 f"| {s.get('mean_pitch_deg', 0):.1f} "
                 f"| {s.get('mean_power', 0):.2f} "
+                f"| {s.get('recovery_success_rate_pct', 0) if s.get('recovery_success_rate_pct') is not None else 0:.1f} "
+                f"| {s.get('mean_recovery_time_s', 0) if s.get('mean_recovery_time_s') is not None else 0:.2f} "
                 f"| {s.get('episode_return', 0):.1f} |"
             )
         snap_table = '\n'.join(snap_rows)
         snapshot_section = f"""
 ## 학습 추이 (Checkpoint 스냅샷)
 
-| iter | Timeout% | 속도오차X | 토크포화% | Roll° | Pitch° | 전력(W) | Return |
-|------|----------|----------|----------|-------|--------|---------|--------|
+| iter | Timeout% | 속도오차X | 토크포화% | Roll° | Pitch° | 전력(W) | Recovery% | 회복시간(s) | Return |
+|------|----------|----------|----------|-------|--------|---------|-----------|-------------|--------|
 {snap_table}
 """
 
@@ -766,6 +769,52 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
 > 해석 기준: `제자리 회전`만 나쁘면 pure turn 학습/보행 패턴 문제, `큰 회전명령`만 나쁘면 yaw 명령 범위가 현재 토크/보폭 한계보다 큰 문제, `정지`가 나쁘면 stop drift 문제로 보면 됩니다.
         """
 
+
+    # --- Recovery assist 분석 ---
+    recovery_section = ""
+    if recovery_data:
+        sr = recovery_data.get('success_rate_pct')
+        ert = recovery_data.get('early_failure_rate_pct')
+        mrt = recovery_data.get('mean_recovery_time_s')
+        eligible = recovery_data.get('eligible_trials', 0)
+        total = recovery_data.get('total_trials', 0)
+        success_count = recovery_data.get('success_count', 0)
+        failure_count = recovery_data.get('failure_count', 0)
+
+        sr_str = f"{sr:.1f}%" if sr is not None else "N/A"
+        ert_str = f"{ert:.1f}%" if ert is not None else "N/A"
+        mrt_str = f"{mrt:.3f}s" if mrt is not None else "N/A"
+
+        if sr is None:
+            recovery_judge = "⚠️ eligible trial 없음"
+        elif sr >= 80 and (ert is not None and ert < 10):
+            recovery_judge = "✅ Recovery 안정적"
+        elif sr >= 50:
+            recovery_judge = "⚠️ 일부 회복 가능"
+        else:
+            recovery_judge = "❌ Recovery 부족"
+
+        recovery_section = f"""
+## Recovery Assist 분석
+
+| 지표 | 값 |
+|------|-----|
+| 판정 | {recovery_judge} |
+| Recovery 성공률 | {sr_str} |
+| 성공/실패 | {success_count} / {failure_count} |
+| Eligible trials | {eligible} / {total} |
+| 평균 회복 시간 | {mrt_str} |
+| 조기 실패율 | {ert_str} |
+| 평가 horizon | {recovery_data.get('horizon_s', 'N/A')} s |
+| 초기 tilt 기준 | {recovery_data.get('initial_tilt_threshold_deg', 'N/A')}° |
+| 안정 기준 | roll/pitch < {recovery_data.get('stable_threshold_deg', 'N/A')}°, height > {recovery_data.get('min_height_m', 'N/A')}m |
+| 평균 초기 tilt | {recovery_data.get('mean_initial_tilt_deg', 'N/A')}° |
+| 평균 초기 roll/pitch | {recovery_data.get('mean_initial_roll_deg', 'N/A')}° / {recovery_data.get('mean_initial_pitch_deg', 'N/A')}° |
+| 1초 후 평균 roll/pitch | {recovery_data.get('mean_end_roll_deg', 'N/A')}° / {recovery_data.get('mean_end_pitch_deg', 'N/A')}° |
+| 1초 내 최대 roll/pitch 평균 | {recovery_data.get('mean_max_roll_first_1s_deg', 'N/A')}° / {recovery_data.get('mean_max_pitch_first_1s_deg', 'N/A')}° |
+
+> 해석: `Recovery 성공률`은 초기 tilt가 기준 이상인 episode 중 1초 내 안정 자세로 복귀한 비율입니다. 조기 실패율이 높으면 reset 직후 바로 넘어지는 것이고, 평균 회복 시간이 짧을수록 위기 대응이 빠른 것입니다.
+"""
     # --- 항목 3: Gait 분석 ---
     gait_section = ""
     if gait_data:
@@ -934,6 +983,11 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
 | Action Rate | {metrics.get('mean_action_rate', 'N/A')} |
 | 평균 전력 | {metrics.get('mean_power', 'N/A')} W |
 | CoT | {metrics.get('cost_of_transport', 'N/A')} |
+| Recovery 성공률 | {metrics.get('recovery_success_rate_pct', 'N/A')}% |
+| Recovery eligible trials | {metrics.get('recovery_eligible_trials', 'N/A')} |
+| 평균 회복 시간 | {metrics.get('mean_recovery_time_s', 'N/A')} s |
+| Recovery 조기 실패율 | {metrics.get('recovery_early_failure_rate_pct', 'N/A')}% |
+{recovery_section}
 {command_mode_section}
 {snapshot_section}
 {curve_section}
@@ -1184,6 +1238,7 @@ def main():
         'purpose': purpose,
         'timestamp': datetime.now().isoformat(),
         'metrics': metrics,
+        'recovery': diag_data.get('recovery', {}) if diag_data else {},
     }
     with open(json_path, 'w', encoding='utf-8') as f:
         json.dump(sidecar, f, indent=2, ensure_ascii=False)

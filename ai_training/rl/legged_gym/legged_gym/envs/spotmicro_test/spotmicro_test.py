@@ -1,5 +1,5 @@
 from legged_gym.envs.base.legged_robot import LeggedRobot
-from isaacgym.torch_utils import torch_rand_float
+from isaacgym.torch_utils import torch_rand_float, quat_from_euler_xyz
 from isaacgym import gymtorch
 import torch
   
@@ -73,6 +73,26 @@ class SpotmicroTest(LeggedRobot):
                   f"substep 단위, dt={dt_ms:.1f}ms, "
                   f"range={delay_range[0]*dt_ms:.0f}~{delay_range[1]*dt_ms:.0f}ms")
                   
+        # ==== Recovery assist randomization ====
+        # Stage 1: 너무 세게 시작하지 말 것
+        self.recovery_roll_pitch_range = 10.0 * torch.pi / 180.0  # ±10 deg
+        self.recovery_yaw_range = 3.14159                        # yaw는 자유
+        self.recovery_lin_vel_xy_range = 0.10                    # ±0.10 m/s
+        self.recovery_lin_vel_z_range = 0.03                     # ±0.03 m/s
+        self.recovery_ang_vel_xy_range = 0.60                    # ±0.60 rad/s
+        self.recovery_ang_vel_z_range = 0.30                     # ±0.30 rad/s
+        
+        # ==== Recovery diagnostic용 reset 상태 기록 ====
+        self.last_reset_roll = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.float
+        )
+        self.last_reset_pitch = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.float
+        )
+        self.last_reset_tilt = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.float
+        )
+                  
 
 
     def step(self, actions):
@@ -124,66 +144,132 @@ class SpotmicroTest(LeggedRobot):
         self.gait_phase = (self.gait_phase + dt_phase * phase_scale) % 1.0
         super().post_physics_step()
               
+    def check_termination(self):
+        super().check_termination()
+
+        base_height = self.root_states[:, 2]
+        self.reset_buf |= (base_height < 0.155)
+        self.reset_buf |= (self.projected_gravity[:, 2] > 0.0)
+        
     def _reset_dofs(self, env_ids):
-        self.dof_pos[env_ids] = self.default_dof_pos * torch_rand_float(
-            0.5, 1.5, (len(env_ids), self.num_dof), device=self.device)
+        # recovery 학습 첫 단계에서는 관절은 기본 자세 근처에서 시작
+        joint_noise = torch_rand_float(
+            -0.05, 0.05,
+            (len(env_ids), self.num_dof),
+            device=self.device,
+        )
+        self.dof_pos[env_ids] = self.default_dof_pos + joint_noise
         self.dof_vel[env_ids] = 0.
 
         env_ids_int32 = env_ids.to(dtype=torch.int32)
         self.gym.set_dof_state_tensor_indexed(
             self.sim,
             gymtorch.unwrap_tensor(self.dof_state),
-            gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
+            gymtorch.unwrap_tensor(env_ids_int32),
+            len(env_ids_int32),
+        )
+
         if hasattr(self, 'pair_air_time'):
             self.pair_air_time[env_ids] = 0.
         if hasattr(self, 'max_feet_height'):
             self.max_feet_height[env_ids] = 0.
-        
+
+        # recovery에서는 phase mismatch도 학습해야 하므로 reset마다 랜덤화
+        self.gait_phase[env_ids] = torch_rand_float(
+            0.0, 1.0,
+            (len(env_ids), 1),
+            device=self.device,
+        )
+
         # Action Delay: 리셋 환경의 지연 재랜덤화
         if self.cfg.domain_rand.action_delay:
             delay_range = self.cfg.domain_rand.action_delay_range
             self.action_delay_substeps[env_ids] = torch.randint(
-                delay_range[0], delay_range[1] + 1,
-                (len(env_ids),), device=self.device)
+                delay_range[0],
+                delay_range[1] + 1,
+                (len(env_ids),),
+                device=self.device,
+            )
 
     
     def _reset_root_states(self, env_ids):
-        """base 속도를 0으로 리셋"""
+        """Recovery assist용 reset:
+        - base를 살짝 기울어진 상태로 시작
+        - roll/pitch angular velocity 부여
+        - 아직 완전히 넘어진 상태는 만들지 않음
+        """
+        num = len(env_ids)
+
         self.root_states[env_ids] = self.base_init_state
         self.root_states[env_ids, :3] += self.env_origins[env_ids]
-        self.root_states[env_ids, 7:13] = torch_rand_float(
-            -0.3, 0.3, (len(env_ids), 6), device=self.device)
+
+        # plane이면 필요 없지만, trimesh 확장 고려해서 z는 초기 높이 유지
+        self.root_states[env_ids, 2] = self.base_init_state[2] + self.env_origins[env_ids, 2]
+
+        # roll/pitch/yaw randomization
+        roll = torch_rand_float(
+            -self.recovery_roll_pitch_range,
+            self.recovery_roll_pitch_range,
+            (num, 1),
+            device=self.device,
+        ).squeeze(1)
+
+        pitch = torch_rand_float(
+            -self.recovery_roll_pitch_range,
+            self.recovery_roll_pitch_range,
+            (num, 1),
+            device=self.device,
+        ).squeeze(1)
+
+        yaw = torch_rand_float(
+            -self.recovery_yaw_range,
+            self.recovery_yaw_range,
+            (num, 1),
+            device=self.device,
+        ).squeeze(1)
+
+        self.root_states[env_ids, 3:7] = quat_from_euler_xyz(roll, pitch, yaw)
+        
+        # diagnostic에서 reset 직후의 실제 perturbation을 initial tilt로 쓰기 위해 저장
+        self.last_reset_roll[env_ids] = roll
+        self.last_reset_pitch[env_ids] = pitch
+        self.last_reset_tilt[env_ids] = torch.maximum(torch.abs(roll), torch.abs(pitch))
+
+        # base linear velocity
+        self.root_states[env_ids, 7:9] = torch_rand_float(
+            -self.recovery_lin_vel_xy_range,
+            self.recovery_lin_vel_xy_range,
+            (num, 2),
+            device=self.device,
+        )
+        self.root_states[env_ids, 9] = torch_rand_float(
+            -self.recovery_lin_vel_z_range,
+            self.recovery_lin_vel_z_range,
+            (num, 1),
+            device=self.device,
+        ).squeeze(1)
+
+        # base angular velocity: roll/pitch 방향을 중점적으로 교란
+        self.root_states[env_ids, 10:12] = torch_rand_float(
+            -self.recovery_ang_vel_xy_range,
+            self.recovery_ang_vel_xy_range,
+            (num, 2),
+            device=self.device,
+        )
+        self.root_states[env_ids, 12] = torch_rand_float(
+            -self.recovery_ang_vel_z_range,
+            self.recovery_ang_vel_z_range,
+            (num, 1),
+            device=self.device,
+        ).squeeze(1)
 
         env_ids_int32 = env_ids.to(dtype=torch.int32)
         self.gym.set_actor_root_state_tensor_indexed(
             self.sim,
             gymtorch.unwrap_tensor(self.root_states),
-            gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
-    
-
-    def check_termination(self):
-        super().check_termination()
-        base_height = self.root_states[:, 2]
-        self.reset_buf |= (base_height < 0.155)
-        self.reset_buf |= (self.projected_gravity[:, 2] > 0.0)
-    
-
-    def _resample_commands(self, env_ids):
-        self.commands[env_ids, 0] = torch_rand_float(
-            self.command_ranges["lin_vel_x"][0], self.command_ranges["lin_vel_x"][1],
-            (len(env_ids), 1), device=self.device).squeeze(1)
-        self.commands[env_ids, 1] = torch_rand_float(
-            self.command_ranges["lin_vel_y"][0], self.command_ranges["lin_vel_y"][1],
-            (len(env_ids), 1), device=self.device).squeeze(1)
-        if self.cfg.commands.heading_command:
-            self.commands[env_ids, 3] = torch_rand_float(
-                self.command_ranges["heading"][0], self.command_ranges["heading"][1],
-                (len(env_ids), 1), device=self.device).squeeze(1)
-        else:
-            self.commands[env_ids, 2] = torch_rand_float(
-                self.command_ranges["ang_vel_yaw"][0], self.command_ranges["ang_vel_yaw"][1],
-                (len(env_ids), 1), device=self.device).squeeze(1)
-        self.commands[env_ids, :2] *= (torch.norm(self.commands[env_ids, :2], dim=1) > 0.05).unsqueeze(1)
+            gymtorch.unwrap_tensor(env_ids_int32),
+            len(env_ids_int32),
+        )
         
     def compute_observations(self):
         ref_dof_pos = self._get_ik_target()
