@@ -49,12 +49,12 @@ class SpotmicroTestCfg(LeggedRobotCfg):
 
     class rewards(LeggedRobotCfg.rewards):
         class scales:
-            tracking_lin_vel = 1.5
-            tracking_ang_vel = 1.3 
+            tracking_lin_vel = 0.5
+            tracking_ang_vel = 0.5 
             termination = -10.0
             lin_vel_z = -2.0
-            ang_vel_xy = -0.4
-            orientation = -6.0
+            ang_vel_xy = -1.0
+            orientation = -10.0
             torques = -0.001
             dof_vel = -0.001
             dof_acc = -2.5e-7
@@ -66,8 +66,8 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             no_stuck_feet = 0.0
             symmetric_gait = 0.0
             feet_clearance = 0.0
-            trot_contact = 0.5
-            tracking_ik = 1.0
+            trot_contact = 0.2
+            tracking_ik = 0.8
             stand_still = -0.5
         soft_dof_pos_limit = 0.9
         base_height_target = 0.206
@@ -106,13 +106,13 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             heading = [-3.14, 3.14]
 
     class domain_rand(LeggedRobotCfg.domain_rand):
-        randomize_friction = True
+        randomize_friction = False
         friction_range = [0.4, 1.2]
-        randomize_base_mass = True
+        randomize_base_mass = False
         added_mass_range = [-0.2, 0.2]
         push_robots = True
-        push_interval_s = 15
-        max_push_vel_xy = 0.2
+        push_interval_s = 8
+        max_push_vel_xy = 0.1
         action_delay = True
         action_delay_range = [1, 2]
 
@@ -120,11 +120,15 @@ class SpotmicroTestCfg(LeggedRobotCfg):
 class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
 
     class algorithm(LeggedRobotCfgPPO.algorithm):
-        entropy_coef = 0.01
+        entropy_coef = 0.005
+        learning_rate = 1e-4
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v5_4_4_IK rollback'
+        run_name = 'spotmicro_v5_6_1_recovery_assist_push'
         experiment_name = 'spotmicro_test'
-        max_iterations = 1500
+        max_iterations = 500
         save_interval = 100
+        resume = True
+        load_run = "May15_16-23-12_spotmicro_v5_6_recovery_assist"
+        checkpoint = 1000
 

@@ -60,3 +60,5 @@
 | 056 | 05/13 | spotmicro_v5_4_4_IK rollback | V5.4.4: IK rollback 후 각 체크포인트마다 확인 | 98.5% | 0.049 | 14.2% | ✅ |
 | 057 | 05/13 | spotmicro_v5_4_4_IK rollback | V5.4.4.1: IK rollback 후 각 체크포인트마다 확인 - 7... | 95.5% | 0.048 | 14.6% | ✅ |
 | 058 | 05/13 | spotmicro_v5_4_4_IK rollback | V5.4.4.2: IK rollback 후 각 체크포인트마다 확인 - w... | 99.2% | 0.050 | 14.0% | ✅ |
+| 059 | 05/15 | spotmicro_v5_6_recovery_assist | V5.6: recovery test | 100.0% | 0.048 | 11.5% | ✅ |
+| 060 | 05/15 | spotmicro_v5_6_1_recovery_assist_push | V5.6.1: recovery test - add push | 93.1% | 0.056 | 8.4% | ✅ |
