@@ -7,13 +7,13 @@ path_follower_node:
     topic_pose: "/localization/pose"
 
     # 최대 전진 속도 (m/s) - 시뮬 기준
-    max_linear_x_mps: 0.40
+    max_linear_x_mps: 0.30  # 0.40
 
     # 최소 전진 속도 (m/s) - 너무 느리면 못 걸으니까
     min_linear_x_mps: 0.05
 
     # 최대 각속도 (rad/s) - 시뮬 기준
-    max_angular_z_radps: 0.40
+    max_angular_z_radps: 0.30 # 0.40
 
     # heading error → 각속도 gain
     # w = k_yaw * heading_error

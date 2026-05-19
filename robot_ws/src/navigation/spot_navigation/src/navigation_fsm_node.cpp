@@ -24,6 +24,7 @@ NavigationFsmNode::NavigationFsmNode(const rclcpp::NodeOptions & options)
   pose_timeout_sec_         = declare_parameter<double>("pose_timeout_sec", 0.5);
   perception_timeout_sec_   = declare_parameter<double>("perception_timeout_sec", 0.5);
   emergency_stop_distance_m_= declare_parameter<double>("emergency_stop_distance_m", 0.30);
+  front_azimuth_limit_rad_  = declare_parameter<double>("front_azimuth_limit_rad", 0.5236);  // 30도
   timer_period_sec_         = declare_parameter<double>("timer_period_sec", 0.1);  // 10Hz
 
   // ============================================================
@@ -136,11 +137,13 @@ uint8_t NavigationFsmNode::determine_nav_state()
 
   // ----------------------------------------------------------
   // 2. NAV_PERCEPTION_STALE
+  // 비활성화 : obstacle_model/free_space_model이 장애물 없을 때 미발행되는 구조라
+  // lidar 동작 여부와 무관하게 stale이 뜨는 문제 → 향후 별도 토픽으로 대체 필요
   // ----------------------------------------------------------
-  const double perception_age = (now_time - last_perception_time_).seconds();
-  if (perception_age > perception_timeout_sec_) {
-    return NS::NAV_PERCEPTION_STALE;
-  }
+  // const double perception_age = (now_time - last_perception_time_).seconds();
+  // if (perception_age > perception_timeout_sec_) {
+  //   return NS::NAV_PERCEPTION_STALE;
+  // }
 
   // ----------------------------------------------------------
   // 3. NAV_WAITING_FOR_PATH
@@ -152,10 +155,13 @@ uint8_t NavigationFsmNode::determine_nav_state()
   // ----------------------------------------------------------
   // 4. NAV_EMERGENCY_STOP
   //    전방 장애물이 emergency_stop_distance_m 이내
+  //    azimuth_angle_rad 기준으로 front_azimuth_limit_rad 이내인 경우만 유효
   // ----------------------------------------------------------
   if (latest_obstacle_ && latest_obstacle_->front.valid) {
+    const float azimuth   = latest_obstacle_->front.azimuth_angle_rad;
     const float front_dist = latest_obstacle_->front.nearest_distance_xy;
-    if (front_dist < static_cast<float>(emergency_stop_distance_m_)) {
+    if (std::abs(azimuth) <= static_cast<float>(front_azimuth_limit_rad_) &&
+        front_dist < static_cast<float>(emergency_stop_distance_m_)) {
       return NS::NAV_EMERGENCY_STOP;
     }
   }
@@ -172,7 +178,10 @@ uint8_t NavigationFsmNode::determine_nav_state()
   // ----------------------------------------------------------
   float front_clearance = 9999.0f;
   if (latest_obstacle_ && latest_obstacle_->front.valid) {
-    front_clearance = latest_obstacle_->front.nearest_distance_xy;
+    const float azimuth = latest_obstacle_->front.azimuth_angle_rad;
+    if (std::abs(azimuth) <= static_cast<float>(front_azimuth_limit_rad_)) {
+      front_clearance = latest_obstacle_->front.nearest_distance_xy;
+    }
   }
   update_front_blocked(front_clearance);
 
