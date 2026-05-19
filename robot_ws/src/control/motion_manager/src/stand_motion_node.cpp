@@ -19,6 +19,7 @@ constexpr std::size_t NUM_JOINTS = 12;
 // 0: DISABLE
 // 1: STAND
 // 2: RL
+// 5: CLASSIC
 constexpr uint8_t MODE_STAND = 1;
 
 std::array<float, NUM_JOINTS> toPoseArray(

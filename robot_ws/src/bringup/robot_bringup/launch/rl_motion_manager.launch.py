@@ -9,6 +9,7 @@ import os
 
 def generate_launch_description():
     rl_share = get_package_share_directory('rl_locomotion')
+    classic_share = get_package_share_directory('classic_control')
     actuator_share = get_package_share_directory('actuator_bridge')
     motion_share = get_package_share_directory('motion_manager')
 
@@ -21,7 +22,7 @@ def generate_launch_description():
     policy_config = os.path.join(
         rl_share,
         'config',
-        'policy_exp043.yaml'
+        'policy_v5_4_4.yaml'
     )
 
     actuator_param = os.path.join(
@@ -36,6 +37,12 @@ def generate_launch_description():
         'motion_manager.param.yaml'
     )
 
+    classic_param = os.path.join(
+        classic_share,
+        'config',
+        'classic_control.yaml'
+    )
+
     common_config_arg = DeclareLaunchArgument(
         'common_config',
         default_value=common_config,
@@ -46,6 +53,12 @@ def generate_launch_description():
         'policy_config',
         default_value=policy_config,
         description='Path to model/profile-specific RL policy YAML',
+    )
+
+    classic_config_arg = DeclareLaunchArgument(
+        'classic_config',
+        default_value=classic_param,
+        description='Path to classic control YAML',
     )
 
     rl_locomotion_launch = IncludeLaunchDescription(
@@ -64,6 +77,14 @@ def generate_launch_description():
         name='stand_motion_node',
         output='screen',
         parameters=[motion_param],
+    )
+
+    classic_control_node = Node(
+        package='classic_control',
+        executable='classic_control_node',
+        name='classic_control_node',
+        output='screen',
+        parameters=[LaunchConfiguration('classic_config')],
     )
 
     joint_target_mux_node = Node(
@@ -85,8 +106,10 @@ def generate_launch_description():
     return LaunchDescription([
         common_config_arg,
         policy_config_arg,
+        classic_config_arg,
         rl_locomotion_launch,
         stand_motion_node,
+        classic_control_node,
         joint_target_mux_node,
         actuator_bridge_node,
     ])

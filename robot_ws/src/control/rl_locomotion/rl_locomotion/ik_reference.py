@@ -3,6 +3,8 @@
 import math
 from typing import List, Optional, Sequence
 
+from locomotion_common import SharedTrotReference
+
 
 def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
@@ -249,6 +251,78 @@ class LateralTrotIkReference(Exp043TrotIkReference):
         ]
 
 
+class SharedV1TrotIkReference:
+    """
+    Shared reference profile for future RL retraining.
+
+    The same generator is used by classic_control directly. RL uses it as
+    ik_ref and adds policy residuals.
+    """
+
+    def __init__(
+        self,
+        default_joint_angles: List[float],
+        gait_period: float = 1.0,
+        duty_factor: float = 0.55,
+        body_height: float = 0.206,
+        blend_cmd_norm: float = 0.1,
+        leg_origin_x: Optional[Sequence[float]] = None,
+        leg_origin_y: Optional[Sequence[float]] = None,
+        shoulder_sign: Optional[Sequence[float]] = None,
+        max_stride_x: float = 0.07,
+        max_stride_y: float = 0.03,
+        shoulder_y_gain: float = 1.0,
+        shoulder_ref_limit: float = 0.16,
+        shared_step_height: Optional[Sequence[float]] = None,
+        shared_default_foot_x: Optional[Sequence[float]] = None,
+        shared_default_foot_y: Optional[Sequence[float]] = None,
+        shared_phase_offsets: Optional[Sequence[float]] = None,
+        upper_link_x: float = 0.010,
+        upper_link_z: float = 0.120,
+        lower_link: float = 0.115,
+    ):
+        if len(default_joint_angles) != 12:
+            raise ValueError("default_joint_angles must have 12 elements")
+
+        self.default_joint_angles = list(default_joint_angles)
+        self.blend_cmd_norm = float(blend_cmd_norm)
+        self.reference = SharedTrotReference(
+            gait_period=gait_period,
+            duty_factor=duty_factor,
+            body_height=body_height,
+            step_height=shared_step_height or [0.013, 0.013, 0.016, 0.016],
+            default_foot_x=shared_default_foot_x or [0.0, 0.0, -0.015, -0.015],
+            default_foot_y=shared_default_foot_y or [0.0, 0.0, 0.0, 0.0],
+            leg_origin_x=leg_origin_x or [0.093, 0.093, -0.093, -0.093],
+            leg_origin_y=leg_origin_y or [0.036, -0.036, 0.036, -0.036],
+            shoulder_sign=shoulder_sign or [1.0, -1.0, 1.0, -1.0],
+            phase_offsets=shared_phase_offsets or [0.0, 0.5, 0.5, 0.0],
+            max_stride_x=max_stride_x,
+            max_stride_y=max_stride_y,
+            upper_link_x=upper_link_x,
+            upper_link_z=upper_link_z,
+            lower_link=lower_link,
+            shoulder_y_gain=shoulder_y_gain,
+            shoulder_limit=shoulder_ref_limit,
+        )
+
+    def get_reference(
+        self,
+        phase: float,
+        cmd_vx: float,
+        cmd_vy: float,
+        cmd_wz: float,
+    ) -> List[float]:
+        ref = self.reference.get_reference(phase, cmd_vx, cmd_vy, cmd_wz)
+        cmd_norm = math.sqrt(cmd_vx * cmd_vx + cmd_vy * cmd_vy + cmd_wz * cmd_wz)
+        blend = clamp(cmd_norm / self.blend_cmd_norm, 0.0, 1.0)
+
+        return [
+            blend * ref[i] + (1.0 - blend) * self.default_joint_angles[i]
+            for i in range(12)
+        ]
+
+
 # 기존 import 호환성 유지
 TrotIkReference = Exp043TrotIkReference
 
@@ -269,6 +343,13 @@ def make_ik_reference(
     max_stride_y: float = 0.03,
     shoulder_y_gain: float = 1.0,
     shoulder_ref_limit: float = 0.1,
+    shared_step_height: Optional[Sequence[float]] = None,
+    shared_default_foot_x: Optional[Sequence[float]] = None,
+    shared_default_foot_y: Optional[Sequence[float]] = None,
+    shared_phase_offsets: Optional[Sequence[float]] = None,
+    upper_link_x: float = 0.010,
+    upper_link_z: float = 0.120,
+    lower_link: float = 0.115,
 ):
     p = profile.strip().lower()
 
@@ -299,6 +380,29 @@ def make_ik_reference(
             max_stride_y=max_stride_y,
             shoulder_y_gain=shoulder_y_gain,
             shoulder_ref_limit=shoulder_ref_limit,
+        )
+
+    if p in ("shared", "shared_v1", "common"):
+        return SharedV1TrotIkReference(
+            default_joint_angles=default_joint_angles,
+            gait_period=gait_period,
+            duty_factor=duty_factor,
+            body_height=body_height,
+            blend_cmd_norm=blend_cmd_norm,
+            leg_origin_x=leg_origin_x,
+            leg_origin_y=leg_origin_y,
+            shoulder_sign=shoulder_sign,
+            max_stride_x=max_stride_x,
+            max_stride_y=max_stride_y,
+            shoulder_y_gain=shoulder_y_gain,
+            shoulder_ref_limit=shoulder_ref_limit,
+            shared_step_height=shared_step_height,
+            shared_default_foot_x=shared_default_foot_x,
+            shared_default_foot_y=shared_default_foot_y,
+            shared_phase_offsets=shared_phase_offsets,
+            upper_link_x=upper_link_x,
+            upper_link_z=upper_link_z,
+            lower_link=lower_link,
         )
 
     raise ValueError(f"unknown ik_profile: {profile}")

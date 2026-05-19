@@ -7,6 +7,7 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(robot_interfaces REQUIRED)
 find_package(Threads REQUIRED)
@@ -47,6 +48,7 @@ target_link_libraries(actuator_bridge_node
 )
 ament_target_dependencies(actuator_bridge_node
   rclcpp
+  geometry_msgs
   sensor_msgs
   robot_interfaces
 )

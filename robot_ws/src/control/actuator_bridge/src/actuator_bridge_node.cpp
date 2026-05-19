@@ -1,11 +1,13 @@
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
+#include "geometry_msgs/msg/twist.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 
@@ -46,6 +48,7 @@ constexpr uint8_t JT_MODE_STAND = 1;
 constexpr uint8_t JT_MODE_RL = 2;
 constexpr uint8_t JT_MODE_CROUCH = 3;
 constexpr uint8_t JT_MODE_E_STOP = 4;
+constexpr uint8_t JT_MODE_CLASSIC = 5;
 
 // Wire mode: STM firmware가 실제로 이해하는 최소 mode
 constexpr uint8_t WIRE_MODE_DISABLE = 0;
@@ -65,6 +68,7 @@ uint8_t mapRosModeToWireMode(uint8_t ros_mode, uint8_t ros_flags)
     case JT_MODE_STAND:
     case JT_MODE_RL:
     case JT_MODE_CROUCH:
+    case JT_MODE_CLASSIC:
       return WIRE_MODE_OPERATE;
 
     case JT_MODE_DISABLE:
@@ -88,6 +92,57 @@ uint8_t mapRosModeToWireFlags(uint8_t ros_mode, uint8_t ros_flags)
 rclcpp::QoS control_qos()
 {
   return rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
+}
+
+double applyDeadband(double value, double deadband)
+{
+  if (!std::isfinite(value)) {
+    return value;
+  }
+
+  return std::fabs(value) <= deadband ? 0.0 : value;
+}
+
+uint8_t classifyMotionStateFromTwist(
+  const geometry_msgs::msg::Twist & twist,
+  double deadband)
+{
+  const double vx = applyDeadband(twist.linear.x, deadband);
+  const double vy = applyDeadband(twist.linear.y, deadband);
+  const double wz = applyDeadband(twist.angular.z, deadband);
+
+  if (!std::isfinite(vx) || !std::isfinite(vy) || !std::isfinite(wz)) {
+    return robot_interfaces::msg::StmMotion::UNKNOWN;
+  }
+
+  const double abs_vx = std::fabs(vx);
+  const double abs_vy = std::fabs(vy);
+  const double abs_wz = std::fabs(wz);
+
+  if (abs_vx == 0.0 && abs_vy == 0.0 && abs_wz == 0.0) {
+    return robot_interfaces::msg::StmMotion::STOP;
+  }
+
+  if (abs_vx != 0.0 && abs_wz == 0.0) {
+    return vx > 0.0 ?
+           robot_interfaces::msg::StmMotion::WALK_FORWARD :
+           robot_interfaces::msg::StmMotion::WALK_BACKWARD;
+  }
+
+  if (abs_wz != 0.0 && abs_vx == 0.0) {
+    return wz > 0.0 ?
+           robot_interfaces::msg::StmMotion::TURN_LEFT :
+           robot_interfaces::msg::StmMotion::TURN_RIGHT;
+  }
+
+  if (abs_wz != 0.0 && abs_vx != 0.0) {
+    return wz > 0.0 ?
+           robot_interfaces::msg::StmMotion::WALK_FORWARD_TURN_LEFT :
+           robot_interfaces::msg::StmMotion::WALK_FORWARD_TURN_RIGHT;
+  }
+  return vy > 0.0 ?
+         robot_interfaces::msg::StmMotion::STRAFE_LEFT :
+         robot_interfaces::msg::StmMotion::STRAFE_RIGHT;
 }
 
 }  // namespace
@@ -137,11 +192,18 @@ public:
 
     target_topic_ = this->declare_parameter(
       "target_topic", "/control/selected/joint_target");
+    cmd_vel_topic_ = this->declare_parameter(
+      "cmd_vel_topic", "/control/cmd_vel/spot_01");
+    motion_state_deadband_ = this->declare_parameter("motion_state_deadband", 0.05);
 
     target_sub_ = this->create_subscription<robot_interfaces::msg::JointTarget>(
       target_topic_,
       control_qos(),
       std::bind(&ActuatorBridgeNode::targetCallback, this, std::placeholders::_1));
+    cmd_vel_sub_ = this->create_subscription<geometry_msgs::msg::Twist>(
+      cmd_vel_topic_,
+      control_qos(),
+      std::bind(&ActuatorBridgeNode::cmdVelCallback, this, std::placeholders::_1));
 
     joint_feedback_pub_ = this->create_publisher<robot_interfaces::msg::JointFeedback>(
       "/control/actuator/joint_feedback", control_qos());
@@ -182,12 +244,23 @@ public:
 
     RCLCPP_INFO(
       this->get_logger(),
-      "actuator_bridge_node started with UART transport: rate=%.1f Hz, target_topic=%s",
+      "actuator_bridge_node started with UART transport: rate=%.1f Hz, target_topic=%s, cmd_vel_topic=%s, motion_state_deadband=%.3f",
       control_rate_hz_,
-      target_topic_.c_str());
+      target_topic_.c_str(),
+      cmd_vel_topic_.c_str(),
+      motion_state_deadband_);
   }
 
 private:
+  void cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg)
+  {
+    const uint8_t motion_state =
+      classifyMotionStateFromTwist(*msg, motion_state_deadband_);
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    latest_motion_state_ = motion_state;
+  }
+
   void targetCallback(const robot_interfaces::msg::JointTarget::SharedPtr msg)
   {
     if (msg->target_rad.size() != actuator_bridge::NUM_JOINTS ||
@@ -293,6 +366,7 @@ private:
       command.flags = 0U;
       command.gait_phase = latest_gait_phase_;
       command.gait_cycle_count = latest_gait_cycle_count_;
+      command.motion_state = latest_motion_state_;
 
       for (std::size_t i = 0; i < actuator_bridge::NUM_JOINTS; ++i) {
         command.target_rad[i] = default_target_rad_[i];
@@ -304,6 +378,7 @@ private:
       command.flags = mapRosModeToWireFlags(latest_mode_, latest_flags_);
       command.gait_phase = latest_gait_phase_;
       command.gait_cycle_count = latest_gait_cycle_count_;
+      command.motion_state = latest_motion_state_;
 
       for (std::size_t i = 0; i < actuator_bridge::NUM_JOINTS; ++i) {
         command.target_rad[i] = latest_target_rad_[i];
@@ -415,6 +490,26 @@ private:
       }
     }
 
+    if (msg.status != STATUS_OK) {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 1000,
+        "actuator status not OK: ros_status=%u raw_stm_status=0x%02x "
+        "fault_code=%u stale=%d torque_on=%d imu_ok=%d servos_ok=%d cmd_fresh=%d "
+        "in_safe_state=%d calibrating=%d feedback_age_ms=%.3f seq_echo=%u",
+        msg.status,
+        feedback.status,
+        msg.fault_code,
+        stale ? 1 : 0,
+        torque_on ? 1 : 0,
+        imu_ok ? 1 : 0,
+        servos_ok ? 1 : 0,
+        cmd_fresh ? 1 : 0,
+        in_safe_state ? 1 : 0,
+        calibrating ? 1 : 0,
+        feedback_age_ms,
+        msg.seq_echo);
+    }
+
     msg.bus_voltage = feedback.bus_voltage;
     msg.loop_time_ms = loop_time_ms;
 
@@ -498,6 +593,7 @@ private:
   int uart_baudrate_{921600};
   double feedback_timeout_ms_{100.0};
   int max_rx_buffer_size_{4096};
+  double motion_state_deadband_{0.05};
 
   actuator_bridge::UartTransport uart_;
   bool link_open_failed_{false};
@@ -511,6 +607,7 @@ private:
   rclcpp::Time last_target_time_;
 
   std::string target_topic_{"/control/selected/joint_target"};
+  std::string cmd_vel_topic_{"/control/cmd_vel/spot_01"};
 
   std::array<float, actuator_bridge::NUM_JOINTS> default_target_rad_{};
   std::array<float, actuator_bridge::NUM_JOINTS> default_max_delta_rad_{};
@@ -519,12 +616,14 @@ private:
 
   float latest_gait_phase_{0.0F};
   uint32_t latest_gait_cycle_count_{0};
+  uint8_t latest_motion_state_{robot_interfaces::msg::StmMotion::STOP};
 
   uint32_t packet_drop_count_{0};
   uint32_t crc_error_count_{0};
   uint32_t missed_deadline_count_{0};
 
   rclcpp::Subscription<robot_interfaces::msg::JointTarget>::SharedPtr target_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
   rclcpp::Publisher<robot_interfaces::msg::JointFeedback>::SharedPtr joint_feedback_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;
   rclcpp::Publisher<robot_interfaces::msg::RobotStatus>::SharedPtr status_pub_;

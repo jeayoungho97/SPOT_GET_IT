@@ -38,7 +38,7 @@ class RlLocomotionNode(Node):
     Final RL locomotion node.
 
     Runtime flow:
-      /cmd_vel
+      /control/cmd_vel/spot_01
       /control/actuator/joint_feedback
       /control/actuator/imu
       /control/actuator/status
@@ -86,6 +86,13 @@ class RlLocomotionNode(Node):
         self.declare_parameter("max_stride_y", 0.03)
         self.declare_parameter("shoulder_y_gain", 1.0)
         self.declare_parameter("shoulder_ref_limit", 0.1)
+        self.declare_parameter("shared_step_height", [0.013, 0.013, 0.016, 0.016])
+        self.declare_parameter("shared_default_foot_x", [-0.010, -0.010, -0.010, -0.010])
+        self.declare_parameter("shared_default_foot_y", [0.0, 0.0, 0.0, 0.0])
+        self.declare_parameter("shared_phase_offsets", [0.0, 0.5, 0.5, 0.0])
+        self.declare_parameter("upper_link_x", 0.0)
+        self.declare_parameter("upper_link_z", 0.105)
+        self.declare_parameter("lower_link", 0.130)
 
         self.declare_parameter("leg_origin_x", [0.093, 0.093, -0.093, -0.093])
         self.declare_parameter("leg_origin_y", [0.036, -0.036, 0.036, -0.036])
@@ -179,6 +186,21 @@ class RlLocomotionNode(Node):
         self.max_stride_y = float(self.get_parameter("max_stride_y").value)
         self.shoulder_y_gain = float(self.get_parameter("shoulder_y_gain").value)
         self.shoulder_ref_limit = float(self.get_parameter("shoulder_ref_limit").value)
+        self.shared_step_height = [
+            float(x) for x in self.get_parameter("shared_step_height").value
+        ]
+        self.shared_default_foot_x = [
+            float(x) for x in self.get_parameter("shared_default_foot_x").value
+        ]
+        self.shared_default_foot_y = [
+            float(x) for x in self.get_parameter("shared_default_foot_y").value
+        ]
+        self.shared_phase_offsets = [
+            float(x) for x in self.get_parameter("shared_phase_offsets").value
+        ]
+        self.upper_link_x = float(self.get_parameter("upper_link_x").value)
+        self.upper_link_z = float(self.get_parameter("upper_link_z").value)
+        self.lower_link = float(self.get_parameter("lower_link").value)
 
         self.leg_origin_x = [float(x) for x in self.get_parameter("leg_origin_x").value]
         self.leg_origin_y = [float(x) for x in self.get_parameter("leg_origin_y").value]
@@ -230,6 +252,13 @@ class RlLocomotionNode(Node):
             max_stride_y=self.max_stride_y,
             shoulder_y_gain=self.shoulder_y_gain,
             shoulder_ref_limit=self.shoulder_ref_limit,
+            shared_step_height=self.shared_step_height,
+            shared_default_foot_x=self.shared_default_foot_x,
+            shared_default_foot_y=self.shared_default_foot_y,
+            shared_phase_offsets=self.shared_phase_offsets,
+            upper_link_x=self.upper_link_x,
+            upper_link_z=self.upper_link_z,
+            lower_link=self.lower_link,
         )
 
         self.obs_builder = ObsBuilder(obs_dim=self.obs_dim)
@@ -284,7 +313,7 @@ class RlLocomotionNode(Node):
         # ---------------- ROS IO ----------------
         self.cmd_sub = self.create_subscription(
             Twist,
-            "/cmd_vel",
+            "/control/cmd_vel/spot_01",
             self.cmd_vel_callback,
             self.control_qos,
         )
@@ -382,7 +411,11 @@ class RlLocomotionNode(Node):
         if self.safe_mode not in valid_safe_modes:
             raise RuntimeError(f"invalid safe_mode: {self.safe_mode}")
 
-        valid_ik_profiles = {"exp043", "legacy", "old", "lateral", "lateral_ik", "spotmicro_test"}
+        valid_ik_profiles = {
+            "exp043", "legacy", "old",
+            "lateral", "lateral_ik", "spotmicro_test",
+            "shared", "shared_v1", "common",
+        }
         if self.ik_profile not in valid_ik_profiles:
             raise RuntimeError(f"invalid ik_profile: {self.ik_profile}")
 
@@ -390,6 +423,10 @@ class RlLocomotionNode(Node):
             ("leg_origin_x", self.leg_origin_x),
             ("leg_origin_y", self.leg_origin_y),
             ("shoulder_sign", self.shoulder_sign),
+            ("shared_step_height", self.shared_step_height),
+            ("shared_default_foot_x", self.shared_default_foot_x),
+            ("shared_default_foot_y", self.shared_default_foot_y),
+            ("shared_phase_offsets", self.shared_phase_offsets),
         ]:
             if len(arr) != 4:
                 raise RuntimeError(f"{name} must have 4 elements, got {len(arr)}")
@@ -400,6 +437,8 @@ class RlLocomotionNode(Node):
             raise RuntimeError("max_stride_y must be non-negative")
         if self.shoulder_ref_limit < 0.0:
             raise RuntimeError("shoulder_ref_limit must be non-negative")
+        if self.upper_link_z <= 0.0 or self.lower_link <= 0.0:
+            raise RuntimeError("shared IK link lengths must be positive")
 
     def resolve_model_path(self, model_path: str) -> str:
         if not model_path:

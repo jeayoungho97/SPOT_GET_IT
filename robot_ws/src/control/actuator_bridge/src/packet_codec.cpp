@@ -155,6 +155,7 @@ std::vector<uint8_t> encode_command_packet(const CommandPacket & packet)
   write_float_array(out, packet.max_delta_rad);
   write_f32_le(out, packet.gait_phase);
   write_u32_le(out, packet.gait_cycle_count);
+  write_u8(out, packet.motion_state);
 
   const uint16_t crc = crc16_ccitt_false(out.data(), out.size());
   write_u16_le(out, crc);
@@ -198,6 +199,7 @@ DecodeResult decode_command_packet(
     read_float_array(bytes, offset, packet.max_delta_rad);
     packet.gait_phase = read_f32_le(bytes, offset);
     packet.gait_cycle_count = read_u32_le(bytes, offset);
+    packet.motion_state = read_u8(bytes, offset);
 
     return DecodeResult::OK;
   } catch (...) {

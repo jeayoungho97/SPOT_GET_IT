@@ -20,7 +20,7 @@ def generate_launch_description():
     default_policy_config = PathJoinSubstitution([
         pkg_share,
         "config",
-        "policy_exp043.yaml",
+        "policy_v5_4_4.yaml",
     ])
 
     common_config_arg = DeclareLaunchArgument(

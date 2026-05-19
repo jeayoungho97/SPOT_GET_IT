@@ -1,0 +1,70 @@
+classic_control_node:
+  ros__parameters:
+    rate_hz: 50.0
+    robot_id: "spot_01"
+
+    # Final navigation command from safety_supervisor_node.
+    cmd_vel_topic: "/control/cmd_vel/spot_01"
+    target_topic: "/control/classic_control/joint_target"
+    feedback_topic: "/control/actuator/joint_feedback"
+
+    command_timeout_sec: 0.35
+    linear_deadband_mps: 0.01
+    lateral_deadband_mps: 0.01
+    angular_deadband_radps: 0.03
+
+    vx_min_mps: -0.05
+    vx_max_mps: 0.20
+    vy_min_mps: -0.05
+    vy_max_mps: 0.05
+    wz_min_radps: -0.35
+    wz_max_radps: 0.35
+    max_linear_accel_mps2: 0.25
+    max_angular_accel_radps2: 0.7
+
+    # Shared classic-compatible IK model. Keep this as the hardware baseline
+    # for both CLASSIC and future RL retraining unless measurements say otherwise.
+    upper_link_x_mm: 0.0
+    upper_link_z_mm: 105.0
+    lower_link_mm: 130.0
+    body_height_mm: 170.0
+    body_height_mm_per_leg: [170.0, 170.0, 170.0, 170.0]
+    default_foot_x_mm: -10.0
+    default_foot_x_mm_per_leg: [-10.0, -10.0, -10.0, -10.0]
+    default_foot_y_mm: 0.0
+    default_foot_y_mm_per_leg: [0.0, 0.0, 0.0, 0.0]
+
+    # Hip/shoulder origins in body frame, meters. Order: FL, FR, RL, RR.
+    leg_origin_x_m: [0.093, 0.093, -0.093, -0.093]
+    leg_origin_y_m: [0.036, -0.036, 0.036, -0.036]
+    shoulder_sign: [1.0, -1.0, 1.0, -1.0]
+    shoulder_y_gain: 1.0
+    shoulder_limit_rad: 0.16
+    phase_offsets: [0.0, 0.5, 0.5, 0.0]
+
+    gait_period_sec: 1.2
+    duty_factor: 0.58
+    lift_z_mm: 13.0
+    lift_z_mm_per_leg: [13.0, 13.0, 16.0, 16.0]
+    max_stride_x_mm: 70.0
+    max_stride_y_mm: 35.0
+
+    stand_dwell_sec: 1.0
+    min_transition_sec: 1.0
+    max_transition_sec: 3.0
+    transition_sec_per_rad: 1.0
+
+    max_delta_smooth_rad: 10.0
+    max_delta_walk_rad: 0.06
+
+    joint_min_rad:
+      [-0.548, -2.666, -0.100,
+       -0.548, -2.666, -0.100,
+       -0.548, -2.666, -0.100,
+       -0.548, -2.666, -0.100]
+
+    joint_max_rad:
+      [0.548, 1.548, 2.590,
+       0.548, 1.548, 2.590,
+       0.548, 1.548, 2.590,
+       0.548, 1.548, 2.590]
