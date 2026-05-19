@@ -62,3 +62,5 @@
 | 058 | 05/13 | spotmicro_v5_4_4_IK rollback | V5.4.4.2: IK rollback 후 각 체크포인트마다 확인 - w... | 99.2% | 0.050 | 14.0% | ✅ |
 | 059 | 05/15 | spotmicro_v5_6_recovery_assist | V5.6: recovery test | 100.0% | 0.048 | 11.5% | ✅ |
 | 060 | 05/15 | spotmicro_v5_6_1_recovery_assist_push | V5.6.1: recovery test - add push | 93.1% | 0.056 | 8.4% | ✅ |
+| 061 | 05/19 | spotmicro_v6_0_shared_ik_retrain | v6.0: 새로운 IK로 학습 | 97.5% | 0.025 | 2.1% | ✅ |
+| 062 | 05/19 | spotmicro_v6_0_1_shared_ik_cmd_deadband | v6.0.1: deadband 조정으로 걷는지 확인 | 93.4% | 0.053 | 2.0% | ✅ |

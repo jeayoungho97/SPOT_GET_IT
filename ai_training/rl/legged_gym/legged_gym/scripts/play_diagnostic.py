@@ -54,6 +54,9 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
  
     # --- Checkpoint 로드 (항목 1-A) ---
     train_cfg.runner.resume = True
+    if not checkpoint_path and train_cfg.runner.load_run in ("", None):
+        train_cfg.runner.load_run = -1
+        train_cfg.runner.checkpoint = -1
     if checkpoint_path:
         # checkpoint 경로에서 run 디렉토리와 모델 번호 추출
         ck_dir = os.path.dirname(checkpoint_path)
@@ -363,6 +366,9 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
  
         data['cmd_vel_x'].append(np.mean(cmd_x))
         data['actual_vel_x'].append(np.mean(vel_x))
+        data['cmd_abs_vel_x'].append(np.mean(np.abs(cmd_x)))
+        data['cmd_forward_pct'].append(np.mean(cmd_x > 0.02) * 100.0)
+        data['cmd_zero_lin_pct'].append(np.mean(np.sqrt(cmd_x ** 2 + cmd_y ** 2) < 0.02) * 100.0)
  
         # --- 각속도 추종 ---
         cmd_yaw = env.commands[:, 2].cpu().numpy()
@@ -567,6 +573,9 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
     mean_power = np.mean(power_list)
     std_power = np.std(power_list)
     mean_vel = np.mean(np.abs(data['actual_vel_x']))
+    mean_cmd_abs_x = np.mean(data['cmd_abs_vel_x'])
+    mean_cmd_forward_pct = np.mean(data['cmd_forward_pct'])
+    mean_cmd_zero_lin_pct = np.mean(data['cmd_zero_lin_pct'])
     robot_mass = 2.6
     cot = mean_power / (robot_mass * 9.81 * mean_vel) if mean_vel > 0.01 else 0.0
 
@@ -712,6 +721,11 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
     print(f"{'='*60}")
     print(f"  평균 X속도 오차: {mean_err_x:.4f} m/s")
     print(f"  평균 Y속도 오차: {mean_err_y:.4f} m/s")
+    print(f"  평균 |cmd_x|: {mean_cmd_abs_x:.4f} m/s")
+    print(f"  전진 command 비율(cmd_x > 0.02): {mean_cmd_forward_pct:.1f}%")
+    print(f"  선속도 zero command 비율(|cmd_xy| < 0.02): {mean_cmd_zero_lin_pct:.1f}%")
+    if mean_cmd_abs_x < 0.02 and env.cfg.commands.ranges.lin_vel_x[1] > 0.05:
+        print(f"  → ⚠ 전진 command가 거의 없습니다. command deadband/sampling 설정 확인 필요.")
     if mean_err_x < 0.03:
         print(f"  → ✓ X속도 추종 우수")
     elif mean_err_x < 0.08:
@@ -1182,6 +1196,9 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
             'early_death_pct': float(early_death_rate),
             'vel_error_x': float(mean_err_x),
             'vel_error_y': float(mean_err_y),
+            'mean_cmd_abs_x': float(mean_cmd_abs_x),
+            'mean_cmd_forward_pct': float(mean_cmd_forward_pct),
+            'mean_cmd_zero_lin_pct': float(mean_cmd_zero_lin_pct),
             'ang_vel_error': float(mean_ang_err),
             'torque_saturation_pct': float(overall_sat),
             'mean_height': float(mean_height),
@@ -1218,6 +1235,7 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
             'lin_vel_x': list(env.cfg.commands.ranges.lin_vel_x),
             'lin_vel_y': list(env.cfg.commands.ranges.lin_vel_y),
             'ang_vel_yaw': list(env.cfg.commands.ranges.ang_vel_yaw),
+            'command_deadband': float(getattr(env.cfg.commands, 'command_deadband', 0.2)),
         },
         'reward_scales': {},
         'torque_per_joint': {},

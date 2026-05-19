@@ -1,8 +1,29 @@
 from legged_gym.envs.base.legged_robot import LeggedRobot
 from isaacgym.torch_utils import torch_rand_float, quat_from_euler_xyz
 from isaacgym import gymtorch
+from pathlib import Path
+import sys
 import torch
-  
+
+
+def _ensure_locomotion_common_on_path():
+    try:
+        from locomotion_common import TorchSharedTrotReference  # noqa: F401
+        return
+    except ImportError:
+        pass
+
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "robot_ws" / "src" / "control" / "locomotion_common"
+        if candidate.exists():
+            sys.path.insert(0, str(candidate))
+            return
+
+
+_ensure_locomotion_common_on_path()
+from locomotion_common import TorchSharedTrotReference
+
+
 class SpotmicroTest(LeggedRobot):
     def _init_buffers(self):
         super()._init_buffers()
@@ -10,50 +31,12 @@ class SpotmicroTest(LeggedRobot):
         self.gym.refresh_rigid_body_state_tensor(self.sim)
         self.rigid_body_states = gymtorch.wrap_tensor(rigid_body_state).view(
             self.num_envs, self.num_bodies, 13)
-        self.gait_freq = 2.0
-
-        # ====IK 변수====
-        self.L1_X = 0.01
-        self.L1_Z = 0.12
-        self.L2 = 0.115
-        self.L1_EFF = (0.01**2 + 0.12**2)**0.5
-        self.ALPHA = torch.atan2(torch.tensor(0.01), torch.tensor(0.12)).item()
-        self.robot_width = 0.15
-
-        self.gait_period = 1.0
-        self.duty_factor = 0.55
-        self.step_height = 0.025
-        self.body_height = 0.206
+        self._init_ik_reference()
 
         self.gait_phase = torch.zeros(self.num_envs, 1, dtype=torch.float, device=self.device)
         self.commands_scale = torch.tensor(
             [self.obs_scales.lin_vel, self.obs_scales.lin_vel, self.obs_scales.ang_vel],
             device=self.device)
-
-        self.leg_origin_x = torch.tensor(
-            [0.093, 0.093, -0.093, -0.093],
-            device=self.device,
-            dtype=torch.float,
-        )
-
-        self.leg_origin_y = torch.tensor(
-            [0.036, -0.036, 0.036, -0.036],
-            device=self.device,
-            dtype=torch.float,
-        )
-
-        # shoulder 축 부호는 실제 play에서 확인 필요
-        # 오른쪽 shoulder 축이 반대라면 [1, -1, 1, -1]이 맞을 가능성이 있음
-        self.shoulder_sign = torch.tensor(
-            [1.0, -1.0, 1.0, -1.0],
-            device=self.device,
-            dtype=torch.float,
-        )
-
-        self.max_stride_x = 0.12
-        self.max_stride_y = 0.03
-        self.shoulder_y_gain = 1.0
-        self.shoulder_ref_limit = 0.1
         # ==== Step 5: 서보 응답 지연 (substep 단위, dt=5ms 해상도) ====
         if self.cfg.domain_rand.action_delay:
             delay_range = self.cfg.domain_rand.action_delay_range
@@ -92,7 +75,41 @@ class SpotmicroTest(LeggedRobot):
         self.last_reset_tilt = torch.zeros(
             self.num_envs, device=self.device, dtype=torch.float
         )
-                  
+
+    def _init_ik_reference(self):
+        ik_cfg = self.cfg.ik
+        self.gait_period = float(ik_cfg.gait_period)
+        self.duty_factor = float(ik_cfg.duty_factor)
+        self.phase_cmd_norm = float(ik_cfg.phase_cmd_norm)
+        self.blend_cmd_norm = float(ik_cfg.blend_cmd_norm)
+        self.phase_offsets = torch.tensor(
+            ik_cfg.phase_offsets,
+            device=self.device,
+            dtype=torch.float,
+        )
+        self.ik_reference = TorchSharedTrotReference(
+            device=self.device,
+            dtype=torch.float,
+            gait_period=ik_cfg.gait_period,
+            duty_factor=ik_cfg.duty_factor,
+            body_height=ik_cfg.body_height,
+            step_height=ik_cfg.step_height,
+            default_foot_x=ik_cfg.default_foot_x,
+            default_foot_y=ik_cfg.default_foot_y,
+            leg_origin_x=ik_cfg.leg_origin_x,
+            leg_origin_y=ik_cfg.leg_origin_y,
+            shoulder_sign=ik_cfg.shoulder_sign,
+            phase_offsets=ik_cfg.phase_offsets,
+            max_stride_x=ik_cfg.max_stride_x,
+            max_stride_y=ik_cfg.max_stride_y,
+            upper_link_x=ik_cfg.upper_link_x,
+            upper_link_z=ik_cfg.upper_link_z,
+            lower_link=ik_cfg.lower_link,
+            shoulder_y_gain=ik_cfg.shoulder_y_gain,
+            shoulder_limit=ik_cfg.shoulder_limit,
+            joint_min=ik_cfg.joint_min,
+            joint_max=ik_cfg.joint_max,
+        )
 
 
     def step(self, actions):
@@ -138,7 +155,7 @@ class SpotmicroTest(LeggedRobot):
 
         # 속도 명령 크기에 비례하여 gait phase 진행
         cmd_norm = torch.norm(self.commands[:, :3], dim=1, keepdim=True)  # [num_envs, 1]
-        phase_scale = torch.clamp(cmd_norm / 0.1, 0.0, 1.0)  # 0.1 이하면 감속→정지
+        phase_scale = torch.clamp(cmd_norm / self.phase_cmd_norm, 0.0, 1.0)  # phase_cmd_norm 이하면 감속→정지
 
         dt_phase = self.dt / self.gait_period
         self.gait_phase = (self.gait_phase + dt_phase * phase_scale) % 1.0
@@ -148,7 +165,8 @@ class SpotmicroTest(LeggedRobot):
         super().check_termination()
 
         base_height = self.root_states[:, 2]
-        self.reset_buf |= (base_height < 0.155)
+        min_base_height = getattr(self.cfg.rewards, "min_base_height", 0.155)
+        self.reset_buf |= (base_height < min_base_height)
         self.reset_buf |= (self.projected_gravity[:, 2] > 0.0)
         
     def _reset_dofs(self, env_ids):
@@ -270,6 +288,44 @@ class SpotmicroTest(LeggedRobot):
             gymtorch.unwrap_tensor(env_ids_int32),
             len(env_ids_int32),
         )
+
+    def _resample_commands(self, env_ids):
+        if len(env_ids) == 0:
+            return
+
+        self.commands[env_ids, 0] = torch_rand_float(
+            self.command_ranges["lin_vel_x"][0],
+            self.command_ranges["lin_vel_x"][1],
+            (len(env_ids), 1),
+            device=self.device,
+        ).squeeze(1)
+        self.commands[env_ids, 1] = torch_rand_float(
+            self.command_ranges["lin_vel_y"][0],
+            self.command_ranges["lin_vel_y"][1],
+            (len(env_ids), 1),
+            device=self.device,
+        ).squeeze(1)
+        if self.cfg.commands.heading_command:
+            self.commands[env_ids, 3] = torch_rand_float(
+                self.command_ranges["heading"][0],
+                self.command_ranges["heading"][1],
+                (len(env_ids), 1),
+                device=self.device,
+            ).squeeze(1)
+        else:
+            self.commands[env_ids, 2] = torch_rand_float(
+                self.command_ranges["ang_vel_yaw"][0],
+                self.command_ranges["ang_vel_yaw"][1],
+                (len(env_ids), 1),
+                device=self.device,
+            ).squeeze(1)
+
+        deadband = getattr(self.cfg.commands, "command_deadband", 0.02)
+        if deadband <= 0.0:
+            return
+
+        lin_norm = torch.norm(self.commands[env_ids, :2], dim=1)
+        self.commands[env_ids, :2] *= (lin_norm > deadband).unsqueeze(1)
         
     def compute_observations(self):
         ref_dof_pos = self._get_ik_target()
@@ -400,123 +456,14 @@ class SpotmicroTest(LeggedRobot):
         return (lin_penalty + 0.5 * yaw_penalty + pose_penalty) * is_stand
     '''
     def _get_ik_target(self):
-        vx = self.commands[:, 0].unsqueeze(1)  # [N, 1]
-        vy = self.commands[:, 1].unsqueeze(1)  # [N, 1]
-        wz = self.commands[:, 2].unsqueeze(1)  # [N, 1]
-
-        leg_x = self.leg_origin_x.unsqueeze(0)  # [1, 4]
-        leg_y = self.leg_origin_y.unsqueeze(0)  # [1, 4]
-
-        # yaw 회전에 따른 다리별 목표 foot velocity
-        '''
-        self.turn_half_width = 0.09
-
-        turn_y = torch.sign(self.leg_origin_y).unsqueeze(0) * self.turn_half_width
-        foot_vx = vx - wz * turn_y
-        '''
-        foot_vx = vx - wz * leg_y
-        foot_vy = vy + wz * leg_x
-        #foot_vy = torch.zeros_like(foot_vx)
-
-        stance_time = self.gait_period * self.duty_factor
-
-        stride_x = foot_vx * stance_time
-        stride_y = foot_vy * stance_time
-
-        stride_x = torch.clamp(
-            stride_x,
-            -self.max_stride_x,
-            self.max_stride_x,
+        ref_dof_pos = self.ik_reference.get_reference(
+            self.gait_phase,
+            self.commands[:, :3],
         )
-        
-        stride_y = torch.clamp(
-            stride_y,
-            -self.max_stride_y,
-            self.max_stride_y,
-        )
-        
-        #stride_y = torch.zeros_like(stride_x)
-        offsets = torch.tensor(
-            [0.0, 0.5, 0.5, 0.0],
-            device=self.device,
-            dtype=torch.float,
-        )
-
-        phases = (self.gait_phase + offsets) % 1.0
-
-        x = torch.zeros((self.num_envs, 4), device=self.device)
-        y = torch.zeros((self.num_envs, 4), device=self.device)
-        z = torch.full(
-            (self.num_envs, 4),
-            -self.body_height,
-            device=self.device,
-        )
-
-        is_stance = phases < self.duty_factor
-        is_swing = ~is_stance
-
-        t_stance = phases / self.duty_factor
-        t_swing = (phases - self.duty_factor) / (1.0 - self.duty_factor)
-
-        # stance: 발이 몸 기준 뒤로 이동
-        x[is_stance] = stride_x[is_stance] * (0.5 - t_stance[is_stance])
-        y[is_stance] = stride_y[is_stance] * (0.5 - t_stance[is_stance])
-
-        # swing: 발을 앞으로 회수
-        x[is_swing] = stride_x[is_swing] * (-0.5 + t_swing[is_swing])
-        y[is_swing] = stride_y[is_swing] * (-0.5 + t_swing[is_swing])
-        z[is_swing] = (
-            -self.body_height
-            + self.step_height * torch.sin(torch.pi * t_swing[is_swing])
-        )
-
-        # y 방향 목표를 shoulder reference로 변환
-        shoulder_raw = self.shoulder_y_gain * torch.atan2(y, -z)
-
-        
-        shoulder_ref = torch.clamp(
-            shoulder_raw,
-            -self.shoulder_ref_limit,
-            self.shoulder_ref_limit,
-        )
-
-        shoulder_ref = shoulder_ref * self.shoulder_sign.unsqueeze(0)
-        
-        #shoulder_ref = torch.zeros((self.num_envs, 4), device=self.device)
-
-        # shoulder가 y 방향을 담당한다고 보고,
-        # leg/foot IK는 x-z_eff 평면에서 계산
-        z_eff = -torch.sqrt(torch.clamp(z * z + y * y, min=1e-6))
-
-        d = torch.sqrt(x**2 + z_eff**2)
-
-        cos_q2 = (d**2 - self.L1_EFF**2 - self.L2**2) / (
-            2 * self.L1_EFF * self.L2
-        )
-        cos_q2 = torch.clamp(cos_q2, -0.999, 0.999)
-
-        q2 = torch.acos(cos_q2)
-
-        beta = torch.atan2(x, -z_eff)
-        alpha_k = torch.atan2(
-            self.L2 * torch.sin(q2),
-            self.L1_EFF + self.L2 * torch.cos(q2),
-        )
-
-        q1 = beta - alpha_k
-
-        theta_leg = q1 - self.ALPHA
-        theta_foot = q2 + self.ALPHA
-
-        ref_dof_pos = torch.zeros((self.num_envs, 12), device=self.device)
-
-        ref_dof_pos[:, 0::3] = shoulder_ref
-        ref_dof_pos[:, 1::3] = theta_leg
-        ref_dof_pos[:, 2::3] = theta_foot
 
         # 정지 시 default pose로 블렌딩
         cmd_norm = torch.norm(self.commands[:, :3], dim=1, keepdim=True)
-        blend = torch.clamp(cmd_norm / 0.1, 0.0, 1.0)
+        blend = torch.clamp(cmd_norm / self.blend_cmd_norm, 0.0, 1.0)
 
         ref_dof_pos = blend * ref_dof_pos + (1.0 - blend) * self.default_dof_pos
 
@@ -546,8 +493,7 @@ class SpotmicroTest(LeggedRobot):
             -ang_vel_error / self.cfg.rewards.tracking_sigma_ang_vel)
 
     def _reward_trot_contact(self):
-        offsets = torch.tensor([0.0, 0.5, 0.5, 0.0], device=self.device)
-        phases = (self.gait_phase + offsets) % 1.0
+        phases = (self.gait_phase + self.phase_offsets) % 1.0
         desired_contact = phases < self.duty_factor
         actual_contact = self.contact_forces[:, self.feet_indices, 2] > 1.0
         match = (actual_contact == desired_contact).float()

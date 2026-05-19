@@ -217,7 +217,7 @@
     <parent link="front_left_leg_link"/>
     <child link="front_left_foot_link"/>
     <axis xyz="0 -1 0"/>
-    <origin rpy="0 0 0" xyz="0.01 0 -0.12"/>
+    <origin rpy="0 0 0" xyz="0 0 -0.105"/>
     <limit effort="2.94" lower="-0.1" upper="2.59" velocity="5.24"/>
     <dynamics damping="0.02" friction="0.02"/>
   </joint>
@@ -244,7 +244,7 @@
   <joint name="front_left_toe" type="fixed">
     <parent link="front_left_foot_link"/>
     <child link="front_left_toe_link"/>
-    <origin xyz="0 0 -0.115"/>
+    <origin xyz="0 0 -0.130"/>
   </joint>
 
   <!-- ============== FRONT RIGHT LEG ============== -->
@@ -343,7 +343,7 @@
     <parent link="front_right_leg_link"/>
     <child link="front_right_foot_link"/>
     <axis xyz="0 -1 0"/>
-    <origin rpy="0 0 0" xyz="0.01 0 -0.12"/>
+    <origin rpy="0 0 0" xyz="0 0 -0.105"/>
     <limit effort="2.94" lower="-0.1" upper="2.59" velocity="5.24"/>
     <dynamics damping="0.02" friction="0.02"/>
   </joint>
@@ -370,7 +370,7 @@
   <joint name="front_right_toe" type="fixed">
     <parent link="front_right_foot_link"/>
     <child link="front_right_toe_link"/>
-    <origin xyz="0 0 -0.115"/>
+    <origin xyz="0 0 -0.130"/>
   </joint>
 
   <!-- ============== REAR LEFT LEG ============== -->
@@ -469,7 +469,7 @@
     <parent link="rear_left_leg_link"/>
     <child link="rear_left_foot_link"/>
     <axis xyz="0 -1 0"/>
-    <origin rpy="0 0 0" xyz="0.01 0 -0.12"/>
+    <origin rpy="0 0 0" xyz="0 0 -0.105"/>
     <limit effort="2.94" lower="-0.1" upper="2.59" velocity="5.24"/>
     <dynamics damping="0.02" friction="0.02"/>
   </joint>
@@ -496,7 +496,7 @@
   <joint name="rear_left_toe" type="fixed">
     <parent link="rear_left_foot_link"/>
     <child link="rear_left_toe_link"/>
-    <origin xyz="0 0 -0.115"/>
+    <origin xyz="0 0 -0.130"/>
   </joint>
 
   <!-- ============== REAR RIGHT LEG ============== -->
@@ -595,7 +595,7 @@
     <parent link="rear_right_leg_link"/>
     <child link="rear_right_foot_link"/>
     <axis xyz="0 -1 0"/>
-    <origin rpy="0 0 0" xyz="0.01 0 -0.12"/>
+    <origin rpy="0 0 0" xyz="0 0 -0.105"/>
     <limit effort="2.94" lower="-0.1" upper="2.59" velocity="5.24"/>
     <dynamics damping="0.02" friction="0.02"/>
   </joint>
@@ -622,7 +622,7 @@
   <joint name="rear_right_toe" type="fixed">
     <parent link="rear_right_foot_link"/>
     <child link="rear_right_toe_link"/>
-    <origin xyz="0 0 -0.115"/>
+    <origin xyz="0 0 -0.130"/>
   </joint>
 
 </robot>
