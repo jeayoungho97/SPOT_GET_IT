@@ -84,6 +84,7 @@ private:
   double cmd_timeout_sec_;
   double pose_timeout_sec_;
   double perception_timeout_sec_;
+  double front_azimuth_limit_rad_;  // 전방 장애물 유효 방위각 한계 (rad)
   double timer_period_sec_;
 
   // ============================================================

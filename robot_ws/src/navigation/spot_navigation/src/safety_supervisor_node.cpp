@@ -28,6 +28,7 @@ SafetySupervisorNode::SafetySupervisorNode(const rclcpp::NodeOptions & options)
   cmd_timeout_sec_            = declare_parameter<double>("cmd_timeout_sec", 0.30);
   pose_timeout_sec_           = declare_parameter<double>("pose_timeout_sec", 0.50);
   perception_timeout_sec_     = declare_parameter<double>("perception_timeout_sec", 0.50);
+  front_azimuth_limit_rad_    = declare_parameter<double>("front_azimuth_limit_rad", 0.5236);  // 30도
   timer_period_sec_           = declare_parameter<double>("timer_period_sec", 0.1);
 
   // ============================================================
@@ -138,8 +139,12 @@ void SafetySupervisorNode::on_timer()
     (now_time - last_cmd_time_).seconds() > cmd_timeout_sec_;
   const bool pose_stale =
     (now_time - last_pose_time_).seconds() > pose_timeout_sec_;
-  const bool perception_stale =
-    (now_time - last_perception_time_).seconds() > perception_timeout_sec_;
+  // perception_stale 비활성화
+  // obstacle_model/free_space_model이 장애물 없을 때 미발행되는 구조라
+  // lidar 동작 여부와 무관하게 stale이 뜨는 문제 → 향후 별도 토픽으로 대체 필요
+  const bool perception_stale = false;
+  // const bool perception_stale =
+  //   (now_time - last_perception_time_).seconds() > perception_timeout_sec_;
 
   // ----------------------------------------------------------
   // goal_reached 검사
@@ -149,10 +154,14 @@ void SafetySupervisorNode::on_timer()
 
   // ----------------------------------------------------------
   // 전방 장애물 거리
+  // azimuth_angle_rad 기준으로 front_azimuth_limit_rad 이내인 경우만 유효
   // ----------------------------------------------------------
   float front_clearance = 9999.0f;
   if (latest_obstacle_ && latest_obstacle_->front.valid) {
-    front_clearance = latest_obstacle_->front.nearest_distance_xy;
+    const float azimuth = latest_obstacle_->front.azimuth_angle_rad;
+    if (std::abs(azimuth) <= static_cast<float>(front_azimuth_limit_rad_)) {
+      front_clearance = latest_obstacle_->front.nearest_distance_xy;
+    }
   }
 
   const bool emergency_stop =
