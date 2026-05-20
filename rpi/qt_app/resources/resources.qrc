@@ -1,8 +1,0 @@
-<RCC>
-    <qresource prefix="/">
-        <file>icons/map.svg</file>
-        <file>icons/stream.svg</file>
-        <file>icons/settings.svg</file>
-        <file>style.qss</file>
-    </qresource>
-</RCC>
