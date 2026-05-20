@@ -1,11 +1,11 @@
 map:
   starts:
-    spot_01:  #
+    spot_01:
     - 2.0
-    - 1.0
+    - 2.0
     spot_02:
     - 2.0
-    - 2.0
+    - 1.0
     spot_03:
     - 3.0
     - 1.0
@@ -82,21 +82,21 @@ map:
     y_min: 0.74
     y_max: 6.75
     clearance: 0.3
-  - id: L1ed
-    x_min: 4.0
-    x_max: 6.0
-    y_min: 5.0
-    y_max: 6.5
+  - id: lower_island
+    x_min: 4.8
+    x_max: 6.6
+    y_min: 1.9
+    y_max: 2.5
     clearance: 0.3
-  - id: _
-    x_min: 5.0
+  - id: mid_column
+    x_min: 6.5
     x_max: 7.0
-    y_min: 3.0
-    y_max: 3.5
+    y_min: 3.2
+    y_max: 6.1
     clearance: 0.3
-  - id: ssafy
-    x_min: 9.5
-    x_max: 10
-    y_min: 2.0
-    y_max: 5.5
+  - id: upper_right_shelf
+    x_min: 8.4
+    x_max: 10.0
+    y_min: 5.0
+    y_max: 5.6
     clearance: 0.3

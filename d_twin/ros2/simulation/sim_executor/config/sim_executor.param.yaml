@@ -5,25 +5,22 @@ sim_executor_node:
   ros__parameters:
 
     # ── 네트워크 ─────────────────────────────────────────────────────
-    rpi5_ip: "70.12.112.112"     # BridgeDaemon 수신 IP — 반드시 수정
-    bridge_port: 9000            # proto.h BRIDGE_PORT
+    rpi5_ip: "192.168.0.12"
+    bridge_port: 9000
 
     # ── 영상 파일 경로 ───────────────────────────────────────────────
     video_path_02: "/home/ubuntu/media/spot_02.mp4"
     video_path_03: "/home/ubuntu/media/spot_03.mp4"
 
-    # ── UDP robot_id (0-based, pose_path_event_sender.yaml 동일 체계) ─
-    #   spot_01 = 0  (Jetson/oak_camera_driver 담당)
-    #   spot_02 = 1
-    #   spot_03 = 2
+    # ── robot_id (0-based) ───────────────────────────────────────────
     udp_robot_id_02: 1
     udp_robot_id_03: 2
 
     # ── 경로 추종 ────────────────────────────────────────────────────
-    robot_speed_mps: 0.4         # 이동 속도 (m/s)
-    pose_send_hz: 10.0           # Odom UDP 송신 주기 (pose_path_event_sender 동일 파라미터명)
+    robot_speed_mps: 0.4
+    pose_send_hz: 10.0
 
     # ── 영상 송출 ────────────────────────────────────────────────────
-    video_fps: 15                # MJPEG 송출 fps
-    jpeg_quality: 80             # JPEG 인코딩 품질 (0~100)
-    max_size_bytes: 200000       # 프레임 최대 허용 크기 (oak_camera_driver 동일)
+    video_fps: 15
+    jpeg_quality: 80
+    max_size_bytes: 200000

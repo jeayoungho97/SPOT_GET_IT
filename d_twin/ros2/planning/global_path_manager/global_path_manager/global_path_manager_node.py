@@ -147,7 +147,7 @@ class GlobalPathManagerNode(Node):
             self.get_logger().info(f"  [{robot_key}] 유효: {valid}/{len(paths)}개")
 
         # ── 선정 ──
-        selected = select_paths(path_sets, starts=cfg.starts)
+        selected = select_paths(path_sets, starts=cfg.starts, cfg=cfg)
 
         # ── 발행 ──
         stamp = self.get_clock().now().to_msg()

@@ -1,11 +1,11 @@
 map:
   starts:
-    spot_01:  #
+    spot_01:
     - 2.0
-    - 1.0
+    - 2.0
     spot_02:
     - 2.0
-    - 2.0
+    - 1.0
     spot_03:
     - 3.0
     - 1.0
@@ -82,15 +82,21 @@ map:
     y_min: 0.74
     y_max: 6.75
     clearance: 0.3
-  - id: L1ed
-    x_min: 4.0
-    x_max: 6.0
+  - id: L1
+    x_min: 3.0
+    x_max: 3.5
     y_min: 5.0
     y_max: 6.5
     clearance: 0.3
+  - id: L_
+    x_min: 3.5
+    x_max: 5.5
+    y_min: 6.0
+    y_max: 6.5
+    clearance: 0.3
   - id: _
-    x_min: 5.0
-    x_max: 7.0
+    x_min: 4.0
+    x_max: 6.0
     y_min: 3.0
     y_max: 3.5
     clearance: 0.3
