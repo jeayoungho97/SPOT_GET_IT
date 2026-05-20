@@ -6,7 +6,7 @@ rl_locomotion_node:
 
     # 반드시 새 모델 학습 config의 action_scale과 맞춰야 함
     action_scale: 0.25
-    action_clip: 1.0
+    action_clip: 100.0
 
     gait_period: 1.0
     duty_factor: 0.55

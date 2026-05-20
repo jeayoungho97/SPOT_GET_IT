@@ -164,10 +164,10 @@ public:
 
     const std::vector<double> default_joint_angles = this->declare_parameter<std::vector<double>>(
       "default_joint_angles",
-      {0.0, -0.6, 1.1,
-       0.0, -0.6, 1.1,
-       0.0, -0.6, 1.1,
-       0.0, -0.6, 1.1});
+      {0.0, -0.926379, 1.531409,
+       0.0, -0.926379, 1.531409,
+       0.0, -0.926379, 1.531409,
+       0.0, -0.926379, 1.531409});
 
     const std::vector<double> default_max_delta_rad = this->declare_parameter<std::vector<double>>(
       "default_max_delta_rad",
