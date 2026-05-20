@@ -87,32 +87,37 @@ class SpotmicroTestCfg(LeggedRobotCfg):
 
     class rewards(LeggedRobotCfg.rewards):
         class scales:
-            tracking_lin_vel = 1.5
-            tracking_ang_vel = 0.8
-            termination = -10.0
-            lin_vel_z = -1.5
-            ang_vel_xy = -0.5
-            orientation = -4.0
-            torques = -0.0008
+            tracking_lin_vel = 1.2
+            tracking_ang_vel = 0.7
+            termination = -15.0
+            lin_vel_z = -2.0
+            ang_vel_xy = -0.9
+            orientation = -8.0
+            torques = -0.0010
             dof_vel = -0.0005
             dof_acc = -2.5e-7
-            action_rate = -0.04
-            feet_air_time = 0.08
+            action_rate = -0.05
+            base_height = -1.0
+            feet_air_time = 0.04
             dof_pos_limits = 0.0
             collision = -1.0
             trot_symmetry = 0.0
-            no_stuck_feet = -0.12
+            no_stuck_feet = -0.20
             symmetric_gait = 0.0
-            feet_clearance = 0.20
-            swing_contact = -0.25
-            trot_contact = 0.3
+            feet_clearance = 0.03
+            swing_contact = -0.45
+            trot_contact = 0.35
             tracking_ik = 0.5
             stand_still = -0.3
         soft_dof_pos_limit = 0.9
         base_height_target = 0.19
         min_base_height = 0.13
+        max_base_tilt_deg = 75.0
         tracking_sigma = 0.02
         tracking_sigma_ang_vel = 0.03
+        swing_contact_grace_time = 0.02
+        feet_clearance_min = 0.006
+        feet_clearance_cap = 0.010
 
     class normalization(LeggedRobotCfg.normalization):
         class obs_scales:
@@ -156,6 +161,11 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         max_push_vel_xy = 0.1
         action_delay = True
         action_delay_range = [1, 2]
+        recovery_roll_pitch_range_deg = 12.0
+        recovery_lin_vel_xy_range = 0.12
+        recovery_lin_vel_z_range = 0.04
+        recovery_ang_vel_xy_range = 0.80
+        recovery_ang_vel_z_range = 0.35
 
 
 class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
@@ -165,10 +175,10 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         learning_rate = 1e-4
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v6_0_3_low_speed_clearance'
+        run_name = 'spotmicro_v6_1_recovery_resume'
         experiment_name = 'spotmicro_test'
-        max_iterations = 1500
+        max_iterations = 1000
         save_interval = 100
-        resume = False
-        load_run = ""
-        checkpoint = -1
+        resume = True
+        load_run = "May20_10-11-07_spotmicro_v6_0_4_reward_retune"
+        checkpoint = 1500

@@ -2,6 +2,7 @@ from legged_gym.envs.base.legged_robot import LeggedRobot
 from isaacgym.torch_utils import torch_rand_float, quat_from_euler_xyz
 from isaacgym import gymtorch
 from pathlib import Path
+import math
 import sys
 import torch
 
@@ -58,12 +59,14 @@ class SpotmicroTest(LeggedRobot):
                   
         # ==== Recovery assist randomization ====
         # Stage 1: 너무 세게 시작하지 말 것
-        self.recovery_roll_pitch_range = 10.0 * torch.pi / 180.0  # ±10 deg
-        self.recovery_yaw_range = 3.14159                        # yaw는 자유
-        self.recovery_lin_vel_xy_range = 0.10                    # ±0.10 m/s
-        self.recovery_lin_vel_z_range = 0.03                     # ±0.03 m/s
-        self.recovery_ang_vel_xy_range = 0.60                    # ±0.60 rad/s
-        self.recovery_ang_vel_z_range = 0.30                     # ±0.30 rad/s
+        self.recovery_roll_pitch_range = math.radians(
+            getattr(self.cfg.domain_rand, "recovery_roll_pitch_range_deg", 10.0)
+        )
+        self.recovery_yaw_range = math.pi
+        self.recovery_lin_vel_xy_range = getattr(self.cfg.domain_rand, "recovery_lin_vel_xy_range", 0.10)
+        self.recovery_lin_vel_z_range = getattr(self.cfg.domain_rand, "recovery_lin_vel_z_range", 0.03)
+        self.recovery_ang_vel_xy_range = getattr(self.cfg.domain_rand, "recovery_ang_vel_xy_range", 0.60)
+        self.recovery_ang_vel_z_range = getattr(self.cfg.domain_rand, "recovery_ang_vel_z_range", 0.30)
         
         # ==== Recovery diagnostic용 reset 상태 기록 ====
         self.last_reset_roll = torch.zeros(
@@ -166,8 +169,10 @@ class SpotmicroTest(LeggedRobot):
 
         base_height = self.root_states[:, 2]
         min_base_height = getattr(self.cfg.rewards, "min_base_height", 0.155)
+        max_base_tilt_deg = getattr(self.cfg.rewards, "max_base_tilt_deg", 75.0)
+        max_tilt_gravity_z = -math.cos(math.radians(max_base_tilt_deg))
         self.reset_buf |= (base_height < min_base_height)
-        self.reset_buf |= (self.projected_gravity[:, 2] > 0.0)
+        self.reset_buf |= (self.projected_gravity[:, 2] > max_tilt_gravity_z)
         
     def _reset_dofs(self, env_ids):
         # recovery 학습 첫 단계에서는 관절은 기본 자세 근처에서 시작
@@ -404,7 +409,11 @@ class SpotmicroTest(LeggedRobot):
         self.feet_swing_contact_time = (
             self.feet_swing_contact_time + self.dt
         ) * swing_contact.float()
-        penalty = torch.sum(torch.clamp(self.feet_swing_contact_time - 0.03, min=0.), dim=1)
+        grace_time = getattr(self.cfg.rewards, "swing_contact_grace_time", 0.03)
+        penalty = torch.sum(
+            torch.clamp(self.feet_swing_contact_time - grace_time, min=0.),
+            dim=1,
+        )
         penalty *= (torch.norm(self.commands[:, :3], dim=1) > self.blend_cmd_norm).float()
         return penalty
 
@@ -439,7 +448,13 @@ class SpotmicroTest(LeggedRobot):
         is_air = (~contact_filt).float()
         self.max_feet_height = torch.max(self.max_feet_height, feet_z * is_air)
         first_contact = (self.max_feet_height > 0.) * contact_filt
-        height_reward = torch.clamp(self.max_feet_height - 0.02, min=0., max=0.03)
+        clearance_min = getattr(self.cfg.rewards, "feet_clearance_min", 0.02)
+        clearance_cap = getattr(self.cfg.rewards, "feet_clearance_cap", 0.03)
+        height_reward = torch.clamp(
+            self.max_feet_height - clearance_min,
+            min=0.,
+            max=clearance_cap,
+        )
         reward = torch.sum(height_reward * first_contact.float(), dim=1)
         self.max_feet_height *= is_air
         reward *= (torch.norm(self.commands[:, :3], dim=1) > self.blend_cmd_norm).float()

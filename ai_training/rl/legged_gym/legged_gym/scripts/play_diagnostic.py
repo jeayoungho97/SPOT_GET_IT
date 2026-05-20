@@ -54,7 +54,9 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
  
     # --- Checkpoint 로드 (항목 1-A) ---
     train_cfg.runner.resume = True
-    if not checkpoint_path and train_cfg.runner.load_run in ("", None):
+    explicit_load_run = getattr(args, "load_run", None) is not None
+    explicit_checkpoint = getattr(args, "checkpoint", None) is not None
+    if not checkpoint_path and not explicit_load_run and not explicit_checkpoint:
         train_cfg.runner.load_run = -1
         train_cfg.runner.checkpoint = -1
     if checkpoint_path:

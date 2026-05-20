@@ -66,3 +66,5 @@
 | 062 | 05/19 | spotmicro_v6_0_1_shared_ik_cmd_deadband | v6.0.1: deadband 조정으로 걷는지 확인 | 93.4% | 0.053 | 2.0% | ✅ |
 | 063 | 05/19 | spotmicro_v6_0_2_forward_tracking | v6.2: 설정 common IK 초기와 동일하게 변경하고 선속도 추종 ... | 92.3% | 0.029 | 2.1% | ✅ |
 | 064 | 05/20 | spotmicro_v6_0_3_low_speed_clearance | v6.0.3: 저속 구간 재설정 및 다리 안드는 페널티 추가 | 90.0% | 0.026 | 5.9% | ✅ |
+| 065 | 05/20 | spotmicro_v6_0_4_reward_retune | v6.0.4: reward tuning. swing 중 충돌 잘 안하는지... | 92.8% | 0.026 | 9.4% | ✅ |
+| 066 | 05/20 | spotmicro_v6_1_recovery_resume | v6.1: exp065에서 resume, recovery 안정성 강화 | 93.9% | 0.024 | 7.9% | ✅ |
