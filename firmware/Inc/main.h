@@ -75,9 +75,13 @@ void Error_Handler(void);
 #define Rear_Left_Leg_GPIO_Port GPIOC
 #define SWO_Pin GPIO_PIN_3
 #define SWO_GPIO_Port GPIOB
-#define IMU_SCL_Pin GPIO_PIN_6
+#define JETSON_UART_TX_Pin GPIO_PIN_6
+#define JETSON_UART_TX_GPIO_Port GPIOB
+#define JETSON_UART_RX_Pin GPIO_PIN_7
+#define JETSON_UART_RX_GPIO_Port GPIOB
+#define IMU_SCL_Pin GPIO_PIN_8
 #define IMU_SCL_GPIO_Port GPIOB
-#define IMU_SDA_Pin GPIO_PIN_7
+#define IMU_SDA_Pin GPIO_PIN_9
 #define IMU_SDA_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */

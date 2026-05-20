@@ -5,7 +5,7 @@ rl_locomotion_node:
     ik_profile: "shared_v1"
 
     action_scale: 0.25
-    action_clip: 1.0
+    action_clip: 100.0
 
     gait_period: 1.2
     duty_factor: 0.58

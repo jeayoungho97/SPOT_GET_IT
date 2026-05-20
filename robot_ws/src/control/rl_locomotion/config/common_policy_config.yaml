@@ -4,6 +4,7 @@ rl_locomotion_node:
 
     obs_dim: 47
     action_dim: 12
+    action_clip: 100.0
 
     policy_backend: "onnx"
     require_model: true
@@ -14,6 +15,8 @@ rl_locomotion_node:
     feedback_timeout_ms: 150.0
     imu_timeout_ms: 150.0
     status_timeout_ms: 150.0
+    max_feedback_joint_velocity_rad_s: 50.0
+    max_raw_action_abs: 10.0
 
     # 0 MODE_DISABLE
     # 1 MODE_STAND

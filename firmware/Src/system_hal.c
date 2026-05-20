@@ -1,28 +1,12 @@
 #include "system_hal.h"
 #include "uart_jetson.h"
 
-/* === Global handle definitions === */
-UART_HandleTypeDef huart3, huart4, huart5, huart6;
-UART_HandleTypeDef huart2;
-I2C_HandleTypeDef hi2c1;
-
 /* === printf retarget — 모든 printf 출력은 USART2 (ST-Link VCP) === */
 int _write(int file, char *ptr, int len) {
     (void)file;
     HAL_UART_Transmit(&huart2, (uint8_t *)ptr, len, HAL_MAX_DELAY);
     return len;
 }
-
-void Error_Handler(void) {
-    __disable_irq();
-    while (1) {}
-}
-
-#ifdef USE_FULL_ASSERT
-void assert_failed(uint8_t *file, uint32_t line) {
-    (void)file; (void)line;
-}
-#endif
 
 /* === System clock — HSI + PLL → 180MHz === */
 static void SystemClock_Config(void) {

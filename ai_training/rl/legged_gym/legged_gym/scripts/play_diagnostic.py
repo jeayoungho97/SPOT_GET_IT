@@ -226,7 +226,13 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
     recovery_horizon_steps = max(1, int(recovery_horizon_s / env.dt))
     recovery_initial_tilt_threshold = np.radians(7.0)
     recovery_stable_threshold = np.radians(5.0)
-    recovery_min_height = max(0.18, float(env.cfg.rewards.base_height_target) - 0.03)
+    recovery_min_height = float(
+        getattr(
+            env.cfg.rewards,
+            "recovery_min_height",
+            float(env.cfg.rewards.base_height_target) - 0.01,
+        )
+    )
 
     recovery_age = np.zeros(num_envs, dtype=np.int32)
     recovery_active = np.ones(num_envs, dtype=bool)

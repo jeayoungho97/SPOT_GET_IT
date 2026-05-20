@@ -43,7 +43,7 @@ typedef struct {
     /* IMU */
     body_attitude_t imu;
 
-    /* 명령 (SPI RX에서 갱신) */
+    /* 명령 (Jetson UART RX에서 갱신) */
     float target_rad[NUM_JOINTS];
     float max_delta_rad[NUM_JOINTS];
     control_mode_t mode;
@@ -52,6 +52,7 @@ typedef struct {
     uint32_t last_cmd_time_ms;
     float gait_phase;           /* Jetson에서 수신 → echo */
     uint32_t gait_cycle_count;  /* Jetson에서 수신 → echo */
+    uint8_t motion_state;       /* Jetson에서 수신 → echo */
 
     /* 내부 추적 */
     float prev_target_rad[NUM_JOINTS];

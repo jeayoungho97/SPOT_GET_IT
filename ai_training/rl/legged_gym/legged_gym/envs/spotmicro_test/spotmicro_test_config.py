@@ -79,25 +79,30 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/spotmicro_test/urdf/spotmicro_test.urdf'
         name = 'spotmicro_test'
         foot_name = 'toe'
-        penalize_contacts_on = ['leg_link', 'shoulder_link', 'base_link']
-        terminate_after_contacts_on = ['base_link']
+        penalize_contacts_on = [
+            'leg_link', 'shoulder_link',
+            'base_link', 'front_link', 'rear_link', 'battery_link',
+        ]
+        terminate_after_contacts_on = [
+            'base_link', 'front_link', 'rear_link', 'battery_link',
+        ]
         self_collisions = 1
         flip_visual_attachments = False
         collapse_fixed_joints = False
 
     class rewards(LeggedRobotCfg.rewards):
         class scales:
-            tracking_lin_vel = 1.2
-            tracking_ang_vel = 0.7
-            termination = -15.0
+            tracking_lin_vel = 1.0
+            tracking_ang_vel = 0.6
+            termination = -20.0
             lin_vel_z = -2.0
-            ang_vel_xy = -0.9
-            orientation = -8.0
+            ang_vel_xy = -1.0
+            orientation = -10.0
             torques = -0.0010
             dof_vel = -0.0005
             dof_acc = -2.5e-7
             action_rate = -0.05
-            base_height = -1.0
+            base_height = -2.0
             feet_air_time = 0.04
             dof_pos_limits = 0.0
             collision = -1.0
@@ -107,12 +112,13 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             feet_clearance = 0.03
             swing_contact = -0.45
             trot_contact = 0.35
-            tracking_ik = 0.5
-            stand_still = -0.3
+            tracking_ik = 0.6
+            stand_still = -0.4
         soft_dof_pos_limit = 0.9
-        base_height_target = 0.19
+        base_height_target = 0.175
         min_base_height = 0.13
-        max_base_tilt_deg = 75.0
+        max_base_tilt_deg = 50.0
+        recovery_min_height = 0.165
         tracking_sigma = 0.02
         tracking_sigma_ang_vel = 0.03
         swing_contact_grace_time = 0.02
@@ -161,11 +167,11 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         max_push_vel_xy = 0.1
         action_delay = True
         action_delay_range = [1, 2]
-        recovery_roll_pitch_range_deg = 12.0
-        recovery_lin_vel_xy_range = 0.12
-        recovery_lin_vel_z_range = 0.04
-        recovery_ang_vel_xy_range = 0.80
-        recovery_ang_vel_z_range = 0.35
+        recovery_roll_pitch_range_deg = 10.0
+        recovery_lin_vel_xy_range = 0.10
+        recovery_lin_vel_z_range = 0.03
+        recovery_ang_vel_xy_range = 0.65
+        recovery_ang_vel_z_range = 0.30
 
 
 class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
@@ -175,7 +181,7 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         learning_rate = 1e-4
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v6_1_recovery_resume'
+        run_name = 'spotmicro_v6_1_1_recovery_contact_termination'
         experiment_name = 'spotmicro_test'
         max_iterations = 1000
         save_interval = 100

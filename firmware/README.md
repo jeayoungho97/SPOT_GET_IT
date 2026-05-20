@@ -17,7 +17,7 @@ STM32는 단순 passthrough가 아니라 **자체 폐루프 제어 + 안전 계�
 ```
 Jetson (50Hz)         STM32 (500Hz)              Hardware
 ─────────────         ──────────────             ─────────
-RL inference  ──SPI──→ ① 명령 검증
+RL inference  ──UART─→ ① 명령 검증
                        ② PID 제어 (관절각 → 서보 명령)
                        ③ 안전 체크 (limit, watchdog, temp)
                        ④ SYNC_WRITE  ──HDSEL──→ 12 STS3215
@@ -34,7 +34,7 @@ RL inference  ──SPI──→ ① 명령 검증
 |---|---|---|---|
 | STM ↔ 서보 (4 버스 병렬) | HDSEL UART | 1 Mbps | 500 Hz |
 | STM ↔ IMU (BNO055) | I2C Fast-Mode | 400 kHz | 500 Hz |
-| STM ↔ Jetson | SPI (Jetson master) | 10 MHz | 50 Hz |
+| STM ↔ Jetson | UART | 921600 | 50 Hz |
 | 디버그 콘솔 | USART2 (ST-Link VCP) | 115200 | - |
 
 상세 핀 매핑 / 회로는 [`hardware_design.md`](../docs/hardware/hardware_design.md) 참고.
@@ -49,7 +49,7 @@ firmware/
 │   ├── servo/        # STS3215 Feetech serial bus protocol (PING, READ, WRITE, SYNC_WRITE)
 │   ├── imu/          # BNO055 드라이버
 │   ├── control/      # PID, 관절 제어, 운동학
-│   ├── comm/         # Jetson SPI 통신, 패킷 정의
+│   ├── comm/         # Jetson UART 통신, 패킷 정의
 │   └── safety/       # watchdog, limit / temperature / current 체크
 └── README.md
 ```
@@ -76,8 +76,8 @@ firmware/
 - [ ] **Phase 10** — Default pose 확정 + 4 다리 동시 진입 (각도 결정 → 4 다리 검증)
 - [ ] **Phase 11** — Blocking HAL → DMA + IT 전환, 500Hz 제어 루프
 - [ ] **Phase 12** — IMU (BNO055) 통합, projected gravity 계산
-- [ ] **Phase 13** — SPI 통신 검증 (더미 데이터로 패킷 송수신 self-test)
-- [ ] **Phase 14** — Jetson SPI 실제 연동 + watchdog
+- [ ] **Phase 13** — UART 통신 검증 (더미 데이터로 패킷 송수신 self-test)
+- [ ] **Phase 14** — Jetson UART 실제 연동 + watchdog
 - [ ] **Phase 15** — 조이스틱 + 고전 제어 시연 트랙
   - Jetson에서 조이스틱 입력 읽고 IK + gait pattern 계산 → SPI로 STM에 target_rad 전송
   - STM 펌웨어는 RL과 동일 경로 사용 (입력 소스만 다를 뿐 SPI 인터페이스 공통)

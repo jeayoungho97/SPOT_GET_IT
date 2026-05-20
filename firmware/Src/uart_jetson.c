@@ -3,9 +3,8 @@
 #include "spi_protocol.h"    /* MOSI_PAYLOAD_SIZE, SPI_MOSI_MAGIC, spi_decode_command, crc16_ccitt_false */
 
 /* === Peripheral handles === */
-UART_HandleTypeDef huart_jetson;
-DMA_HandleTypeDef  hdma_usart1_rx;
-DMA_HandleTypeDef  hdma_usart1_tx;
+extern DMA_HandleTypeDef  hdma_usart1_rx;
+extern DMA_HandleTypeDef  hdma_usart1_tx;
 
 /* === RX circular buffer + tracking === */
 static uint8_t         rx_buf[JETSON_UART_RX_BUF_SIZE];
@@ -16,73 +15,7 @@ static volatile bool     rx_idle = false;
 /* === USART1 초기화: 921600 8N1, full-duplex, DMA === */
 void MX_USART1_Jetson_Init(void)
 {
-    /* ---- GPIO: PB6 (TX), PB7 (RX) — USART1 alternate pins
-     * PA9/PA10 는 Nucleo-F446RE 의 USB OTG VBUS/ID 회로와 충돌 (PA10 풀다운)
-     * 으로 사용 불가. PB6/PB7 로 우회. (원래 I2C1 자리는 PB8/PB9 로 swap 완료) */
-    __HAL_RCC_GPIOB_CLK_ENABLE();
-    __HAL_RCC_USART1_CLK_ENABLE();
-    __HAL_RCC_DMA2_CLK_ENABLE();
-
-    GPIO_InitTypeDef gp = {0};
-    gp.Pin       = GPIO_PIN_6 | GPIO_PIN_7;
-    gp.Mode      = GPIO_MODE_AF_PP;
-    gp.Pull      = GPIO_NOPULL;
-    gp.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
-    gp.Alternate = GPIO_AF7_USART1;
-    HAL_GPIO_Init(GPIOB, &gp);
-
-    /* ---- USART1 ---- */
-    huart_jetson.Instance          = USART1;
-    huart_jetson.Init.BaudRate     = JETSON_UART_BAUDRATE;
-    huart_jetson.Init.WordLength   = UART_WORDLENGTH_8B;
-    huart_jetson.Init.StopBits     = UART_STOPBITS_1;
-    huart_jetson.Init.Parity       = UART_PARITY_NONE;
-    huart_jetson.Init.Mode         = UART_MODE_TX_RX;
-    huart_jetson.Init.HwFlowCtl    = UART_HWCONTROL_NONE;
-    huart_jetson.Init.OverSampling = UART_OVERSAMPLING_16;
-    if (HAL_UART_Init(&huart_jetson) != HAL_OK) {
-        Error_Handler();
-    }
-
-    /* ---- DMA2 Stream2 Ch4: USART1_RX (circular) ---- */
-    hdma_usart1_rx.Instance                 = DMA2_Stream2;
-    hdma_usart1_rx.Init.Channel             = DMA_CHANNEL_4;
-    hdma_usart1_rx.Init.Direction           = DMA_PERIPH_TO_MEMORY;
-    hdma_usart1_rx.Init.PeriphInc           = DMA_PINC_DISABLE;
-    hdma_usart1_rx.Init.MemInc              = DMA_MINC_ENABLE;
-    hdma_usart1_rx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
-    hdma_usart1_rx.Init.MemDataAlignment    = DMA_MDATAALIGN_BYTE;
-    hdma_usart1_rx.Init.Mode                = DMA_CIRCULAR;
-    hdma_usart1_rx.Init.Priority            = DMA_PRIORITY_HIGH;
-    hdma_usart1_rx.Init.FIFOMode            = DMA_FIFOMODE_DISABLE;
-    if (HAL_DMA_Init(&hdma_usart1_rx) != HAL_OK) {
-        Error_Handler();
-    }
-    __HAL_LINKDMA(&huart_jetson, hdmarx, hdma_usart1_rx);
-
-    /* ---- DMA2 Stream7 Ch4: USART1_TX (normal) ---- */
-    hdma_usart1_tx.Instance                 = DMA2_Stream7;
-    hdma_usart1_tx.Init.Channel             = DMA_CHANNEL_4;
-    hdma_usart1_tx.Init.Direction           = DMA_MEMORY_TO_PERIPH;
-    hdma_usart1_tx.Init.PeriphInc           = DMA_PINC_DISABLE;
-    hdma_usart1_tx.Init.MemInc              = DMA_MINC_ENABLE;
-    hdma_usart1_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
-    hdma_usart1_tx.Init.MemDataAlignment    = DMA_MDATAALIGN_BYTE;
-    hdma_usart1_tx.Init.Mode                = DMA_NORMAL;
-    hdma_usart1_tx.Init.Priority            = DMA_PRIORITY_HIGH;
-    hdma_usart1_tx.Init.FIFOMode            = DMA_FIFOMODE_DISABLE;
-    if (HAL_DMA_Init(&hdma_usart1_tx) != HAL_OK) {
-        Error_Handler();
-    }
-    __HAL_LINKDMA(&huart_jetson, hdmatx, hdma_usart1_tx);
-
-    /* ---- NVIC ---- */
-    HAL_NVIC_SetPriority(USART1_IRQn, 5, 0);
-    HAL_NVIC_EnableIRQ(USART1_IRQn);
-    HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 5, 0);
-    HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
-    HAL_NVIC_SetPriority(DMA2_Stream7_IRQn, 5, 0);
-    HAL_NVIC_EnableIRQ(DMA2_Stream7_IRQn);
+    MX_USART1_UART_Init();
 }
 
 /* === RX DMA circular 시작 + IDLE 인터럽트 활성화 === */
@@ -176,7 +109,7 @@ uart_frame_result_t uart_jetson_process_rx(void)
 {
     uart_frame_result_t last_result = UART_FRAME_NO_DATA;
 
-    /* 큐에 116B 이상 누적되어 있는 동안 반복 — backlog drain */
+    /* 큐에 MOSI 한 프레임 이상 누적되어 있는 동안 반복 — backlog drain */
     while (uart_jetson_rx_available() >= MOSI_PAYLOAD_SIZE) {
         uint16_t avail = uart_jetson_rx_available();
 
@@ -208,12 +141,12 @@ uart_frame_result_t uart_jetson_process_rx(void)
             parser_resync_count++;
         }
 
-        /* 3) magic 위치부터 116B 확보됐는지 재확인 */
+        /* 3) magic 위치부터 MOSI 한 프레임 확보됐는지 재확인 */
         if (uart_jetson_rx_available() < MOSI_PAYLOAD_SIZE) {
             return last_result;
         }
 
-        /* 4) 116B candidate 를 선형 버퍼로 복사 (wrap-around 처리) */
+        /* 4) MOSI candidate 를 선형 버퍼로 복사 (wrap-around 처리) */
         static uint8_t candidate[MOSI_PAYLOAD_SIZE];
         for (uint16_t i = 0; i < MOSI_PAYLOAD_SIZE; i++) {
             uint16_t p = (uint16_t)((rx_tail + i) % JETSON_UART_RX_BUF_SIZE);
@@ -223,7 +156,7 @@ uart_frame_result_t uart_jetson_process_rx(void)
         /* 5) decode — spi_decode_command 가 CRC 검증 + g_robot_state 갱신 */
         decode_result_t r = spi_decode_command(candidate);
         if (r == DECODE_OK) {
-            /* 정상 처리 — 116B 소비 */
+            /* 정상 처리 — MOSI 한 프레임 소비 */
             rx_tail = (uint16_t)((rx_tail + MOSI_PAYLOAD_SIZE) % JETSON_UART_RX_BUF_SIZE);
             frame_count_ok++;
             last_result = UART_FRAME_OK;

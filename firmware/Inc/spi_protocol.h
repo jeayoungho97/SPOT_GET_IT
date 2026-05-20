@@ -7,7 +7,7 @@
 
 /*
  * Wire protocol 정의 — Jetson actuator_bridge 와 binary-compatible.
- * Command (Jetson → STM): 116 byte
+ * Command (Jetson → STM): 117 byte
  * Feedback (STM → Jetson): 261 byte
  * 50 Hz, UART 921600 8N1 (이전: SPI Mode 0 5MHz 261B padded full-duplex)
  * Endianness: little-endian (양쪽 ARM).
@@ -21,8 +21,8 @@
 #define SPI_MOSI_MAGIC          0xA55A
 #define SPI_MISO_MAGIC          0x5AA5
 
-/* MOSI (command) frame: 116 byte, padding 없음 */
-#define MOSI_PAYLOAD_SIZE       116
+/* MOSI (command) frame: 117 byte, padding 없음 */
+#define MOSI_PAYLOAD_SIZE       117
 
 /* MISO (feedback) frame: 261 byte, padding 없음 */
 #define MISO_PAYLOAD_SIZE       261
@@ -41,10 +41,8 @@
 #define SPI_MODE_OPERATE        1   /* torque on + apply target_rad */
 
 /* STM -> Jetson motion_state (feedback)
- * STM 은 RL 이 보낸 target 만 따라가므로 motion direction 은 모름.
- * 현재 STM 이 set 할 수 있는 두 값만 정의. 나머지 WALK_FORWARD/TURN_LEFT/...
- * 등은 robot_interfaces/msg/StmMotion.msg 가 정의하지만 RL/high-level 노드가
- * 별도 publish 해야 함 (STM 영역 아님).
+ * Jetson -> STM command 의 motion_state 를 그대로 echo.
+ * 값 정의는 robot_interfaces/msg/StmMotion.msg 와 Jetson bridge 쪽을 따른다.
  */
 #define MOTION_STATE_STOP       0
 #define MOTION_STATE_UNKNOWN    8
@@ -58,7 +56,7 @@
 #define SPI_FLAG_TORQUE_EN      (1 << 0)   /* reserved (unused) */
 #define SPI_FLAG_E_STOP         (1 << 3)   /* reserved (unused) */
 
-/* MOSI: Jetson -> STM (116 byte, no padding) */
+/* MOSI: Jetson -> STM (117 byte, no padding) */
 typedef struct __attribute__((packed)) {
     uint16_t magic;                             /* 0xA55A */
     uint16_t seq;
@@ -69,6 +67,7 @@ typedef struct __attribute__((packed)) {
     float    max_delta_rad[SPI_NUM_JOINTS];     /* 48 */
     float    gait_phase;                        /* 4  */
     uint32_t gait_cycle_count;                  /* 4  */
+    uint8_t  motion_state;                      /* 1  */
     uint16_t crc16;
 } spi_mosi_frame_t;
 

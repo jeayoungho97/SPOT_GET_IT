@@ -68,22 +68,23 @@ static inline void write_f32_le(uint8_t *p, float f) {
 }
 
 /*
- * MOSI layout (116 byte payload):
+ * MOSI layout (117 byte payload):
  *   0: magic(2)  2: seq(2)  4: timestamp_us(4)
  *   8: mode(1)   9: flags(1)
  *  10: target_rad[12](48)
  *  58: max_delta_rad[12](48)
  * 106: gait_phase(4)
  * 110: gait_cycle_count(4)
- * 114: crc16(2)
+ * 114: motion_state(1)
+ * 115: crc16(2)
  */
 decode_result_t spi_decode_command(const uint8_t *rx) {
     uint16_t magic = read_u16_le(rx + 0);
     if (magic != SPI_MOSI_MAGIC)
         return DECODE_BAD_MAGIC;
 
-    uint16_t calc_crc = crc16_ccitt_false(rx, 114);
-    uint16_t recv_crc = read_u16_le(rx + 114);
+    uint16_t calc_crc = crc16_ccitt_false(rx, MOSI_PAYLOAD_SIZE - 2);
+    uint16_t recv_crc = read_u16_le(rx + MOSI_PAYLOAD_SIZE - 2);
     if (calc_crc != recv_crc) {
         g_robot_state.crc_error_count++;
         g_robot_state.fault_code = FAULT_CRC_ERROR;
@@ -117,6 +118,7 @@ decode_result_t spi_decode_command(const uint8_t *rx) {
 
     g_robot_state.gait_phase       = read_f32_le_u32(rx + 106);
     g_robot_state.gait_cycle_count = read_u32_le(rx + 110);
+    g_robot_state.motion_state     = rx[114];
 
     g_robot_state.last_cmd_time_ms = HAL_GetTick();
     g_robot_state.status |= STATUS_BIT_CMD_FRESH;
@@ -149,21 +151,7 @@ void spi_encode_feedback(uint8_t *tx) {
     tx[8] = g_robot_state.status;
     tx[9] = (uint8_t)g_robot_state.fault_code;
 
-    /* motion_state (StmMotion.msg enum)
-     * STM 은 RL 이 보낸 target 만 따라가므로 실제 방향은 모름.
-     * IDLE/HOLD/CAL -> STOP, POSITION -> UNKNOWN 으로 단순 매핑.
-     * 정확한 motion direction 은 RL/high-level controller 가 별도 publish 해야 함.
-     * (이전엔 internal mode (IDLE=0..HOLD=3) 를 그대로 채워 ROS 가 WALK_FORWARD 등으로 오해석하던 버그)
-     */
-    uint8_t motion_state;
-    switch (g_robot_state.mode) {
-        case MODE_POSITION:    motion_state = MOTION_STATE_UNKNOWN; break;
-        case MODE_IDLE:
-        case MODE_HOLD:
-        case MODE_CALIBRATION:
-        default:               motion_state = MOTION_STATE_STOP;    break;
-    }
-    tx[10] = motion_state;
+    tx[10] = g_robot_state.motion_state;
 
     /* gait echo */
     write_f32_le(tx + 11, g_robot_state.gait_phase);

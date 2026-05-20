@@ -96,7 +96,8 @@ sts_full_state_t sts_read_full_state(UART_HandleTypeDef *huart, uint8_t id) {
             memcpy(resp, &raw[off], 14);
             if (resp[13] == calc_checksum(resp, 14)) {
                 r.position      = resp[5]  | ((uint16_t)resp[6]  << 8);
-                r.speed         = (int16_t)(resp[7]  | ((uint16_t)resp[8]  << 8));
+                r.speed         = sts_speed_to_signed(
+                    resp[7] | ((uint16_t)resp[8] << 8));
                 r.load          = sts_load_to_signed(resp[9] | ((uint16_t)resp[10] << 8));
                 r.voltage_dV    = resp[11];
                 r.temperature_C = resp[12];
@@ -163,4 +164,9 @@ bool sts_sync_write_goal(UART_HandleTypeDef *huart,
 int16_t sts_load_to_signed(uint16_t raw) {
     int16_t mag = (int16_t)(raw & 0x3FF);
     return (raw & 0x400) ? -mag : mag;
+}
+
+int16_t sts_speed_to_signed(uint16_t raw) {
+    int16_t mag = (int16_t)(raw & 0x7FFF);
+    return (raw & 0x8000) ? -mag : mag;
 }
