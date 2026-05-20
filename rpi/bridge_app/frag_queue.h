@@ -64,14 +64,16 @@ static inline void frag_queue_push(FragQueue *q,
 static inline int frag_queue_pop(FragQueue *q,
                                   uint8_t *buf, int max_len) {
     pthread_mutex_lock(&q->mu);
-    while (q->count == 0 && !q->stop)
-        pthread_cond_wait(&q->cv, &q->mu);
+    while (q->count == 0 && !q->stop) pthread_cond_wait(&q->cv, &q->mu);
+    
     if (q->stop && q->count == 0) {
         pthread_mutex_unlock(&q->mu);
         return -1;
     }
+
     FragEntry *e = &q->entries[q->head];
     int len = e->len;
+    
     if (len > max_len) len = max_len;
     __builtin_memcpy(buf, e->buf, (size_t)len);
     q->head = (q->head + 1) % FRAG_QUEUE_SIZE;

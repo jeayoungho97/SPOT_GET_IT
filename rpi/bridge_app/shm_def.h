@@ -32,9 +32,13 @@
 #include <pthread.h>
 #include <semaphore.h>
 
+#include "proto.h"
+
 /* ─── 다중 로봇 ─────────────────────────────────────────────── */
 #define MAX_ROBOTS        10
 #define SHM_NAME_FMT      "/robot_bridge_%d"   /* sprintf용 포맷 */
+#define SHM_MAGIC         0x42524745u          /* "BRGE" */
+#define SHM_VERSION       7
 
 /* ─── 크기 상수 ─────────────────────────────────────────────── */
 #define IMG_SLOT_SIZE     (200 * 1024)   /* 200KB: JPEG 여유치 */
@@ -42,6 +46,26 @@
 
 #define LIDAR_MAX_PTS     8192           /* 3D: VLP-16 1/4 decimation(~7200pts) 여유 */
 #define LIDAR_SLOTS       3              /* Triple Buffer (3D 프레임 여유) */
+#define EVENT_LOG_SIZE    1024
+#define SHM_CMD_QUEUE_SIZE 64
+
+typedef struct {
+    CmdPacket cmd;
+    uint8_t   priority;
+    uint8_t   flags;
+    uint16_t  reserved;
+    uint64_t  enqueue_us;
+} ShmCmdEntry;
+
+typedef struct {
+    pthread_mutex_t mu;          /* process-shared: Qt producer, bridge consumer */
+    ATOMIC_INT      head;
+    ATOMIC_INT      tail;
+    ATOMIC_INT      count;
+    ATOMIC_INT      write_seq;   /* diagnostic/wakeup generation counter */
+    ATOMIC_INT      drop_count;
+    ShmCmdEntry     entries[SHM_CMD_QUEUE_SIZE];
+} ShmCmdQueue;
 
 /* ─── 이미지 슬롯 ────────────────────────────────────────────── */
 typedef struct {
@@ -81,8 +105,96 @@ typedef struct {
     float    avg_img_latency_us;
 } BridgeMeta;
 
+typedef struct {
+    uint32_t seq;
+    uint64_t updated_us;
+    uint8_t  robot_id;
+    uint8_t  connected;
+    uint8_t  mode;
+    uint8_t  fault_level;
+    uint8_t  control_owner;
+    float    x;
+    float    y;
+    float    theta;
+    float    vx;
+    float    vy;
+    float    omega;
+    float    battery_percent;
+    float    voltage;
+    float    current;
+    float    temperature;
+    float    link_rtt_ms;
+    float    image_fps;
+    float    lidar_fps;
+    float    drop_rate;
+    uint32_t odom_seq;
+    uint32_t mission_id;
+    uint32_t waypoint_idx;
+    uint32_t total_waypoints;
+    float    mission_progress;
+    uint8_t  path_ok;
+    uint8_t  pose_ok;
+    uint8_t  goal_reached;
+    uint8_t  path_progress_reserved;
+    float    goal_x;
+    float    goal_y;
+    uint32_t nearest_path_idx;
+    float    distance_to_nearest_m;
+    float    nearest_x;
+    float    nearest_y;
+    float    target_x;
+    float    target_y;
+    float    target_heading;
+    float    heading_error;
+    float    distance_to_target_m;
+    float    distance_to_goal_m;
+    uint32_t fault_code;
+    char     fault_text[96];
+    uint64_t last_rx_us;
+    uint64_t last_cmd_ack_us;
+} RobotState;
+
+typedef struct {
+    uint32_t seq;
+    uint64_t updated_us;
+    char     robot_id[ROBOT_ID_STR_LEN];
+    uint8_t  count;
+    uint8_t  reserved[3];
+    PathWaypoint waypoints[GLOBAL_PATH_MAX_WAYPOINTS];
+} GlobalPathState;
+
+typedef struct {
+    uint64_t timestamp_us;
+    uint8_t  robot_id;
+    uint8_t  severity;
+    uint16_t event_type;
+    uint32_t code;
+    char     message[96];
+} RobotEvent;
+
+typedef struct {
+    ATOMIC_INT write_seq;
+    RobotEvent events[EVENT_LOG_SIZE];
+} EventLog;
+
+typedef struct {
+    ATOMIC_INT rx_packets;
+    ATOMIC_INT tx_commands;
+    ATOMIC_INT ack_packets;
+    ATOMIC_INT retry_commands;
+    ATOMIC_INT dropped_packets;
+    uint64_t   last_rx_us;
+    uint64_t   last_tx_us;
+    uint64_t   last_ack_us;
+} BridgeMetrics;
+
 /* ─── 공유 메모리 전체 구조 (로봇 1대분) ────────────────────── */
 typedef struct {
+    uint32_t shm_magic;
+    uint16_t shm_version;
+    uint16_t shm_header_size;
+    uint32_t shared_data_size;
+    uint32_t reserved0;
 
     /* ── 이미지: Triple Buffer ──────────────────────────────── */
     ImgSlot        img_slots[IMG_SLOTS];
@@ -108,5 +220,15 @@ typedef struct {
     /* ── 메타: rwlock ───────────────────────────────────────── */
     pthread_rwlock_t meta_lock;
     BridgeMeta       meta;
+
+    pthread_rwlock_t state_lock;
+    RobotState       state;
+
+    pthread_rwlock_t path_lock;
+    GlobalPathState  global_path;
+
+    EventLog         event_log;
+    BridgeMetrics    metrics;
+    ShmCmdQueue      cmd_queue;
 
 } SharedData;

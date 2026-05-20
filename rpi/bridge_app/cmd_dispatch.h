@@ -19,8 +19,9 @@
  * @param num_robots 등록된 로봇 수 (robot_id 범위 검증용)
  * @param tag        로그 접두어 (예: "jetson_tx", "pc_link")
  */
-void send_cmd_to_jetson(const CmdPacket    *cmd,
-                        JetsonAddrTable    *tbl,
-                        int                 udp_fd,
-                        int                 num_robots,
-                        const char         *tag);
+void send_cmd_to_jetson(const CmdPacket *cmd,
+                        BridgeApi       *api,
+                        int              udp_fd,
+                        uint8_t          priority,
+                        uint8_t          flags,
+                        const char      *tag);
