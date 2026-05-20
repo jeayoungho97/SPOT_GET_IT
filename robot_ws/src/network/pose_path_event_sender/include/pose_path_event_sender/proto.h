@@ -26,7 +26,8 @@
 #define PKT_TYPE_GLOBAL_PATH   0x0B
 #define PKT_TYPE_PATH_PROGRESS 0x0C
 
-#define GLOBAL_PATH_MAX_WAYPOINTS 7
+#define GLOBAL_PATH_MAX_WAYPOINTS 40
+#define GLOBAL_PATH_PAYLOAD_MAX   (4 + (GLOBAL_PATH_MAX_WAYPOINTS * 16))
 #define ROBOT_ID_STR_LEN          16
 
 /* ─── 커맨드 타입 ────────────────────────────────────────────── */
@@ -58,7 +59,9 @@
 
 /* ─── 크기 제한 ─────────────────────────────────────────────── */
 #define PROTO_MTU        1400
-#define PROTO_PKT_MAX    (sizeof(PktHeader) + PROTO_MTU)
+#define PROTO_MAX_PAYLOAD \
+    ((GLOBAL_PATH_PAYLOAD_MAX > PROTO_MTU) ? GLOBAL_PATH_PAYLOAD_MAX : PROTO_MTU)
+#define PROTO_PKT_MAX    (sizeof(PktHeader) + PROTO_MAX_PAYLOAD)
 
 /* ─── 공통 헤더 (모든 패킷, 24B) ────────────────────────────── */
 typedef struct __attribute__((packed)) {
@@ -80,6 +83,7 @@ typedef struct __attribute__((packed)) {
     float vx;
     float vy;
     float omega;
+    float bus_voltage;
 } OdomPayload;
 
 /* ─── 커맨드 페이로드 (RPi5 → Jetson) ──────────────────────── */
@@ -227,7 +231,11 @@ static inline int proto_validate_header(const PktHeader *hdr,
     if (hdr->payload_len != actual_payload_len) return 0;
     if (hdr->frag_total == 0) return 0;
     if (hdr->frag_idx >= hdr->frag_total) return 0;
-    if (actual_payload_len > PROTO_MTU) return 0;
+    if (hdr->type == PKT_TYPE_GLOBAL_PATH) {
+        if (actual_payload_len > GLOBAL_PATH_PAYLOAD_MAX) return 0;
+    } else if (actual_payload_len > PROTO_MTU) {
+        return 0;
+    }
     if ((hdr->type == PKT_TYPE_ODOM || hdr->type == PKT_TYPE_CMD ||
          hdr->type == PKT_TYPE_CMD_ACK || hdr->type == PKT_TYPE_GLOBAL_PATH ||
          hdr->type == PKT_TYPE_PATH_PROGRESS) &&

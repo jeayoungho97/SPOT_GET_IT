@@ -36,9 +36,8 @@ setup(
             "pytest",
         ],
     },
-    entry_points={
-        "console_scripts": [
-            "classic_control_node = classic_control.classic_control_node:main",
-        ],
-    },
+    scripts=[
+        "scripts/classic_control_node",
+        "scripts/classic_one_cycle_test_node",
+    ],
 )

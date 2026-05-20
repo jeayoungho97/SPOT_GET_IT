@@ -1,7 +1,8 @@
 gait_odom_estimator_node:
   ros__parameters:
     # Topic names
-    stm_motion_topic: "/localization/stm_motion"
+    #stm_motion_topic: "/localization/stm_motion"    # 실험용 input
+    stm_motion_topic: "/localization/spot_motion"   # 실사용 input
     odom_topic: "/localization/odometry"
 
     # Frame names
@@ -10,10 +11,10 @@ gait_odom_estimator_node:
 
     # Gait calibration parameters
     # 실측 튜닝 후 이 값을 수정한다.
-    forward_step_length_m: 0.030
+    forward_step_length_m: 0.1
     backward_step_length_m: 0.025
-    strafe_left_step_length_m: 0.018
-    strafe_right_step_length_m: 0.018
+    strafe_left_step_length_m: 0.05
+    strafe_right_step_length_m: 0.05
 
     # Yaw calibration
     # 실제 IMU 값이 base_link 기준으로 어느 정도 벌어져있느지 확인 필요

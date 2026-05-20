@@ -9,7 +9,7 @@ classic_control_node:
     feedback_topic: "/control/actuator/joint_feedback"
 
     command_timeout_sec: 0.35
-    linear_deadband_mps: 0.01
+    linear_deadband_mps: 0.02
     lateral_deadband_mps: 0.01
     angular_deadband_radps: 0.03
 

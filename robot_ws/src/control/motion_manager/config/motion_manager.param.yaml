@@ -5,32 +5,80 @@ stand_motion_node:
     # 0.03 rad/step at 50Hz = 1.5 rad/s
     max_delta_rad: 0.03
 
-    # 현재 학습/dry-run 기준 기본 자세
+    # CLASSIC mode에서 cmd_vel=0일 때의 기본 자세.
     stand_pose:
       - 0.0
-      - -0.6
-      - 1.1
+      - -0.926379
+      - 1.531409
       - 0.0
-      - -0.6
-      - 1.1
+      - -0.926379
+      - 1.531409
       - 0.0
-      - -0.6
-      - 1.1
+      - -0.926379
+      - 1.531409
       - 0.0
-      - -0.6
-      - 1.1
+      - -0.926379
+      - 1.531409
+
+detect_motion_node:
+  ros__parameters:
+    rate_hz: 50.0
+
+    # DETECT 진입 후 먼저 CLASSIC 정지 자세로 이동/안정화한다.
+    settle_min_sec: 0.5
+    settle_max_sec: 1.5
+    stand_tolerance_rad: 0.08
+
+    sit_transition_sec: 3.0
+    raise_transition_sec: 1.2
+    wave_segment_sec: 0.75
+    wave_cycles: 3
+
+    stand_max_delta_rad: 0.03
+    sit_max_delta_rad: 0.015
+    raise_max_delta_rad: 0.02
+    wave_max_delta_rad: 0.02
+
+    stand_pose:
+      [0.0, -0.926379, 1.531409,
+       0.0, -0.926379, 1.531409,
+       0.0, -0.926379, 1.531409,
+       0.0, -0.926379, 1.531409]
+
+    sit_pose:
+      [-0.120000, -0.720000, 1.050000,
+       0.0, -0.926379, 1.531409,
+       0.120000, -1.500000, 2.250000,
+       0.120000, -1.500000, 2.250000]
+
+    # Joint order: FL, FR, RL, RR.
+    # Rear legs crouch low. FL stays extended as a front support while FR is lifted.
+    right_front_raised_pose:
+      [-0.120000, -0.720000, 1.050000,
+       0.0, 1.100000, 1.550000,
+       0.120000, -1.500000, 2.250000,
+       0.120000, -1.500000, 2.250000]
+
+    right_front_calf_wave_pose:
+      [-0.120000, -0.720000, 1.050000,
+       0.0, 1.100000, 2.150000,
+       0.120000, -1.500000, 2.250000,
+       0.120000, -1.500000, 2.250000]
 
 joint_target_mux_node:
   ros__parameters:
     rate_hz: 50.0
 
     # 안전 default — launch 직후 robot 은 stand pose 만 유지.
-    # RL/classic 노드는 띄워져 있어도 선택된 mode가 아니면 mux 에서 무시됨.
-    # 보행 활성화는 runtime 에 mode topic 으로:
+    # RL/classic/detect 노드는 띄워져 있어도 선택된 mode가 아니면 mux 에서 무시됨.
+    # Runtime command는 mux만 구독하고, mux가 /control/behavior/active_mode를 publish한다.
     #   ros2 topic pub /control/behavior/mode std_msgs/msg/String "data: 'RL'" --once
     #   ros2 topic pub /control/behavior/mode std_msgs/msg/String "data: 'CLASSIC'" --once
+    #   ros2 topic pub /control/behavior/mode std_msgs/msg/String "data: 'STAND'" --once
+    #   ros2 topic pub /control/behavior/mode std_msgs/msg/String "data: 'DETECT'" --once
     default_mode: "STAND"
 
     rl_timeout_ms: 100.0
     classic_timeout_ms: 100.0
     stand_timeout_ms: 100.0
+    detect_timeout_ms: 100.0

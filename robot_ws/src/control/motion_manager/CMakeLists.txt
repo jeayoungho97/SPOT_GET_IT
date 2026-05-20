@@ -14,9 +14,20 @@ add_executable(stand_motion_node
   src/stand_motion_node.cpp
 )
 
+add_executable(detect_motion_node
+  src/detect_motion_node.cpp
+)
+
 target_compile_features(stand_motion_node PUBLIC cxx_std_17)
+target_compile_features(detect_motion_node PUBLIC cxx_std_17)
 
 ament_target_dependencies(stand_motion_node
+  rclcpp
+  std_msgs
+  robot_interfaces
+)
+
+ament_target_dependencies(detect_motion_node
   rclcpp
   std_msgs
   robot_interfaces
@@ -36,6 +47,7 @@ ament_target_dependencies(joint_target_mux_node
 
 install(TARGETS
   stand_motion_node
+  detect_motion_node
   joint_target_mux_node
   DESTINATION lib/${PROJECT_NAME}
 )
