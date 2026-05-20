@@ -10,13 +10,13 @@ class SpotmicroTestCfg(LeggedRobotCfg):
 
     class ik:
         # Same gait/IK model as robot_ws/src/control/locomotion_common.
-        gait_period = 1.0
-        duty_factor = 0.55
-        phase_cmd_norm = 0.1
-        blend_cmd_norm = 0.1
+        gait_period = 1.2
+        duty_factor = 0.58
+        phase_cmd_norm = 0.04
+        blend_cmd_norm = 0.04
 
         body_height = [0.170, 0.170, 0.170, 0.170]
-        step_height = [0.016, 0.016, 0.019, 0.019]
+        step_height = [0.013, 0.013, 0.016, 0.016]
         default_foot_x = [-0.010, -0.010, -0.010, -0.010]
         default_foot_y = [0.0, 0.0, 0.0, 0.0]
 
@@ -25,8 +25,8 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         shoulder_sign = [1.0, -1.0, 1.0, -1.0]
         phase_offsets = [0.0, 0.5, 0.5, 0.0]
 
-        max_stride_x = 0.085
-        max_stride_y = 0.025
+        max_stride_x = 0.070
+        max_stride_y = 0.035
         upper_link_x = 0.0
         upper_link_z = 0.105
         lower_link = 0.130
@@ -87,8 +87,8 @@ class SpotmicroTestCfg(LeggedRobotCfg):
 
     class rewards(LeggedRobotCfg.rewards):
         class scales:
-            tracking_lin_vel = 1.0
-            tracking_ang_vel = 0.7
+            tracking_lin_vel = 1.5
+            tracking_ang_vel = 0.8
             termination = -10.0
             lin_vel_z = -1.5
             ang_vel_xy = -0.5
@@ -97,21 +97,22 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             dof_vel = -0.0005
             dof_acc = -2.5e-7
             action_rate = -0.04
-            feet_air_time = 0.0
+            feet_air_time = 0.08
             dof_pos_limits = 0.0
             collision = -1.0
             trot_symmetry = 0.0
-            no_stuck_feet = 0.0
+            no_stuck_feet = -0.12
             symmetric_gait = 0.0
-            feet_clearance = 0.0
+            feet_clearance = 0.20
+            swing_contact = -0.25
             trot_contact = 0.3
-            tracking_ik = 0.6
+            tracking_ik = 0.5
             stand_still = -0.3
         soft_dof_pos_limit = 0.9
         base_height_target = 0.19
         min_base_height = 0.13
-        tracking_sigma = 0.1
-        tracking_sigma_ang_vel = 0.05
+        tracking_sigma = 0.02
+        tracking_sigma_ang_vel = 0.03
 
     class normalization(LeggedRobotCfg.normalization):
         class obs_scales:
@@ -142,7 +143,7 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         class ranges:
             lin_vel_x = [-0.03, 0.15]
             lin_vel_y = [0.0, 0.0]
-            ang_vel_yaw = [-0.30, 0.30]
+            ang_vel_yaw = [-0.20, 0.20]
             heading = [-3.14, 3.14]
 
     class domain_rand(LeggedRobotCfg.domain_rand):
@@ -164,7 +165,7 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         learning_rate = 1e-4
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v6_0_1_shared_ik_cmd_deadband'
+        run_name = 'spotmicro_v6_0_3_low_speed_clearance'
         experiment_name = 'spotmicro_test'
         max_iterations = 1500
         save_interval = 100

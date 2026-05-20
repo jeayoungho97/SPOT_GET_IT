@@ -64,3 +64,5 @@
 | 060 | 05/15 | spotmicro_v5_6_1_recovery_assist_push | V5.6.1: recovery test - add push | 93.1% | 0.056 | 8.4% | ✅ |
 | 061 | 05/19 | spotmicro_v6_0_shared_ik_retrain | v6.0: 새로운 IK로 학습 | 97.5% | 0.025 | 2.1% | ✅ |
 | 062 | 05/19 | spotmicro_v6_0_1_shared_ik_cmd_deadband | v6.0.1: deadband 조정으로 걷는지 확인 | 93.4% | 0.053 | 2.0% | ✅ |
+| 063 | 05/19 | spotmicro_v6_0_2_forward_tracking | v6.2: 설정 common IK 초기와 동일하게 변경하고 선속도 추종 ... | 92.3% | 0.029 | 2.1% | ✅ |
+| 064 | 05/20 | spotmicro_v6_0_3_low_speed_clearance | v6.0.3: 저속 구간 재설정 및 다리 안드는 페널티 추가 | 90.0% | 0.026 | 5.9% | ✅ |

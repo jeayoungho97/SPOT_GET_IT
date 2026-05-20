@@ -367,7 +367,9 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
         data['cmd_vel_x'].append(np.mean(cmd_x))
         data['actual_vel_x'].append(np.mean(vel_x))
         data['cmd_abs_vel_x'].append(np.mean(np.abs(cmd_x)))
+        data['actual_abs_vel_x'].append(np.mean(np.abs(vel_x)))
         data['cmd_forward_pct'].append(np.mean(cmd_x > 0.02) * 100.0)
+        data['actual_forward_pct'].append(np.mean(vel_x > 0.02) * 100.0)
         data['cmd_zero_lin_pct'].append(np.mean(np.sqrt(cmd_x ** 2 + cmd_y ** 2) < 0.02) * 100.0)
  
         # --- 각속도 추종 ---
@@ -574,10 +576,16 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
     std_power = np.std(power_list)
     mean_vel = np.mean(np.abs(data['actual_vel_x']))
     mean_cmd_abs_x = np.mean(data['cmd_abs_vel_x'])
+    mean_actual_abs_x = np.mean(data['actual_abs_vel_x'])
     mean_cmd_forward_pct = np.mean(data['cmd_forward_pct'])
+    mean_actual_forward_pct = np.mean(data['actual_forward_pct'])
     mean_cmd_zero_lin_pct = np.mean(data['cmd_zero_lin_pct'])
+    forward_tracking_ratio = (
+        mean_actual_abs_x / mean_cmd_abs_x
+        if mean_cmd_abs_x > 1.0e-6 else 0.0
+    )
     robot_mass = 2.6
-    cot = mean_power / (robot_mass * 9.81 * mean_vel) if mean_vel > 0.01 else 0.0
+    cot = mean_power / (robot_mass * 9.81 * mean_actual_abs_x) if mean_actual_abs_x > 0.01 else 0.0
 
     # --- 에피소드 통계 ---
     timeout_rate = 0.0
@@ -722,7 +730,10 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
     print(f"  평균 X속도 오차: {mean_err_x:.4f} m/s")
     print(f"  평균 Y속도 오차: {mean_err_y:.4f} m/s")
     print(f"  평균 |cmd_x|: {mean_cmd_abs_x:.4f} m/s")
+    print(f"  평균 |actual_x|: {mean_actual_abs_x:.4f} m/s")
+    print(f"  전진 추종 비율(|actual_x|/|cmd_x|): {forward_tracking_ratio:.2f}")
     print(f"  전진 command 비율(cmd_x > 0.02): {mean_cmd_forward_pct:.1f}%")
+    print(f"  실제 전진 비율(actual_x > 0.02): {mean_actual_forward_pct:.1f}%")
     print(f"  선속도 zero command 비율(|cmd_xy| < 0.02): {mean_cmd_zero_lin_pct:.1f}%")
     if mean_cmd_abs_x < 0.02 and env.cfg.commands.ranges.lin_vel_x[1] > 0.05:
         print(f"  → ⚠ 전진 command가 거의 없습니다. command deadband/sampling 설정 확인 필요.")
@@ -1197,7 +1208,10 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
             'vel_error_x': float(mean_err_x),
             'vel_error_y': float(mean_err_y),
             'mean_cmd_abs_x': float(mean_cmd_abs_x),
+            'mean_actual_abs_x': float(mean_actual_abs_x),
+            'forward_tracking_ratio': float(forward_tracking_ratio),
             'mean_cmd_forward_pct': float(mean_cmd_forward_pct),
+            'mean_actual_forward_pct': float(mean_actual_forward_pct),
             'mean_cmd_zero_lin_pct': float(mean_cmd_zero_lin_pct),
             'ang_vel_error': float(mean_ang_err),
             'torque_saturation_pct': float(overall_sat),

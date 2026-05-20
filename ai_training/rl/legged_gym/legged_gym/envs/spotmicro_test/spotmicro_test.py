@@ -191,6 +191,8 @@ class SpotmicroTest(LeggedRobot):
             self.pair_air_time[env_ids] = 0.
         if hasattr(self, 'max_feet_height'):
             self.max_feet_height[env_ids] = 0.
+        if hasattr(self, 'feet_swing_contact_time'):
+            self.feet_swing_contact_time[env_ids] = 0.
 
         # recovery에서는 phase mismatch도 학습해야 하므로 reset마다 랜덤화
         self.gait_phase[env_ids] = torch_rand_float(
@@ -377,7 +379,7 @@ class SpotmicroTest(LeggedRobot):
         first_contact = (self.feet_air_time > 0.) * contact_filt
         self.feet_air_time += self.dt
         rew_airTime = torch.sum((self.feet_air_time - 0.15) * first_contact, dim=1)
-        rew_airTime *= torch.norm(self.commands[:, :2], dim=1) > 0.1
+        rew_airTime *= torch.norm(self.commands[:, :3], dim=1) > self.blend_cmd_norm
         self.feet_air_time *= ~contact_filt
         return rew_airTime
         
@@ -387,18 +389,23 @@ class SpotmicroTest(LeggedRobot):
         sync_1 = (contact[:, 1] == contact[:, 2]).float()  
         anti_phase = (contact[:, 0] != contact[:, 1]).float()
         reward = (sync_0 + sync_1 + anti_phase) / 3.0
-        reward *= (torch.norm(self.commands[:, :2], dim=1) > 0.1).float()   
+        reward *= (torch.norm(self.commands[:, :3], dim=1) > self.blend_cmd_norm).float()
         return reward
         
     def _reward_no_stuck_feet(self):
         contact = self.contact_forces[:, self.feet_indices, 2] > 1.
         contact_filt = torch.logical_or(contact, self.last_contacts)
-        if not hasattr(self, 'feet_ground_time'):
-            self.feet_ground_time = torch.zeros(
+        phases = (self.gait_phase + self.phase_offsets) % 1.0
+        desired_air = phases >= self.duty_factor
+        swing_contact = desired_air & contact_filt
+        if not hasattr(self, 'feet_swing_contact_time'):
+            self.feet_swing_contact_time = torch.zeros(
                 self.num_envs, len(self.feet_indices), device=self.device)
-        self.feet_ground_time = (self.feet_ground_time + self.dt) * contact_filt.float()
-        penalty = torch.sum(torch.clamp(self.feet_ground_time - 0.15, min=0.), dim=1)
-        penalty *= (torch.norm(self.commands[:, :2], dim=1) > 0.1).float()
+        self.feet_swing_contact_time = (
+            self.feet_swing_contact_time + self.dt
+        ) * swing_contact.float()
+        penalty = torch.sum(torch.clamp(self.feet_swing_contact_time - 0.03, min=0.), dim=1)
+        penalty *= (torch.norm(self.commands[:, :3], dim=1) > self.blend_cmd_norm).float()
         return penalty
 
     def _reward_symmetric_gait(self):
@@ -419,7 +426,7 @@ class SpotmicroTest(LeggedRobot):
             torch.zeros_like(diff)
         )
         reward = balance
-        reward *= (torch.norm(self.commands[:, :2], dim=1) > 0.1).float()
+        reward *= (torch.norm(self.commands[:, :3], dim=1) > self.blend_cmd_norm).float()
         return reward
 
     def _reward_feet_clearance(self):
@@ -435,13 +442,22 @@ class SpotmicroTest(LeggedRobot):
         height_reward = torch.clamp(self.max_feet_height - 0.02, min=0., max=0.03)
         reward = torch.sum(height_reward * first_contact.float(), dim=1)
         self.max_feet_height *= is_air
-        reward *= (torch.norm(self.commands[:, :2], dim=1) > 0.1).float()
+        reward *= (torch.norm(self.commands[:, :3], dim=1) > self.blend_cmd_norm).float()
         return reward
+
+    def _reward_swing_contact(self):
+        phases = (self.gait_phase + self.phase_offsets) % 1.0
+        desired_air = phases >= self.duty_factor
+        actual_contact = self.contact_forces[:, self.feet_indices, 2] > 1.0
+        dragging = (desired_air & actual_contact).float()
+        cmd_norm = torch.norm(self.commands[:, :3], dim=1, keepdim=True)
+        is_moving = (cmd_norm > self.blend_cmd_norm).float()
+        return torch.sum(dragging * is_moving, dim=1) / 4.0
         
     
     def _reward_stand_still(self):
         cmd_norm = torch.norm(self.commands[:, :3], dim=1)
-        return torch.sum(torch.abs(self.dof_pos - self.default_dof_pos), dim=1) * (cmd_norm < 0.1)
+        return torch.sum(torch.abs(self.dof_pos - self.default_dof_pos), dim=1) * (cmd_norm < self.blend_cmd_norm)
     '''
     def _reward_stand_still(self):
         cmd_norm = torch.norm(self.commands[:, :3], dim=1)
@@ -498,5 +514,5 @@ class SpotmicroTest(LeggedRobot):
         actual_contact = self.contact_forces[:, self.feet_indices, 2] > 1.0
         match = (actual_contact == desired_contact).float()
         cmd_norm = torch.norm(self.commands[:, :3], dim=1, keepdim=True)
-        is_moving = (cmd_norm > 0.1).float()
+        is_moving = (cmd_norm > self.blend_cmd_norm).float()
         return torch.sum(match * is_moving, dim=1) / 4.0
