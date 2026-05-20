@@ -114,11 +114,16 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             trot_contact = 0.35
             tracking_ik = 0.6
             stand_still = -0.4
+            tilt_recovery = 4.0
+            ang_vel_xy_recovery = 0.5
         soft_dof_pos_limit = 0.9
         base_height_target = 0.175
         min_base_height = 0.13
         max_base_tilt_deg = 50.0
         recovery_min_height = 0.165
+        recovery_reward_tilt_threshold_deg = 5.0
+        transition_recovery_horizon_s = 0.75
+        transition_recovery_initial_tilt_threshold_deg = 6.0
         tracking_sigma = 0.02
         tracking_sigma_ang_vel = 0.03
         swing_contact_grace_time = 0.02
@@ -163,14 +168,19 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         randomize_base_mass = False
         added_mass_range = [-0.2, 0.2]
         push_robots = True
-        push_interval_s = 8
-        max_push_vel_xy = 0.1
+        push_interval_s = 4
+        max_push_vel_xy = 0.18
+        max_push_ang_vel_xy = 0.85
+        max_push_ang_vel_z = 0.20
+        push_lin_vel_clip = 0.30
+        push_ang_vel_xy_clip = 1.20
+        push_ang_vel_z_clip = 0.35
         action_delay = True
         action_delay_range = [1, 2]
-        recovery_roll_pitch_range_deg = 10.0
-        recovery_lin_vel_xy_range = 0.10
-        recovery_lin_vel_z_range = 0.03
-        recovery_ang_vel_xy_range = 0.65
+        recovery_roll_pitch_range_deg = 12.0
+        recovery_lin_vel_xy_range = 0.12
+        recovery_lin_vel_z_range = 0.035
+        recovery_ang_vel_xy_range = 0.80
         recovery_ang_vel_z_range = 0.30
 
 
@@ -181,10 +191,10 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         learning_rate = 1e-4
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v6_1_1_recovery_contact_termination'
+        run_name = 'spotmicro_v6_1_3_stronger_transition_push'
         experiment_name = 'spotmicro_test'
-        max_iterations = 1000
+        max_iterations = 800
         save_interval = 100
         resume = True
-        load_run = "May20_10-11-07_spotmicro_v6_0_4_reward_retune"
-        checkpoint = 1500
+        load_run = "May20_13-27-15_spotmicro_v6_1_2_transition_recovery"
+        checkpoint = 3300

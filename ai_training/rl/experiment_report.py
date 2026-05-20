@@ -490,6 +490,16 @@ def auto_judge(metrics, run_name=''):
         judgments.append(f"❌ 조기종료: {early_death:.1f}% (>20%)")
         all_pass = False
 
+    transition_sr = metrics.get('transition_recovery_success_rate_pct')
+    if transition_sr is not None:
+        if transition_sr >= 80:
+            judgments.append(f"✅ 전환복구: {transition_sr:.1f}% (≥80%)")
+        elif transition_sr >= 50:
+            judgments.append(f"⚠️ 전환복구: {transition_sr:.1f}% (50~80%)")
+        else:
+            judgments.append(f"❌ 전환복구: {transition_sr:.1f}% (<50%)")
+            all_pass = False
+
     overall = "✅ PASS" if all_pass else "❌ FAIL (일부 기준 미달)"
     return overall, judgments
 
@@ -522,6 +532,7 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
     
     command_mode_metrics = diag_data.get('command_mode_metrics', {}) if diag_data else {}
     recovery_data = diag_data.get('recovery', {}) if diag_data else {}
+    transition_recovery_data = diag_data.get('transition_recovery', {}) if diag_data else {}
 
     # 자동 판정
     overall_judge, judgments = auto_judge(metrics, run_name)
@@ -816,6 +827,50 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
 > 해석: `Recovery 성공률`은 초기 tilt가 기준 이상인 episode 중 1초 내 안정 자세로 복귀한 비율입니다. 조기 실패율이 높으면 reset 직후 바로 넘어지는 것이고, 평균 회복 시간이 짧을수록 위기 대응이 빠른 것입니다.
 """
     # --- 항목 3: Gait 분석 ---
+    transition_recovery_section = ""
+    if transition_recovery_data:
+        sr = transition_recovery_data.get('success_rate_pct')
+        ert = transition_recovery_data.get('early_failure_rate_pct')
+        mrt = transition_recovery_data.get('mean_recovery_time_s')
+        eligible = transition_recovery_data.get('eligible_trials', 0)
+        total = transition_recovery_data.get('total_trials', 0)
+        success_count = transition_recovery_data.get('success_count', 0)
+        failure_count = transition_recovery_data.get('failure_count', 0)
+
+        sr_str = f"{sr:.1f}%" if sr is not None else "N/A"
+        ert_str = f"{ert:.1f}%" if ert is not None else "N/A"
+        mrt_str = f"{mrt:.3f}s" if mrt is not None else "N/A"
+
+        if sr is None:
+            transition_judge = "⚠️ eligible trial 없음"
+        elif sr >= 80 and (ert is not None and ert < 10):
+            transition_judge = "✅ 전환 복구 안정적"
+        elif sr >= 50:
+            transition_judge = "⚠️ 일부 전환 복구 가능"
+        else:
+            transition_judge = "❌ 전환 복구 부족"
+
+        transition_recovery_section = f"""
+## Transition Recovery 분석
+
+| 지표 | 값 |
+|------|-----|
+| 판정 | {transition_judge} |
+| Transition recovery 성공률 | {sr_str} |
+| 성공/실패 | {success_count} / {failure_count} |
+| Eligible trials | {eligible} / {total} |
+| 평균 회복 시간 | {mrt_str} |
+| 조기 실패율 | {ert_str} |
+| 평가 horizon | {transition_recovery_data.get('horizon_s', 'N/A')} s |
+| push 후 eligible 기준 | max roll/pitch > {transition_recovery_data.get('initial_tilt_threshold_deg', 'N/A')}° |
+| 안정 기준 | roll/pitch < {transition_recovery_data.get('stable_threshold_deg', 'N/A')}°, height > {transition_recovery_data.get('min_height_m', 'N/A')}m |
+| 평균 최대 tilt | {transition_recovery_data.get('mean_max_tilt_deg', 'N/A')}° |
+| horizon 후 평균 roll/pitch | {transition_recovery_data.get('mean_end_roll_deg', 'N/A')}° / {transition_recovery_data.get('mean_end_pitch_deg', 'N/A')}° |
+
+> 해석: `Transition Recovery`는 학습 중 push/roll-pitch angular impulse가 들어간 뒤 일정 시간 안에 자세가 안정 기준으로 돌아오는지를 봅니다.
+"""
+
+    # --- 항목 3: Gait 분석 ---
     gait_section = ""
     if gait_data:
         gait_freq = gait_data.get('frequency_hz', 0)
@@ -987,7 +1042,11 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
 | Recovery eligible trials | {metrics.get('recovery_eligible_trials', 'N/A')} |
 | 평균 회복 시간 | {metrics.get('mean_recovery_time_s', 'N/A')} s |
 | Recovery 조기 실패율 | {metrics.get('recovery_early_failure_rate_pct', 'N/A')}% |
+| Transition recovery 성공률 | {metrics.get('transition_recovery_success_rate_pct', 'N/A')}% |
+| Transition recovery eligible trials | {metrics.get('transition_recovery_eligible_trials', 'N/A')} |
+| 평균 Transition recovery 시간 | {metrics.get('mean_transition_recovery_time_s', 'N/A')} s |
 {recovery_section}
+{transition_recovery_section}
 {command_mode_section}
 {snapshot_section}
 {curve_section}
@@ -1239,6 +1298,7 @@ def main():
         'timestamp': datetime.now().isoformat(),
         'metrics': metrics,
         'recovery': diag_data.get('recovery', {}) if diag_data else {},
+        'transition_recovery': diag_data.get('transition_recovery', {}) if diag_data else {},
     }
     with open(json_path, 'w', encoding='utf-8') as f:
         json.dump(sidecar, f, indent=2, ensure_ascii=False)

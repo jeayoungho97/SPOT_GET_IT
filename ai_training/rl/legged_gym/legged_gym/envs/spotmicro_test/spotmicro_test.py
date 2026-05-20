@@ -78,6 +78,12 @@ class SpotmicroTest(LeggedRobot):
         self.last_reset_tilt = torch.zeros(
             self.num_envs, device=self.device, dtype=torch.float
         )
+        self.last_tilt_metric = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.float
+        )
+        self.last_ang_vel_xy_metric = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.float
+        )
 
     def _init_ik_reference(self):
         ik_cfg = self.cfg.ik
@@ -163,6 +169,8 @@ class SpotmicroTest(LeggedRobot):
         dt_phase = self.dt / self.gait_period
         self.gait_phase = (self.gait_phase + dt_phase * phase_scale) % 1.0
         super().post_physics_step()
+        self.last_tilt_metric = torch.norm(self.projected_gravity[:, :2], dim=1)
+        self.last_ang_vel_xy_metric = torch.norm(self.base_ang_vel[:, :2], dim=1)
               
     def check_termination(self):
         super().check_termination()
@@ -295,6 +303,54 @@ class SpotmicroTest(LeggedRobot):
             gymtorch.unwrap_tensor(env_ids_int32),
             len(env_ids_int32),
         )
+
+    def _push_robots(self):
+        """주행 중 전환 복구 상황을 만들기 위해 선속도와 roll/pitch 각속도 impulse를 더한다."""
+        max_lin = self.cfg.domain_rand.max_push_vel_xy
+        lin_clip = getattr(self.cfg.domain_rand, "push_lin_vel_clip", max_lin)
+        lin_delta = torch_rand_float(
+            -max_lin, max_lin, (self.num_envs, 2), device=self.device)
+        self.root_states[:, 7:9] = torch.clamp(
+            self.root_states[:, 7:9] + lin_delta,
+            min=-lin_clip,
+            max=lin_clip,
+        )
+
+        max_ang_xy = getattr(self.cfg.domain_rand, "max_push_ang_vel_xy", 0.0)
+        if max_ang_xy > 0.0:
+            ang_xy_clip = getattr(self.cfg.domain_rand, "push_ang_vel_xy_clip", max_ang_xy)
+            ang_xy_delta = torch_rand_float(
+                -max_ang_xy, max_ang_xy, (self.num_envs, 2), device=self.device)
+            self.root_states[:, 10:12] = torch.clamp(
+                self.root_states[:, 10:12] + ang_xy_delta,
+                min=-ang_xy_clip,
+                max=ang_xy_clip,
+            )
+
+        max_ang_z = getattr(self.cfg.domain_rand, "max_push_ang_vel_z", 0.0)
+        if max_ang_z > 0.0:
+            ang_z_clip = getattr(self.cfg.domain_rand, "push_ang_vel_z_clip", max_ang_z)
+            ang_z_delta = torch_rand_float(
+                -max_ang_z, max_ang_z, (self.num_envs, 1), device=self.device).squeeze(1)
+            self.root_states[:, 12] = torch.clamp(
+                self.root_states[:, 12] + ang_z_delta,
+                min=-ang_z_clip,
+                max=ang_z_clip,
+            )
+
+        self.last_transition_push_step = int(self.common_step_counter)
+        self.last_transition_push_lin = float(max_lin)
+        self.last_transition_push_ang_xy = float(max_ang_xy)
+        self.last_transition_push_ang_z = float(max_ang_z)
+
+        self.gym.set_actor_root_state_tensor(self.sim, gymtorch.unwrap_tensor(self.root_states))
+        if not hasattr(self, '_push_count'):
+            self._push_count = 0
+        self._push_count += 1
+        if self._push_count <= 3:
+            print(
+                f"[DR] Push #{self._push_count} at step {self.common_step_counter}, "
+                f"lin={max_lin}, ang_xy={max_ang_xy}, ang_z={max_ang_z}")
 
     def _resample_commands(self, env_ids):
         if len(env_ids) == 0:
@@ -531,3 +587,20 @@ class SpotmicroTest(LeggedRobot):
         cmd_norm = torch.norm(self.commands[:, :3], dim=1, keepdim=True)
         is_moving = (cmd_norm > self.blend_cmd_norm).float()
         return torch.sum(match * is_moving, dim=1) / 4.0
+
+    def _recovery_tilt_mask(self):
+        threshold_deg = getattr(self.cfg.rewards, "recovery_reward_tilt_threshold_deg", 4.0)
+        threshold = math.sin(math.radians(threshold_deg))
+        tilt = torch.norm(self.projected_gravity[:, :2], dim=1)
+        return tilt, (tilt > threshold).float()
+
+    def _reward_tilt_recovery(self):
+        tilt, mask = self._recovery_tilt_mask()
+        improvement = torch.clamp(self.last_tilt_metric - tilt, min=0.0, max=0.05)
+        return improvement * mask
+
+    def _reward_ang_vel_xy_recovery(self):
+        _, mask = self._recovery_tilt_mask()
+        ang_vel_xy = torch.norm(self.base_ang_vel[:, :2], dim=1)
+        damping = torch.clamp(self.last_ang_vel_xy_metric - ang_vel_xy, min=0.0, max=0.5)
+        return damping * mask

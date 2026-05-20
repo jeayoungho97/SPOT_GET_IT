@@ -68,3 +68,5 @@
 | 064 | 05/20 | spotmicro_v6_0_3_low_speed_clearance | v6.0.3: 저속 구간 재설정 및 다리 안드는 페널티 추가 | 90.0% | 0.026 | 5.9% | ✅ |
 | 065 | 05/20 | spotmicro_v6_0_4_reward_retune | v6.0.4: reward tuning. swing 중 충돌 잘 안하는지... | 92.8% | 0.026 | 9.4% | ✅ |
 | 066 | 05/20 | spotmicro_v6_1_recovery_resume | v6.1: exp065에서 resume, recovery 안정성 강화 | 93.9% | 0.024 | 7.9% | ✅ |
+| 067 | 05/20 | spotmicro_v6_1_1_contact_termination | v6.1.1: exp065에서 resume, recovery 안정성 강화 | 99.4% | 0.026 | 3.1% | ✅ |
+| 068 | 05/20 | spotmicro_v6_1_2_transition_recovery | v6.1.2: roll/pitch recovery reward 추가 | 100.0% | 0.020 | 2.6% | ✅ |
