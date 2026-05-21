@@ -23,10 +23,16 @@ static inline float position_raw_to_rad(uint16_t raw, int joint_idx) {
          * (2.0f * (float)M_PI / 4096.0f);
 }
 
-/* STS3215 speed: sign-magnitude, 0.732 RPM/LSB → rad/s. JOINT_SIGN 적용. */
+/*
+ * STS3215 present speed: sign-magnitude step/s -> rad/s.
+ *
+ * 0.732 RPM is the value for 50 step/s. Applying 0.732 RPM per raw count
+ * over-scales feedback velocity by 50x and drives the RL observation outside
+ * the training distribution.
+ */
 static inline float speed_raw_to_rad_s(int16_t raw, int joint_idx) {
     return (float)JOINT_SIGN[joint_idx]
-         * (float)raw * 0.732f * (2.0f * (float)M_PI / 60.0f);
+         * (float)raw * (2.0f * (float)M_PI / 4096.0f);
 }
 
 /* load raw → -1.0 ~ +1.0 정규화 */
