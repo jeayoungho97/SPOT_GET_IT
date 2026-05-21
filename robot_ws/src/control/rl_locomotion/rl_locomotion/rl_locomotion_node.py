@@ -65,7 +65,7 @@ class RlLocomotionNode(Node):
         self.declare_parameter("obs_dim", 47)
         self.declare_parameter("action_dim", 12)
         self.declare_parameter("action_scale", 0.25)
-        self.declare_parameter("action_clip", 0.5)
+        self.declare_parameter("action_clip", 100.0)
 
         self.declare_parameter("policy_backend", "onnx")
         self.declare_parameter("model_path", "models/exp043_policy.onnx")
@@ -103,6 +103,8 @@ class RlLocomotionNode(Node):
         self.declare_parameter("feedback_timeout_ms", 150.0)
         self.declare_parameter("imu_timeout_ms", 150.0)
         self.declare_parameter("status_timeout_ms", 150.0)
+        self.declare_parameter("max_feedback_joint_velocity_rad_s", 50.0)
+        self.declare_parameter("max_raw_action_abs", 10.0)
 
         # 0 MODE_DISABLE, 1 MODE_STAND, 3 MODE_CROUCH, 4 MODE_E_STOP
         self.declare_parameter("safe_mode", int(JointTarget.MODE_DISABLE))
@@ -211,6 +213,10 @@ class RlLocomotionNode(Node):
         self.feedback_timeout_ms = float(self.get_parameter("feedback_timeout_ms").value)
         self.imu_timeout_ms = float(self.get_parameter("imu_timeout_ms").value)
         self.status_timeout_ms = float(self.get_parameter("status_timeout_ms").value)
+        self.max_feedback_joint_velocity_rad_s = float(
+            self.get_parameter("max_feedback_joint_velocity_rad_s").value
+        )
+        self.max_raw_action_abs = float(self.get_parameter("max_raw_action_abs").value)
         self.safe_mode = int(self.get_parameter("safe_mode").value)
 
         self.vx_min = float(self.get_parameter("vx_min").value)
@@ -469,9 +475,20 @@ class RlLocomotionNode(Node):
             self._warn_throttled("joint_vel_len", "invalid JointFeedback.velocity_rad_s")
             return
 
+        velocity = [float(v) for v in msg.velocity_rad_s]
+        max_vel = self.max_feedback_joint_velocity_rad_s
+        if max_vel > 0.0:
+            max_seen = max(abs(v) for v in velocity)
+            if max_seen > max_vel:
+                self._warn_throttled(
+                    "joint_vel_clip",
+                    f"clipping unrealistic joint velocity: max={max_seen:.1f} rad/s",
+                )
+                velocity = [clamp(v, -max_vel, max_vel) for v in velocity]
+
         with self.state_lock:
             self.joint_position = [float(v) for v in msg.position_rad]
-            self.joint_velocity = [float(v) for v in msg.velocity_rad_s]
+            self.joint_velocity = velocity
             self.last_joint_feedback_time = time.perf_counter()
 
     def imu_callback(self, msg: Imu):
@@ -488,9 +505,38 @@ class RlLocomotionNode(Node):
             self._warn_throttled("imu_ang", "invalid IMU angular velocity")
             return
 
-        # projected_gravity 는 raw accel 기반.
-        # BNO055 quat 의 fusion reference drift 회피 (IMUPLUS 모드 한계).
-        # 보행 중 linear accel 노이즈는 작아서 50Hz 통계적으로 OK.
+        qx = float(msg.orientation.x)
+        qy = float(msg.orientation.y)
+        qz = float(msg.orientation.z)
+        qw = float(msg.orientation.w)
+
+        if finite_list([qx, qy, qz, qw], 4):
+            q_norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+        else:
+            q_norm = 0.0
+
+        if q_norm > 1.0e-6:
+            projected_gravity = list(
+                projected_gravity_from_ros_quat_xyzw(qx, qy, qz, qw)
+            )
+        else:
+            # Fallback for IMU packets that do not carry orientation yet.
+            ax = float(msg.linear_acceleration.x)
+            ay = float(msg.linear_acceleration.y)
+            az = float(msg.linear_acceleration.z)
+            accel_mag = math.sqrt(ax * ax + ay * ay + az * az)
+            if not math.isfinite(accel_mag) or accel_mag < 1.0:
+                self._warn_throttled("imu_accel", "invalid IMU linear acceleration")
+                return
+
+            projected_gravity = [-ax / accel_mag, -ay / accel_mag, -az / accel_mag]
+
+        if not finite_list(projected_gravity, 3):
+            self._warn_throttled("imu_gravity", "invalid projected gravity")
+            return
+
+        # Linear acceleration is still validated as a transport/IMU sanity check,
+        # but projected_gravity must match Isaac Gym: quat_rotate_inverse(q, gravity).
         ax = float(msg.linear_acceleration.x)
         ay = float(msg.linear_acceleration.y)
         az = float(msg.linear_acceleration.z)
@@ -498,8 +544,6 @@ class RlLocomotionNode(Node):
         if not math.isfinite(accel_mag) or accel_mag < 1.0:
             self._warn_throttled("imu_accel", "invalid IMU linear acceleration")
             return
-
-        projected_gravity = [-ax / accel_mag, -ay / accel_mag, -az / accel_mag]
 
         with self.state_lock:
             self.base_ang_vel = ang
@@ -598,6 +642,12 @@ class RlLocomotionNode(Node):
     ) -> List[float]:
         if not finite_list(raw_action, 12):
             raise RuntimeError("policy output is invalid")
+
+        max_raw = max(abs(float(a)) for a in raw_action)
+        if max_raw > self.max_raw_action_abs:
+            raise RuntimeError(
+                f"policy output out of expected range: max_abs={max_raw:.2f}"
+            )
 
         clipped_action = [
             clamp(float(a), -self.action_clip, self.action_clip)
