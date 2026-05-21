@@ -142,9 +142,11 @@ namespace spot_localization
         // ==========================
         // ROS Interface
         // ==========================
+        auto stm_motion_qos = rclcpp::QoS(rclcpp::KeepLast(10)).best_effort();
+
         stm_motion_sub_ = this->create_subscription<StmMotion>(
             stm_motion_topic_,
-            rclcpp::QoS(10),
+            stm_motion_qos,
             std::bind(
                 &GaitOdomEstimatorNode::stmMotionCallback,
                 this,
@@ -337,6 +339,7 @@ namespace spot_localization
         // [10] IMU yaw 기반 odom yaw 계산
         // - 시작 시점의 imu_yaw_start_rad_를 기준으로 현재 yaw 변화량을 계산
         // ===============================
+
         const double odom_yaw_rad = computeOdomYaw(*msg);
 
         // ==============================
@@ -421,35 +424,49 @@ namespace spot_localization
         switch (motion_state) {
             case StmMotion::WALK_FORWARD:   // 전진상태 : base_link 기준 +x 방향 이동
                 delta_body_x_m = forward_step_length_m_ * delta_phase;
+                delta_body_y_m = 0.0;
                 break;
             
             case StmMotion::WALK_BACKWARD:  // 후진 상태 : base_link 기준 -x 방향 이동
                 delta_body_x_m = -backward_step_length_m_ * delta_phase;
+                delta_body_y_m = 0.0;
                 break;
-            
+        
+            case StmMotion::WALK_FORWARD_TURN_LEFT:
+            case StmMotion::WALK_FORWARD_TURN_RIGHT:
+                // 전진하면서 좌/우회전:
+                // 병진 이동은 전진과 동일하게 base_link 기준 +x로 누적한다.
+                // 좌/우로 휘어지는 효과는 computeOdomYaw()의 yaw 변화와
+                // integrateOdom()의 mid_yaw 좌표 변환에서 반영된다.
+                delta_body_x_m = forward_step_length_m_ * delta_phase;
+                delta_body_y_m = 0.0;
+                break;
+    
+            case StmMotion::TURN_LEFT:
+            case StmMotion::TURN_RIGHT:
+                // 초기 MVP에서는 회전 중 translational slip은 무시한다.
+                // 즉, 제자리 회전 상태에서는 x/y 이동량은 0으로 두고 yaw만 IMU로 반영한다.
+                //
+                // 나중에 실제 로봇 테스트에서 회전 중 전후/좌우 밀림이 크면
+                // turn_left_dx_per_cycle, turn_right_dx_per_cycle 같은 파라미터를 추가해 보정할 수 있다.
+                delta_body_x_m = 0.0;
+                delta_body_y_m = 0.0;
+                break;
+
             case StmMotion::STRAFE_LEFT:
                 // 좌측 횡이동 : ROS base_link 기준 +y 방향은 로봇의 왼쪽
+                delta_body_x_m = 0.0;
                 delta_body_y_m = strafe_left_step_length_m_ * delta_phase;
                 break;
 
             case StmMotion::STRAFE_RIGHT:
                 // 우측 횡이동 : ROS base_link 기준 -y 방향은 로봇의 오른쪽
                 delta_body_y_m = -strafe_right_step_length_m_ * delta_phase;
+                delta_body_x_m = 0.0;
                 break;
 
             case StmMotion::STOP:
                 // 정지 상태에서는 위치 이동량을 누적 X
-                delta_body_x_m = 0.0;
-                delta_body_y_m = 0.0;
-                break;
-            
-            case StmMotion::TURN_LEFT:
-            case StmMotion::TURN_RIGHT:
-                // 초기 MVP에서는 회전 중 translational slip은 무시한다.
-                // 즉, 회전 상태에서는 x/y 이동량은 0으로 두고 yaw만 IMU로 반영한다.
-                //
-                // 나중에 실제 로봇 테스트에서 회전 중 전후/좌우 밀림이 크면
-                // turn_left_dx_per_cycle, turn_right_dx_per_cycle 같은 파라미터를 추가해 보정할 수 있다.
                 delta_body_x_m = 0.0;
                 delta_body_y_m = 0.0;
                 break;
@@ -488,13 +505,28 @@ namespace spot_localization
     void GaitOdomEstimatorNode::integrateOdom(
         double delta_body_x_m,
         double delta_body_y_m,
-        double odom_yaw_rad)
+        double new_odom_yaw_rad)
     {
+        // 이전 callback까지 누적된 odom yaw.
+        // 이 값은 이번 이동량을 적분하기 전의 base_link 방향이다.
+        const double prev_yaw_rad = odom_yaw_rad_;
+
+        // 이번 callback에서 IMU 기반으로 계산된 새로운 odom yaw.
+        const double new_yaw_rad = normalizeAngle(new_odom_yaw_rad);
+
+        // 한 callback 구간 동안 발생한 yaw 변화량.
+        // normalizeAngle()을 적용해 -pi ~ +pi 범위에서 최단 회전량으로 계산한다.
+        const double delta_yaw_rad = normalizeAngle(new_yaw_rad - prev_yaw_rad);
+
+        // 이번 구간에서 로봇이 회전하면서 이동했다고 보고,
+        // 이전 yaw와 현재 yaw의 중간 방향을 병진 이동량 변환에 사용한다.
+        const double mid_yaw_rad = normalizeAngle(prev_yaw_rad + 0.5 * delta_yaw_rad);
+        
         // body frame 기준 이동량을 odom frame 기준 이동량으로 변환
         // - body frame : +x = 로봇 전방, +y = 로봇 왼쪽
         // - odom frame : 로봇 시작 위치를 원점으로 하는 고정 좌표계
-        const double cos_yaw = std::cos(odom_yaw_rad);
-        const double sin_yaw = std::sin(odom_yaw_rad);
+        const double cos_yaw = std::cos(mid_yaw_rad);
+        const double sin_yaw = std::sin(mid_yaw_rad);
 
         const double delta_odom_x_m =
             delta_body_x_m * cos_yaw -
@@ -506,7 +538,10 @@ namespace spot_localization
 
         odom_x_m_ += delta_odom_x_m;
         odom_y_m_ += delta_odom_y_m;
-        odom_yaw_rad_ = odom_yaw_rad;        
+
+        // mid_yaw_rad는 x/y 변환에만 사용하는 적분용 방향각이다.
+        // 최종 odom yaw는 현재 IMU 기반 yaw로 갱신한다.
+        odom_yaw_rad_ = new_yaw_rad;       
     }
 
     void GaitOdomEstimatorNode::publishOdometry(

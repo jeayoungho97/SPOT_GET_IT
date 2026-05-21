@@ -68,22 +68,45 @@ uint8_t StmMotionMockNode::getMotionState(double scenario_time_s) const
 {
   using Msg = robot_interfaces::msg::StmMotion;
 
+  // 0 ~ 2s: STOP
   if (scenario_time_s < 2.0) {
     return Msg::STOP;
   }
 
-  if (scenario_time_s < 7.0) {
+  // 2 ~ 8s: WALK_FORWARD
+  // 전진 6초
+  if (scenario_time_s < 8.0) {
     return Msg::WALK_FORWARD;
   }
 
-  if (scenario_time_s < 9.0) {
+  // 8 ~ 10s: TURN_LEFT
+  // 기본 turn_yaw_rate_rad_s = pi/4 rad/s 기준
+  // 2초 동안 +90도 회전
+  if (scenario_time_s < 10.0) {
     return Msg::TURN_LEFT;
   }
 
-  if (scenario_time_s < 14.0) {
+  // 10 ~ 13s: WALK_FORWARD
+  // 회전한 방향으로 전진 3초
+  if (scenario_time_s < 13.0) {
     return Msg::WALK_FORWARD;
   }
 
+  // 13 ~ 14s: TURN_RIGHT
+  // 기본 turn_yaw_rate_rad_s = pi/4 rad/s 기준
+  // 1초 동안 -45도 회전
+  // 90도 방향에서 45도 대각 방향으로 변경
+  if (scenario_time_s < 14.0) {
+    return Msg::TURN_RIGHT;
+  }
+
+  // 14 ~ 20s: WALK_FORWARD
+  // 대각 방향으로 전진 6초
+  if (scenario_time_s < 20.0) {
+    return Msg::WALK_FORWARD;
+  }
+
+  // 20 ~ 22s: STOP
   return Msg::STOP;
 }
 
@@ -141,7 +164,7 @@ void StmMotionMockNode::timerCallback()
   }
 
   // Repeat one scenario every 16 seconds.
-  const double scenario_time_s = std::fmod(elapsed_s, 16.0);
+  const double scenario_time_s = std::fmod(elapsed_s, 22.0);
   const uint8_t motion_state = getMotionState(scenario_time_s);
 
   updateGaitPhase(motion_state, dt);
