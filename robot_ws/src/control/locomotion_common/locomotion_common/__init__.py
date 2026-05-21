@@ -1,3 +1,3 @@
-from locomotion_common.trot_reference import SharedTrotReference
+from locomotion_common.trot_reference import SharedTrotReference, TorchSharedTrotReference
 
-__all__ = ["SharedTrotReference"]
+__all__ = ["SharedTrotReference", "TorchSharedTrotReference"]

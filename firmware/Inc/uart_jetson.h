@@ -1,7 +1,7 @@
 #ifndef UART_JETSON_H
 #define UART_JETSON_H
 
-#include "stm32f4xx_hal.h"
+#include "usart.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-extern UART_HandleTypeDef huart_jetson;
+#define huart_jetson huart1
 extern DMA_HandleTypeDef  hdma_usart1_rx;
 extern DMA_HandleTypeDef  hdma_usart1_tx;
 
@@ -56,8 +56,8 @@ volatile bool *uart_jetson_idle_flag_ptr(void);
  * RX circular buffer 에서 magic + CRC 기반 command frame 추출.
  * Jetson actuator_bridge 의 parse_rx_buffer 와 mirror 알고리즘:
  *   1. SPI_MOSI_MAGIC (0xA55A) 위치 탐색
- *   2. MOSI_PAYLOAD_SIZE (116) 모이면 candidate 추출 (wrap-around 처리)
- *   3. CRC 검증 → 성공 시 spi_decode_command() 호출, 116B 소비
+ *   2. MOSI_PAYLOAD_SIZE 모이면 candidate 추출 (wrap-around 처리)
+ *   3. CRC 검증 → 성공 시 spi_decode_command() 호출, MOSI 한 프레임 소비
  *   4. 실패 시 1byte 밀고 재동기화
  *
  * Control loop 매 tick (50Hz) 에서 호출. 한 번 호출에 큐에 쌓인 모든
@@ -65,7 +65,7 @@ volatile bool *uart_jetson_idle_flag_ptr(void);
  */
 typedef enum {
     UART_FRAME_OK = 0,        /* 직전 시도가 frame 한 개 이상 정상 처리 */
-    UART_FRAME_NO_DATA,       /* magic 못 찾았거나 116B 미달 */
+    UART_FRAME_NO_DATA,       /* magic 못 찾았거나 MOSI 한 프레임 미달 */
     UART_FRAME_BAD_CRC,       /* CRC 실패 → 1byte 밀고 재시도 중 */
 } uart_frame_result_t;
 

@@ -7,10 +7,10 @@
 ## 1. 시스템 전체 구성
 
 ```
-┌────────────────────┐       SPI 5MHz, 50Hz       ┌──────────────────┐
-│  Jetson Orin Nano  │ ◀─────── 261 B ──────────▶ │  STM32F446RE     │
-│  (Master)          │   MOSI: command (116B)     │  (Slave, 50Hz)   │
-│  - RL policy       │   MISO: feedback (261B)    │  - control loop  │
+┌────────────────────┐       UART 921600, 50Hz    ┌──────────────────┐
+│  Jetson Orin Nano  │ ─── command (117B) ──────▶ │  STM32F446RE     │
+│  (High-level)      │ ◀── feedback (261B) ────── │  (Low-level)     │
+│  - RL policy       │                            │  - control loop  │
 │  - Vision          │                            │  - safety        │
 │  - ROS2            │                            │  - servo I/O     │
 └────────────────────┘                            └────┬─────────────┘
@@ -86,11 +86,8 @@ while (1) {
 
     if (check_esc()) emergency_stop();         // ESC → torque OFF + halt
 
-    // ① SPI RX 처리 (DMA 완료 시점)
-    if (spi_transfer_done) {
-        spi_decode_command(rx_buffer);          // CRC 검증 + g_robot_state 갱신
-        DATA_READY_LOW();                       // master에게 "처리 완료"
-    }
+    // ① UART RX 처리 (DMA circular buffer)
+    uart_jetson_process_rx();                   // CRC 검증 + g_robot_state 갱신
 
     // ② 명령 stale 검사 (Jetson 죽음 감지)
     check_stale(t_start);                       // age > 200ms → 강제 HOLD
@@ -104,10 +101,9 @@ while (1) {
     // ⑤ Mode dispatch
     dispatch_mode();                            // IDLE/POSITION/HOLD/CALIB
 
-    // ⑥ Feedback encode + 다음 SPI transfer 시작
+    // ⑥ Feedback encode + UART TX DMA
     spi_encode_feedback(tx_buffer);
-    HAL_SPI_TransmitReceive_DMA(...);
-    DATA_READY_HIGH();                          // master에게 "데이터 준비됨"
+    uart_jetson_transmit_dma(tx_buffer, MISO_PAYLOAD_SIZE);
 
     // ⑦ 디버그 print (1초마다)
     if (t_start - last_print >= 1000) printf(...);
@@ -128,7 +124,7 @@ while (1) {
 
 ### 4.1 프레임 포맷
 
-**MOSI (Jetson → STM32, 116 B payload + 145 B padding = 261 B)**:
+**MOSI (Jetson → STM32, UART 117 B payload, padding 없음)**:
 
 | Offset | Size | Field | 비고 |
 |--------|------|-------|------|
@@ -141,7 +137,8 @@ while (1) {
 | 58 | 48 | max_delta_rad[12] | slew rate limit |
 | 106| 4  | gait_phase | f32 (echo용) |
 | 110| 4  | gait_cycle_count | u32 (echo용) |
-| 114| 2  | crc16 | CCITT-FALSE, payload 114B |
+| 114| 1  | motion_state | u8 (echo용) |
+| 115| 2  | crc16 | CCITT-FALSE, payload 115B |
 
 **MISO (STM32 → Jetson, 261 B)**:
 
@@ -449,8 +446,8 @@ Ctrl+C → IDLE 25프레임 (안전한 토크 OFF)
 | MODE_TELEMETRY_TEST | 50Hz read 검증 |
 | MODE_JOINT_TEST | rad → raw 변환 검증 |
 | MODE_CAL_MEASURE | 캘리브레이션 (zero 측정) |
-| MODE_SPI_TEST | SPI slave DMA echo 검증 |
-| **MODE_RL_CONTROL** | **Jetson SPI 제어 (현재 사용)** |
+| MODE_SPI_TEST | 레거시 SPI slave DMA echo 검증 |
+| **MODE_RL_CONTROL** | **Jetson UART 제어 (현재 사용)** |
 
 ---
 

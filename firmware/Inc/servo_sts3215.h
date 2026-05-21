@@ -43,6 +43,9 @@ sts_write_result_t    sts_write_byte(UART_HandleTypeDef *huart, uint8_t id, uint
 bool                  sts_sync_write_goal(UART_HandleTypeDef *huart,
                                           const uint8_t *ids, const uint16_t *goals, uint8_t count);
 
+/* speed 레지스터: bit15=방향, bit14~0=크기 → 부호 있는 값으로 변환 */
+int16_t               sts_speed_to_signed(uint16_t raw);
+
 /* load 레지스터: bit10=방향, bit9~0=크기 → 부호 있는 값으로 변환 */
 int16_t               sts_load_to_signed(uint16_t raw);
 

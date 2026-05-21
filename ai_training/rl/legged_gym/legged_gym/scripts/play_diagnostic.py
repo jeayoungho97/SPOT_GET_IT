@@ -38,7 +38,7 @@ import argparse, sys
 def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False):
     # ============ 환경 설정 ============
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
-    env_cfg.env.num_envs = min(env_cfg.env.num_envs, 256)
+    env_cfg.env.num_envs = min(env_cfg.env.num_envs, 64)
     env_cfg.terrain.num_rows = 5
     env_cfg.terrain.num_cols = 5
     env_cfg.terrain.curriculum = False
@@ -54,6 +54,11 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
  
     # --- Checkpoint 로드 (항목 1-A) ---
     train_cfg.runner.resume = True
+    explicit_load_run = getattr(args, "load_run", None) is not None
+    explicit_checkpoint = getattr(args, "checkpoint", None) is not None
+    if not checkpoint_path and not explicit_load_run and not explicit_checkpoint:
+        train_cfg.runner.load_run = -1
+        train_cfg.runner.checkpoint = -1
     if checkpoint_path:
         # checkpoint 경로에서 run 디렉토리와 모델 번호 추출
         ck_dir = os.path.dirname(checkpoint_path)
@@ -221,7 +226,13 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
     recovery_horizon_steps = max(1, int(recovery_horizon_s / env.dt))
     recovery_initial_tilt_threshold = np.radians(7.0)
     recovery_stable_threshold = np.radians(5.0)
-    recovery_min_height = max(0.18, float(env.cfg.rewards.base_height_target) - 0.03)
+    recovery_min_height = float(
+        getattr(
+            env.cfg.rewards,
+            "recovery_min_height",
+            float(env.cfg.rewards.base_height_target) - 0.01,
+        )
+    )
 
     recovery_age = np.zeros(num_envs, dtype=np.int32)
     recovery_active = np.ones(num_envs, dtype=bool)
@@ -231,6 +242,23 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
     recovery_max_pitch = np.zeros(num_envs, dtype=np.float32)
     recovery_first_stable_step = np.full(num_envs, -1, dtype=np.int32)
     recovery_trials = []
+
+    transition_horizon_s = float(getattr(env.cfg.rewards, "transition_recovery_horizon_s", 0.75))
+    transition_horizon_steps = max(1, int(transition_horizon_s / env.dt))
+    transition_initial_tilt_threshold = np.radians(
+        float(getattr(env.cfg.rewards, "transition_recovery_initial_tilt_threshold_deg", 4.0))
+    )
+    transition_stable_threshold = recovery_stable_threshold
+    transition_min_height = recovery_min_height
+    transition_age = np.zeros(num_envs, dtype=np.int32)
+    transition_active = np.zeros(num_envs, dtype=bool)
+    transition_init_roll = np.full(num_envs, np.nan)
+    transition_init_pitch = np.full(num_envs, np.nan)
+    transition_max_roll = np.zeros(num_envs, dtype=np.float32)
+    transition_max_pitch = np.zeros(num_envs, dtype=np.float32)
+    transition_first_stable_step = np.full(num_envs, -1, dtype=np.int32)
+    transition_trials = []
+    last_seen_transition_push_step = -1
 
     def _start_recovery_trials(env_ids_np, roll_abs_np, pitch_abs_np, height_np):
         """새 episode/reset 직후 recovery trial 초기화"""
@@ -317,6 +345,74 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
             'mean_end_pitch_deg': _mean('end_pitch_deg', eligible),
             'mean_end_height_m': _mean('end_height_m', eligible),
         }
+
+    def _start_transition_trials(env_ids_np, roll_abs_np, pitch_abs_np, height_np, push_step):
+        if len(env_ids_np) == 0:
+            return
+        transition_age[env_ids_np] = 0
+        transition_active[env_ids_np] = True
+        transition_init_roll[env_ids_np] = roll_abs_np[env_ids_np]
+        transition_init_pitch[env_ids_np] = pitch_abs_np[env_ids_np]
+        transition_max_roll[env_ids_np] = roll_abs_np[env_ids_np]
+        transition_max_pitch[env_ids_np] = pitch_abs_np[env_ids_np]
+        transition_first_stable_step[env_ids_np] = -1
+
+    def _record_transition_trial(env_i, success, end_roll, end_pitch, end_height, forced_failure=False):
+        init_roll = transition_init_roll[env_i]
+        init_pitch = transition_init_pitch[env_i]
+        if np.isnan(init_roll) or np.isnan(init_pitch):
+            return
+
+        max_tilt = max(float(transition_max_roll[env_i]), float(transition_max_pitch[env_i]))
+        eligible = max_tilt >= transition_initial_tilt_threshold
+
+        recovery_time_s = None
+        if success and transition_first_stable_step[env_i] >= 0:
+            recovery_time_s = float(transition_first_stable_step[env_i] * env.dt)
+
+        transition_trials.append({
+            'eligible': bool(eligible),
+            'success': bool(success) if eligible else False,
+            'forced_failure': bool(forced_failure),
+            'init_roll_deg': float(np.degrees(init_roll)),
+            'init_pitch_deg': float(np.degrees(init_pitch)),
+            'max_roll_deg': float(np.degrees(transition_max_roll[env_i])),
+            'max_pitch_deg': float(np.degrees(transition_max_pitch[env_i])),
+            'max_tilt_deg': float(np.degrees(max_tilt)),
+            'end_roll_deg': float(np.degrees(end_roll)),
+            'end_pitch_deg': float(np.degrees(end_pitch)),
+            'end_height_m': float(end_height),
+            'recovery_time_s': recovery_time_s,
+        })
+
+    def _summarize_transition_trials():
+        eligible = [t for t in transition_trials if t['eligible']]
+        successes = [t for t in eligible if t['success']]
+        failures = [t for t in eligible if not t['success']]
+        times = [t['recovery_time_s'] for t in successes if t['recovery_time_s'] is not None]
+
+        def _mean(key, rows):
+            return float(np.mean([r[key] for r in rows])) if rows else None
+
+        return {
+            'horizon_s': float(transition_horizon_s),
+            'initial_tilt_threshold_deg': float(np.degrees(transition_initial_tilt_threshold)),
+            'stable_threshold_deg': float(np.degrees(transition_stable_threshold)),
+            'min_height_m': float(transition_min_height),
+            'total_trials': int(len(transition_trials)),
+            'eligible_trials': int(len(eligible)),
+            'success_count': int(len(successes)),
+            'failure_count': int(len(failures)),
+            'success_rate_pct': float(len(successes) / len(eligible) * 100) if eligible else None,
+            'early_failure_rate_pct': float(
+                sum(1 for t in eligible if t.get('forced_failure')) / len(eligible) * 100
+            ) if eligible else None,
+            'mean_recovery_time_s': float(np.mean(times)) if times else None,
+            'mean_max_tilt_deg': _mean('max_tilt_deg', eligible),
+            'mean_end_roll_deg': _mean('end_roll_deg', eligible),
+            'mean_end_pitch_deg': _mean('end_pitch_deg', eligible),
+            'mean_end_height_m': _mean('end_height_m', eligible),
+        }
     # 에너지 추적
     power_list = []
 
@@ -363,6 +459,11 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
  
         data['cmd_vel_x'].append(np.mean(cmd_x))
         data['actual_vel_x'].append(np.mean(vel_x))
+        data['cmd_abs_vel_x'].append(np.mean(np.abs(cmd_x)))
+        data['actual_abs_vel_x'].append(np.mean(np.abs(vel_x)))
+        data['cmd_forward_pct'].append(np.mean(cmd_x > 0.02) * 100.0)
+        data['actual_forward_pct'].append(np.mean(vel_x > 0.02) * 100.0)
+        data['cmd_zero_lin_pct'].append(np.mean(np.sqrt(cmd_x ** 2 + cmd_y ** 2) < 0.02) * 100.0)
  
         # --- 각속도 추종 ---
         cmd_yaw = env.commands[:, 2].cpu().numpy()
@@ -412,6 +513,49 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
         # --- Recovery assist trial 추적 ---
         roll_abs_np = np.abs(roll)
         pitch_abs_np = np.abs(pitch)
+
+        # --- Transition recovery trial 추적: 주행 중 push 이후 안정화 ---
+        current_push_step = int(getattr(env, 'last_transition_push_step', -1))
+        if current_push_step >= 0 and current_push_step != last_seen_transition_push_step:
+            all_env_ids = np.arange(num_envs, dtype=np.int64)
+            _start_transition_trials(
+                all_env_ids, roll_abs_np, pitch_abs_np, base_height_np, current_push_step)
+            last_seen_transition_push_step = current_push_step
+
+        transition_active_mask = transition_active.copy()
+        if np.any(transition_active_mask):
+            transition_ids = np.where(transition_active_mask)[0]
+            transition_age[transition_ids] += 1
+            transition_max_roll[transition_ids] = np.maximum(
+                transition_max_roll[transition_ids], roll_abs_np[transition_ids])
+            transition_max_pitch[transition_ids] = np.maximum(
+                transition_max_pitch[transition_ids], pitch_abs_np[transition_ids])
+
+            transition_stable_now = (
+                (roll_abs_np < transition_stable_threshold) &
+                (pitch_abs_np < transition_stable_threshold) &
+                (base_height_np > transition_min_height)
+            )
+            transition_first_stable_ids = transition_ids[
+                transition_stable_now[transition_ids] &
+                (transition_first_stable_step[transition_ids] < 0)
+            ]
+            transition_first_stable_step[transition_first_stable_ids] = transition_age[
+                transition_first_stable_ids]
+
+            transition_horizon_ids = transition_ids[
+                transition_age[transition_ids] >= transition_horizon_steps]
+            for env_i in transition_horizon_ids:
+                success = bool(transition_stable_now[env_i])
+                _record_transition_trial(
+                    env_i,
+                    success=success,
+                    end_roll=roll_abs_np[env_i],
+                    end_pitch=pitch_abs_np[env_i],
+                    end_height=base_height_np[env_i],
+                    forced_failure=False,
+                )
+            transition_active[transition_horizon_ids] = False
 
         # 최초 step 또는 reset 직후 아직 초기화되지 않은 env 초기화
        
@@ -502,6 +646,18 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
                     forced_failure=True,
                 )
 
+            transition_done_ids = done_ids_np[transition_active[done_ids_np]]
+            for env_i in transition_done_ids:
+                _record_transition_trial(
+                    env_i,
+                    success=False,
+                    end_roll=roll_abs_np[env_i],
+                    end_pitch=pitch_abs_np[env_i],
+                    end_height=base_height_np[env_i],
+                    forced_failure=True,
+                )
+            transition_active[transition_done_ids] = False
+
             # env.step() 내부에서 이미 reset_idx가 호출된 뒤이므로,
             # 현재 관측값을 새 trial의 시작 상태로 사용
             init_roll_np, init_pitch_np = _get_initial_tilt_for_trials(roll_abs_np, pitch_abs_np)
@@ -567,8 +723,17 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
     mean_power = np.mean(power_list)
     std_power = np.std(power_list)
     mean_vel = np.mean(np.abs(data['actual_vel_x']))
+    mean_cmd_abs_x = np.mean(data['cmd_abs_vel_x'])
+    mean_actual_abs_x = np.mean(data['actual_abs_vel_x'])
+    mean_cmd_forward_pct = np.mean(data['cmd_forward_pct'])
+    mean_actual_forward_pct = np.mean(data['actual_forward_pct'])
+    mean_cmd_zero_lin_pct = np.mean(data['cmd_zero_lin_pct'])
+    forward_tracking_ratio = (
+        mean_actual_abs_x / mean_cmd_abs_x
+        if mean_cmd_abs_x > 1.0e-6 else 0.0
+    )
     robot_mass = 2.6
-    cot = mean_power / (robot_mass * 9.81 * mean_vel) if mean_vel > 0.01 else 0.0
+    cot = mean_power / (robot_mass * 9.81 * mean_actual_abs_x) if mean_actual_abs_x > 0.01 else 0.0
 
     # --- 에피소드 통계 ---
     timeout_rate = 0.0
@@ -580,6 +745,7 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
 
     # --- Recovery assist 요약 ---
     recovery_summary = _summarize_recovery_trials()
+    transition_recovery_summary = _summarize_transition_trials()
     # --- Gait FFT 주파수 (항목 3-A) ---
     contact_patterns = np.array(data['contact_pattern'])  # (steps, num_feet)
     gait_frequency = 0.0
@@ -712,6 +878,14 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
     print(f"{'='*60}")
     print(f"  평균 X속도 오차: {mean_err_x:.4f} m/s")
     print(f"  평균 Y속도 오차: {mean_err_y:.4f} m/s")
+    print(f"  평균 |cmd_x|: {mean_cmd_abs_x:.4f} m/s")
+    print(f"  평균 |actual_x|: {mean_actual_abs_x:.4f} m/s")
+    print(f"  전진 추종 비율(|actual_x|/|cmd_x|): {forward_tracking_ratio:.2f}")
+    print(f"  전진 command 비율(cmd_x > 0.02): {mean_cmd_forward_pct:.1f}%")
+    print(f"  실제 전진 비율(actual_x > 0.02): {mean_actual_forward_pct:.1f}%")
+    print(f"  선속도 zero command 비율(|cmd_xy| < 0.02): {mean_cmd_zero_lin_pct:.1f}%")
+    if mean_cmd_abs_x < 0.02 and env.cfg.commands.ranges.lin_vel_x[1] > 0.05:
+        print(f"  → ⚠ 전진 command가 거의 없습니다. command deadband/sampling 설정 확인 필요.")
     if mean_err_x < 0.03:
         print(f"  → ✓ X속도 추종 우수")
     elif mean_err_x < 0.08:
@@ -978,6 +1152,33 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
             print("  → △ 일부 회복 가능. perturbation curriculum 또는 reward 조정 필요")
         else:
             print("  → ⚠ Recovery 성공률 낮음. perturbation 강도/termination/reward 확인 필요")
+
+    # --- [16] Transition recovery 분석 ---
+    print(f"\n{'='*60}")
+    print(f"  [16] Transition Recovery 분석")
+    print(f"{'='*60}")
+    print(f"  평가 horizon: {transition_recovery_summary['horizon_s']:.2f}s")
+    print(f"  eligible 기준: push 후 최대 |roll| 또는 |pitch| ≥ "
+          f"{transition_recovery_summary['initial_tilt_threshold_deg']:.1f}°")
+    print(f"  안정 기준: |roll|, |pitch| < "
+          f"{transition_recovery_summary['stable_threshold_deg']:.1f}°, "
+          f"height > {transition_recovery_summary['min_height_m']:.3f}m")
+    print(f"  전체 trial: {transition_recovery_summary['total_trials']}")
+    print(f"  eligible trial: {transition_recovery_summary['eligible_trials']}")
+    if transition_recovery_summary['success_rate_pct'] is None:
+        print("  Transition recovery 성공률: N/A (eligible trial 없음)")
+    else:
+        print(f"  Transition recovery 성공률: "
+              f"{transition_recovery_summary['success_rate_pct']:.1f}% "
+              f"({transition_recovery_summary['success_count']}/"
+              f"{transition_recovery_summary['eligible_trials']})")
+        print(f"  조기 실패율: {transition_recovery_summary['early_failure_rate_pct']:.1f}%")
+        if transition_recovery_summary['mean_recovery_time_s'] is not None:
+            print(f"  평균 회복 시간: {transition_recovery_summary['mean_recovery_time_s']:.3f}s")
+        print(f"  평균 최대 tilt: {transition_recovery_summary['mean_max_tilt_deg']:.2f}°")
+        print(f"  horizon 후 평균 |roll|/|pitch|: "
+              f"{transition_recovery_summary['mean_end_roll_deg']:.2f}° / "
+              f"{transition_recovery_summary['mean_end_pitch_deg']:.2f}°")
     # ============ 그래프 1: 종합 대시보드 ============
     fig, axes = plt.subplots(4, 2, figsize=(16, 20))
     fig.suptitle('SpotMicro RL Diagnostic Report v3', fontsize=16, fontweight='bold')
@@ -1182,6 +1383,12 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
             'early_death_pct': float(early_death_rate),
             'vel_error_x': float(mean_err_x),
             'vel_error_y': float(mean_err_y),
+            'mean_cmd_abs_x': float(mean_cmd_abs_x),
+            'mean_actual_abs_x': float(mean_actual_abs_x),
+            'forward_tracking_ratio': float(forward_tracking_ratio),
+            'mean_cmd_forward_pct': float(mean_cmd_forward_pct),
+            'mean_actual_forward_pct': float(mean_actual_forward_pct),
+            'mean_cmd_zero_lin_pct': float(mean_cmd_zero_lin_pct),
             'ang_vel_error': float(mean_ang_err),
             'torque_saturation_pct': float(overall_sat),
             'mean_height': float(mean_height),
@@ -1204,8 +1411,14 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
             'recovery_eligible_trials': recovery_summary.get('eligible_trials', 0),
             'mean_recovery_time_s': recovery_summary.get('mean_recovery_time_s'),
             'recovery_early_failure_rate_pct': recovery_summary.get('early_failure_rate_pct'),
+            'transition_recovery_success_rate_pct': transition_recovery_summary.get('success_rate_pct'),
+            'transition_recovery_eligible_trials': transition_recovery_summary.get('eligible_trials', 0),
+            'mean_transition_recovery_time_s': transition_recovery_summary.get('mean_recovery_time_s'),
+            'transition_recovery_early_failure_rate_pct': transition_recovery_summary.get('early_failure_rate_pct'),
+            'transition_recovery_mean_max_tilt_deg': transition_recovery_summary.get('mean_max_tilt_deg'),
         },
         'recovery': recovery_summary,
+        'transition_recovery': transition_recovery_summary,
         'command_mode_metrics': command_mode_summary,
         'config': {
             'control_type': env.cfg.control.control_type,
@@ -1218,6 +1431,7 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
             'lin_vel_x': list(env.cfg.commands.ranges.lin_vel_x),
             'lin_vel_y': list(env.cfg.commands.ranges.lin_vel_y),
             'ang_vel_yaw': list(env.cfg.commands.ranges.ang_vel_yaw),
+            'command_deadband': float(getattr(env.cfg.commands, 'command_deadband', 0.2)),
         },
         'reward_scales': {},
         'torque_per_joint': {},

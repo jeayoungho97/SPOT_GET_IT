@@ -62,3 +62,13 @@
 | 058 | 05/13 | spotmicro_v5_4_4_IK rollback | V5.4.4.2: IK rollback 후 각 체크포인트마다 확인 - w... | 99.2% | 0.050 | 14.0% | ✅ |
 | 059 | 05/15 | spotmicro_v5_6_recovery_assist | V5.6: recovery test | 100.0% | 0.048 | 11.5% | ✅ |
 | 060 | 05/15 | spotmicro_v5_6_1_recovery_assist_push | V5.6.1: recovery test - add push | 93.1% | 0.056 | 8.4% | ✅ |
+| 061 | 05/19 | spotmicro_v6_0_shared_ik_retrain | v6.0: 새로운 IK로 학습 | 97.5% | 0.025 | 2.1% | ✅ |
+| 062 | 05/19 | spotmicro_v6_0_1_shared_ik_cmd_deadband | v6.0.1: deadband 조정으로 걷는지 확인 | 93.4% | 0.053 | 2.0% | ✅ |
+| 063 | 05/19 | spotmicro_v6_0_2_forward_tracking | v6.2: 설정 common IK 초기와 동일하게 변경하고 선속도 추종 ... | 92.3% | 0.029 | 2.1% | ✅ |
+| 064 | 05/20 | spotmicro_v6_0_3_low_speed_clearance | v6.0.3: 저속 구간 재설정 및 다리 안드는 페널티 추가 | 90.0% | 0.026 | 5.9% | ✅ |
+| 065 | 05/20 | spotmicro_v6_0_4_reward_retune | v6.0.4: reward tuning. swing 중 충돌 잘 안하는지... | 92.8% | 0.026 | 9.4% | ✅ |
+| 066 | 05/20 | spotmicro_v6_1_recovery_resume | v6.1: exp065에서 resume, recovery 안정성 강화 | 93.9% | 0.024 | 7.9% | ✅ |
+| 067 | 05/20 | spotmicro_v6_1_1_contact_termination | v6.1.1: exp065에서 resume, recovery 안정성 강화 | 99.4% | 0.026 | 3.1% | ✅ |
+| 068 | 05/20 | spotmicro_v6_1_2_transition_recovery | v6.1.2: roll/pitch recovery reward 추가 | 100.0% | 0.020 | 2.6% | ✅ |
+| 069 | 05/20 | spotmicro_v6_1_3_stronger_transition_push | v6.1.3: push, roll 수치 강화 | 99.8% | 0.020 | 2.7% | ✅ |
+| 070 | 05/20 | spotmicro_v6_1_4_moderate_shove_recovery | v6.1.4: recovery 수치 강화 | 99.8% | 0.020 | 3.1% | ✅ |

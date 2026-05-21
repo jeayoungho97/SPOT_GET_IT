@@ -1,5 +1,6 @@
 #include "imu_bno055.h"
 #include <math.h>
+#include <stdio.h>
 
 #define BNO055_I2C_ADDR_DEFAULT   0x28
 #define BNO055_I2C_ADDR_ALT       0x29
@@ -65,30 +66,146 @@ static bool bno_read_bytes(I2C_HandleTypeDef *hi2c, uint8_t reg, uint8_t* buf, u
                              I2C_MEMADD_SIZE_8BIT, buf, len, 100) == HAL_OK);
 }
 
+static const char *hal_status_name(HAL_StatusTypeDef status) {
+    switch (status) {
+        case HAL_OK:      return "HAL_OK";
+        case HAL_ERROR:   return "HAL_ERROR";
+        case HAL_BUSY:    return "HAL_BUSY";
+        case HAL_TIMEOUT: return "HAL_TIMEOUT";
+        default:          return "HAL_UNKNOWN";
+    }
+}
+
+static void bno_print_i2c_diag(I2C_HandleTypeDef *hi2c, const char *tag) {
+    printf("[I2C %s] State=0x%02X Lock=0x%02X Error=0x%08lX BUSY=%lu SR1=0x%04lX SR2=0x%04lX\r\n",
+           tag,
+           (unsigned int)hi2c->State,
+           (unsigned int)hi2c->Lock,
+           (unsigned long)HAL_I2C_GetError(hi2c),
+           (unsigned long)(__HAL_I2C_GET_FLAG(hi2c, I2C_FLAG_BUSY) ? 1UL : 0UL),
+           (unsigned long)hi2c->Instance->SR1,
+           (unsigned long)hi2c->Instance->SR2);
+}
+
+static void bno055_i2c_bus_recover(I2C_HandleTypeDef *hi2c) {
+    printf("[I2C recover] start\r\n");
+
+    HAL_I2C_DeInit(hi2c);
+    if (hi2c->Instance == I2C1) {
+        __HAL_RCC_I2C1_FORCE_RESET();
+        __HAL_RCC_I2C1_RELEASE_RESET();
+    }
+
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+
+    GPIO_InitTypeDef gp = {0};
+    gp.Pin = GPIO_PIN_8 | GPIO_PIN_9;
+    gp.Mode = GPIO_MODE_OUTPUT_OD;
+    gp.Pull = GPIO_PULLUP;
+    gp.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOB, &gp);
+
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8 | GPIO_PIN_9, GPIO_PIN_SET);
+    HAL_Delay(2);
+    printf("[I2C recover] idle pins SCL=%d SDA=%d\r\n",
+           (int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_8),
+           (int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9));
+
+    for (int i = 0; i < 9; i++) {
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_RESET);
+        HAL_Delay(1);
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);
+        HAL_Delay(1);
+    }
+
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, GPIO_PIN_RESET);
+    HAL_Delay(1);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);
+    HAL_Delay(1);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, GPIO_PIN_SET);
+    HAL_Delay(2);
+
+    printf("[I2C recover] after clocks SCL=%d SDA=%d\r\n",
+           (int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_8),
+           (int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9));
+
+    if (HAL_I2C_Init(hi2c) != HAL_OK) {
+        printf("[I2C recover] HAL_I2C_Init failed, ErrorCode=0x%08lX\r\n",
+               (unsigned long)HAL_I2C_GetError(hi2c));
+    }
+}
+
 bool bno055_init_imuplus(I2C_HandleTypeDef *hi2c) {
     HAL_Delay(700);
-    if (HAL_I2C_IsDeviceReady(hi2c, BNO055_I2C_ADDR_DEFAULT << 1, 3, 50) == HAL_OK) {
+    bno_print_i2c_diag(hi2c, "before");
+
+    if (__HAL_I2C_GET_FLAG(hi2c, I2C_FLAG_BUSY)) {
+        bno055_i2c_bus_recover(hi2c);
+        bno_print_i2c_diag(hi2c, "after recovery");
+    }
+
+    HAL_StatusTypeDef ready28 =
+        HAL_I2C_IsDeviceReady(hi2c, BNO055_I2C_ADDR_DEFAULT << 1, 3, 50);
+    uint32_t err28 = HAL_I2C_GetError(hi2c);
+    bno_print_i2c_diag(hi2c, "after 0x28");
+    printf("[BNO055] IsDeviceReady 0x28 -> %s (%d), ErrorCode=0x%08lX\r\n",
+           hal_status_name(ready28), (int)ready28, (unsigned long)err28);
+
+    if (ready28 == HAL_OK) {
         bno_addr = BNO055_I2C_ADDR_DEFAULT;
-    } else if (HAL_I2C_IsDeviceReady(hi2c, BNO055_I2C_ADDR_ALT << 1, 3, 50) == HAL_OK) {
-        bno_addr = BNO055_I2C_ADDR_ALT;
+        printf("[BNO055] addr=0x28 ready\r\n");
     } else {
-        return false;
+        HAL_StatusTypeDef ready29 =
+            HAL_I2C_IsDeviceReady(hi2c, BNO055_I2C_ADDR_ALT << 1, 3, 50);
+        uint32_t err29 = HAL_I2C_GetError(hi2c);
+        bno_print_i2c_diag(hi2c, "after 0x29");
+        printf("[BNO055] IsDeviceReady 0x29 -> %s (%d), ErrorCode=0x%08lX\r\n",
+               hal_status_name(ready29), (int)ready29, (unsigned long)err29);
+
+        if (ready29 != HAL_OK) {
+            printf("[BNO055] no ACK at 0x28/0x29\r\n");
+            return false;
+        }
+
+        bno_addr = BNO055_I2C_ADDR_ALT;
+        printf("[BNO055] addr=0x29 ready\r\n");
     }
+
     uint8_t chip_id = 0;
-    if (!bno_read_byte(hi2c, BNO055_CHIP_ID, &chip_id) || chip_id != BNO055_CHIP_ID_EXPECTED) {
+    if (!bno_read_byte(hi2c, BNO055_CHIP_ID, &chip_id)) {
+        printf("[BNO055] CHIP_ID read failed\r\n");
         return false;
     }
-    bno_write_byte(hi2c, BNO055_OPR_MODE, BNO055_OPR_CONFIG);
+    if (chip_id != BNO055_CHIP_ID_EXPECTED) {
+        printf("[BNO055] bad CHIP_ID=0x%02X expected=0x%02X\r\n",
+               chip_id, BNO055_CHIP_ID_EXPECTED);
+        return false;
+    }
+    printf("[BNO055] CHIP_ID OK\r\n");
+
+    if (!bno_write_byte(hi2c, BNO055_OPR_MODE, BNO055_OPR_CONFIG)) {
+        printf("[BNO055] CONFIG mode write failed\r\n");
+        return false;
+    }
     HAL_Delay(25);
 
     /* Axis remap — CONFIG 모드에서만 변경 가능.
      * P6 placement: chip 출력이 robot body frame 으로 통일됨 (모든 downstream 일관). */
-    bno_write_byte(hi2c, BNO055_AXIS_MAP_CONFIG, BNO055_AXIS_CONFIG);
+    if (!bno_write_byte(hi2c, BNO055_AXIS_MAP_CONFIG, BNO055_AXIS_CONFIG)) {
+        printf("[BNO055] axis config write failed\r\n");
+        return false;
+    }
     HAL_Delay(10);
-    bno_write_byte(hi2c, BNO055_AXIS_MAP_SIGN, BNO055_AXIS_SIGN);
+    if (!bno_write_byte(hi2c, BNO055_AXIS_MAP_SIGN, BNO055_AXIS_SIGN)) {
+        printf("[BNO055] axis sign write failed\r\n");
+        return false;
+    }
     HAL_Delay(10);
 
-    bno_write_byte(hi2c, BNO055_OPR_MODE, BNO055_OPR_IMUPLUS);
+    if (!bno_write_byte(hi2c, BNO055_OPR_MODE, BNO055_OPR_IMUPLUS)) {
+        printf("[BNO055] IMUPLUS mode write failed\r\n");
+        return false;
+    }
     HAL_Delay(20);
     return true;
 }
