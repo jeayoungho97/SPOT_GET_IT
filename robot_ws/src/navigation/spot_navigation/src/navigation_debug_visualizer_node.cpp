@@ -156,13 +156,13 @@ void NavigationDebugVisualizerNode::loadParameters()
   global_path_topic_ =
     this->declare_parameter<std::string>(
       "global_path_topic",
-      "/planning/global_path/spot_01"
+      "/planning/mock_global_path/spot_01"
     );
 
   localization_pose_topic_ =
     this->declare_parameter<std::string>(
       "localization_pose_topic",
-      "/localization/pose"
+      "/localization/mock_pose"
     );
 
   path_progress_topic_ =
@@ -180,7 +180,7 @@ void NavigationDebugVisualizerNode::loadParameters()
   debug_pose_topic_ =
     this->declare_parameter<std::string>(
       "debug_pose_topic",
-      "/debug/navigation/pose"
+      "/debug/navigation/mock_pose"
     );
 
   debug_marker_topic_ =

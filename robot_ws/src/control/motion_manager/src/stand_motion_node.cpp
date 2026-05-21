@@ -52,10 +52,10 @@ public:
       this->declare_parameter<std::vector<double>>(
         "stand_pose",
         {
-          0.0, -0.926379, 1.531409,
-          0.0, -0.926379, 1.531409,
-          0.0, -0.926379, 1.531409,
-          0.0, -0.926379, 1.531409
+          0.0, -0.6, 1.1,
+          0.0, -0.6, 1.1,
+          0.0, -0.6, 1.1,
+          0.0, -0.6, 1.1
         });
 
     stand_pose_ = toPoseArray(stand_pose_param, "stand_pose");

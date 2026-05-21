@@ -5,14 +5,11 @@ path_progress_tracker_node:
 
     # 현재는 mock global path를 입력으로 사용한다.
     # 실제 global_path_manager를 사용할 때는 /planning/global_path/spot_01로 변경한다.
-    #global_path_topic: "/planning/mock_global_path/spot_01"
-    global_path_topic: "/planning/global_path/spot_01"
-    #global_path_topic: "/planning/global_path/spot_02"
+    global_path_topic: "/planning/mock_global_path/spot_01"
 
     # 현재는 mock localization pose를 입력으로 사용한다.
     # 실제 localization pose를 사용할 때는 /localization/pose로 변경한다.
-    #localization_pose_topic: "/localization/mock_pose"
-    localization_pose_topic: "/localization/pose"
+    localization_pose_topic: "/localization/mock_pose"
 
     # path progress 계산 결과 출력 토픽.
     path_progress_topic: "/navigation/path_progress/spot_01"

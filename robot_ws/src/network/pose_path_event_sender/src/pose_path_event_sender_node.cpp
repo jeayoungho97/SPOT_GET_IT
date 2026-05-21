@@ -3,11 +3,9 @@
 #include <robot_interfaces/msg/global_path_waypoints.hpp>
 #include <robot_interfaces/msg/localized_robot_pose.hpp>
 #include <robot_interfaces/msg/path_progress.hpp>
-#include <robot_interfaces/msg/robot_status.hpp>
 #include <std_msgs/msg/bool.hpp>
 
 #include <arpa/inet.h>
-#include <chrono>
 #include <cerrno>
 #include <cmath>
 #include <cstdint>
@@ -28,7 +26,6 @@
 using LocalizationPose    = robot_interfaces::msg::LocalizedRobotPose;
 using GlobalPathWaypoints = robot_interfaces::msg::GlobalPathWaypoints;
 using PathProgressMsg     = robot_interfaces::msg::PathProgress;
-using RobotStatusMsg      = robot_interfaces::msg::RobotStatus;
 using NavPathMsg          = nav_msgs::msg::Path;
 using BoolMsg             = std_msgs::msg::Bool;
 
@@ -48,9 +45,6 @@ struct RobotState {
     uint32_t    path_seq {0};
     uint32_t    event_seq {0};
     uint32_t    progress_seq {0};
-    std::vector<uint8_t> latest_path_packet;
-    size_t      latest_path_waypoints {0};
-    uint64_t    last_path_rx_us {0};
 };
 
 class PosePathEventSender : public rclcpp::Node
@@ -63,13 +57,11 @@ public:
         declare_parameter<std::string>("rpi5_ip", "192.168.0.13");
         declare_parameter<int>("bridge_port", BRIDGE_PORT);
         declare_parameter<double>("pose_send_hz", 10.0);
-        declare_parameter<double>("global_path_send_hz", 1.0);
         declare_parameter<std::string>("pose_topic", "/localization/pose");
         declare_parameter<std::string>("global_path_topic_prefix", "/planning/global_path");
         declare_parameter<std::string>("global_path_message_type", "robot_interfaces/msg/GlobalPathWaypoints");
         declare_parameter<std::string>("person_topic_prefix", "/perception/person_detected");
         declare_parameter<std::string>("progress_topic_prefix", "/navigation/path_progress");
-        declare_parameter<std::string>("status_topic", "/control/actuator/status");
 
         rpi5_ip_ = get_parameter("rpi5_ip").as_string();
         bridge_port_ = static_cast<uint16_t>(get_parameter("bridge_port").as_int());
@@ -87,11 +79,9 @@ public:
             get_parameter("person_topic_prefix").as_string());
         progress_topic_prefix_ = strip_trailing_slashes(
             get_parameter("progress_topic_prefix").as_string());
-        status_topic_ = get_parameter("status_topic").as_string();
 
         const double hz = get_parameter("pose_send_hz").as_double();
         pose_min_us_ = static_cast<uint64_t>(1000000.0 / hz);
-        global_path_send_hz_ = get_parameter("global_path_send_hz").as_double();
 
         const auto robot_strs = get_parameter("robots").as_string_array();
         for (const auto &s : robot_strs) {
@@ -129,21 +119,14 @@ public:
         }
 
         RCLCPP_INFO(get_logger(),
-                    "UDP target=%s:%d odom=%.0fHz global_path=%.2fHz robots=%zu",
-                    rpi5_ip_.c_str(), bridge_port_, hz,
-                    global_path_send_hz_, robots_.size());
+                    "UDP target=%s:%d odom=%.0fHz robots=%zu",
+                    rpi5_ip_.c_str(), bridge_port_, hz, robots_.size());
 
         rclcpp::QoS pose_qos {rclcpp::KeepLast(1)};
         pose_qos.best_effort().durability_volatile();
         pose_sub_ = create_subscription<LocalizationPose>(
             pose_topic_, pose_qos,
             [this](LocalizationPose::SharedPtr msg) { on_pose(msg); });
-
-        rclcpp::QoS status_qos {rclcpp::KeepLast(1)};
-        status_qos.best_effort().durability_volatile();
-        status_sub_ = create_subscription<RobotStatusMsg>(
-            status_topic_, status_qos,
-            [this](RobotStatusMsg::SharedPtr msg) { on_robot_status(msg); });
 
         for (size_t i = 0; i < robots_.size(); ++i) {
             const auto &rs = robots_[i];
@@ -191,17 +174,6 @@ public:
                         global_path_message_type_.c_str(), person_topic.c_str(),
                         progress_topic.c_str());
         }
-
-        if (global_path_send_hz_ > 0.0) {
-            const auto period = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::duration<double>(1.0 / global_path_send_hz_));
-            global_path_timer_ = create_wall_timer(
-                period,
-                [this]() { on_global_path_timer(); });
-        } else {
-            RCLCPP_WARN(get_logger(),
-                        "global_path_send_hz <= 0; cached global path resend disabled");
-        }
     }
 
     ~PosePathEventSender() override
@@ -232,11 +204,6 @@ private:
         return global_path_message_type_ == "auto"
                || global_path_message_type_ == "nav_msgs/Path"
                || global_path_message_type_ == "nav_msgs/msg/Path";
-    }
-
-    void on_robot_status(const RobotStatusMsg::SharedPtr &msg)
-    {
-        latest_bus_voltage_ = std::isfinite(msg->bus_voltage) ? msg->bus_voltage : 0.0f;
     }
 
     void on_pose(const LocalizationPose::SharedPtr &msg)
@@ -289,13 +256,11 @@ private:
         odom->vx = 0.0f;
         odom->vy = 0.0f;
         odom->omega = 0.0f;
-        odom->bus_voltage = latest_bus_voltage_;
 
         send_udp(buf, BUF);
-        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 350,
-                             "pose sent: %s seq=%u x=%.3f y=%.3f yaw=%.3f",
-                             rs.name.c_str(), rs.odom_seq - 1,
-                             odom->x, odom->y, odom->theta);
+        RCLCPP_INFO(get_logger(),
+                    "pose sent: %s seq=%u x=%.3f y=%.3f yaw=%.3f",
+                    rs.name.c_str(), rs.odom_seq - 1, odom->x, odom->y, odom->theta);
     }
 
     void on_global_path(const GlobalPathWaypoints::SharedPtr &msg, size_t idx)
@@ -314,20 +279,21 @@ private:
             n = GLOBAL_PATH_MAX_WAYPOINTS;
         }
 
-        rs.latest_path_packet.assign(global_path_packet_size(), 0);
-        rs.latest_path_waypoints = n;
-        rs.last_path_rx_us = monotonic_us();
+        constexpr size_t BUF = sizeof(PktHeader) + sizeof(GlobalPathPayload);
+        uint8_t buf[BUF];
+        std::memset(buf, 0, BUF);
 
-        auto *hdr = reinterpret_cast<PktHeader *>(rs.latest_path_packet.data());
+        auto *hdr = reinterpret_cast<PktHeader *>(buf);
         hdr->type = PKT_TYPE_GLOBAL_PATH;
         hdr->robot_id = rs.robot_id;
         hdr->frag_idx = 0;
         hdr->frag_total = 1;
         hdr->payload_len = static_cast<uint16_t>(sizeof(GlobalPathPayload));
+        hdr->frame_id = rs.path_seq++;
         hdr->payload_offset = 0;
+        hdr->timestamp_us = monotonic_us();
 
-        auto *path = reinterpret_cast<GlobalPathPayload *>(
-            rs.latest_path_packet.data() + sizeof(PktHeader));
+        auto *path = reinterpret_cast<GlobalPathPayload *>(buf + sizeof(PktHeader));
         path->count = static_cast<uint8_t>(n);
         for (size_t i = 0; i < n; ++i) {
             size_t src_i = i;
@@ -340,7 +306,9 @@ private:
             path->waypoints[i].yaw = msg->waypoints[src_i].yaw_rad;
         }
 
-        send_cached_global_path(rs, "rx");
+        send_udp(buf, BUF);
+        RCLCPP_INFO(get_logger(), "global_path sent: %s seq=%u waypoints=%zu",
+                    rs.name.c_str(), rs.path_seq - 1, n);
     }
 
     static float yaw_from_quaternion(double x, double y, double z, double w)
@@ -366,20 +334,21 @@ private:
             n = GLOBAL_PATH_MAX_WAYPOINTS;
         }
 
-        rs.latest_path_packet.assign(global_path_packet_size(), 0);
-        rs.latest_path_waypoints = n;
-        rs.last_path_rx_us = monotonic_us();
+        constexpr size_t BUF = sizeof(PktHeader) + sizeof(GlobalPathPayload);
+        uint8_t buf[BUF];
+        std::memset(buf, 0, BUF);
 
-        auto *hdr = reinterpret_cast<PktHeader *>(rs.latest_path_packet.data());
+        auto *hdr = reinterpret_cast<PktHeader *>(buf);
         hdr->type = PKT_TYPE_GLOBAL_PATH;
         hdr->robot_id = rs.robot_id;
         hdr->frag_idx = 0;
         hdr->frag_total = 1;
         hdr->payload_len = static_cast<uint16_t>(sizeof(GlobalPathPayload));
+        hdr->frame_id = rs.path_seq++;
         hdr->payload_offset = 0;
+        hdr->timestamp_us = monotonic_us();
 
-        auto *path = reinterpret_cast<GlobalPathPayload *>(
-            rs.latest_path_packet.data() + sizeof(PktHeader));
+        auto *path = reinterpret_cast<GlobalPathPayload *>(buf + sizeof(PktHeader));
         path->count = static_cast<uint8_t>(n);
         for (size_t i = 0; i < n; ++i) {
             size_t src_i = i;
@@ -396,39 +365,9 @@ private:
                 pose.orientation.z, pose.orientation.w);
         }
 
-        send_cached_global_path(rs, "rx");
-    }
-
-    static constexpr size_t global_path_packet_size()
-    {
-        return sizeof(PktHeader) + sizeof(GlobalPathPayload);
-    }
-
-    void on_global_path_timer()
-    {
-        for (auto &rs : robots_) {
-            if (rs.latest_path_packet.empty()) {
-                continue;
-            }
-            send_cached_global_path(rs, "timer");
-        }
-    }
-
-    void send_cached_global_path(RobotState &rs, const char *source)
-    {
-        if (rs.latest_path_packet.size() != global_path_packet_size()) {
-            return;
-        }
-
-        auto *hdr = reinterpret_cast<PktHeader *>(rs.latest_path_packet.data());
-        hdr->frame_id = rs.path_seq++;
-        hdr->timestamp_us = monotonic_us();
-
-        send_udp(rs.latest_path_packet.data(), rs.latest_path_packet.size());
-        RCLCPP_INFO_THROTTLE(
-            get_logger(), *get_clock(), 1000,
-            "global_path sent: %s source=%s seq=%u waypoints=%zu",
-            rs.name.c_str(), source, rs.path_seq - 1, rs.latest_path_waypoints);
+        send_udp(buf, BUF);
+        RCLCPP_INFO(get_logger(), "nav_path sent: %s seq=%u waypoints=%zu frame=%s",
+                    rs.name.c_str(), rs.path_seq - 1, n, msg->header.frame_id.c_str());
     }
 
     void on_person_detected(const BoolMsg::SharedPtr &msg, size_t idx)
@@ -515,17 +454,16 @@ private:
         pp->distance_to_goal_m = static_cast<float>(msg->distance_to_goal_m);
 
         send_udp(buf, BUF);
-        RCLCPP_INFO_THROTTLE(
-            get_logger(), *get_clock(), 350,
-            "path_progress sent: %s seq=%u progress=%.2f wp=%u/%u goal=%d "
-            "target=(%.2f, %.2f) d_target=%.2f d_goal=%.2f d_path=%.2f heading_err=%.2f",
-            rs.name.c_str(), rs.progress_seq - 1,
-            pp->mission_progress, pp->waypoint_idx, pp->total_waypoints,
-            pp->goal_reached,
-            pp->target_x_m, pp->target_y_m,
-            pp->distance_to_target_m, pp->distance_to_goal_m,
-            pp->distance_to_nearest_m,
-            pp->heading_error_rad);
+        RCLCPP_INFO(get_logger(),
+                    "path_progress sent: %s seq=%u progress=%.2f wp=%u/%u goal=%d "
+                    "target=(%.2f, %.2f) d_target=%.2f d_goal=%.2f d_path=%.2f heading_err=%.2f",
+                    rs.name.c_str(), rs.progress_seq - 1,
+                    pp->mission_progress, pp->waypoint_idx, pp->total_waypoints,
+                    pp->goal_reached,
+                    pp->target_x_m, pp->target_y_m,
+                    pp->distance_to_target_m, pp->distance_to_goal_m,
+                    pp->distance_to_nearest_m,
+                    pp->heading_error_rad);
     }
 
     void send_udp(const uint8_t *buf, size_t len)
@@ -550,23 +488,18 @@ private:
     std::string global_path_message_type_ {"robot_interfaces/msg/GlobalPathWaypoints"};
     std::string person_topic_prefix_ {"/perception/person_detected"};
     std::string progress_topic_prefix_ {"/navigation/path_progress"};
-    std::string status_topic_ {"/control/actuator/status"};
     uint16_t    bridge_port_ {9000};
     uint64_t    pose_min_us_ {100000};
-    double      global_path_send_hz_ {1.0};
-    float       latest_bus_voltage_ {0.0f};
 
     std::vector<RobotState> robots_;
 
     rclcpp::Subscription<LocalizationPose>::SharedPtr pose_sub_;
-    rclcpp::Subscription<RobotStatusMsg>::SharedPtr status_sub_;
     std::vector<rclcpp::Subscription<GlobalPathWaypoints>::SharedPtr> path_subs_;
     std::vector<rclcpp::Subscription<GlobalPathWaypoints>::SharedPtr> path_live_subs_;
     std::vector<rclcpp::Subscription<NavPathMsg>::SharedPtr> nav_path_subs_;
     std::vector<rclcpp::Subscription<NavPathMsg>::SharedPtr> nav_path_live_subs_;
     std::vector<rclcpp::Subscription<BoolMsg>::SharedPtr> person_subs_;
     std::vector<rclcpp::Subscription<PathProgressMsg>::SharedPtr> progress_subs_;
-    rclcpp::TimerBase::SharedPtr global_path_timer_;
 };
 
 int main(int argc, char *argv[])

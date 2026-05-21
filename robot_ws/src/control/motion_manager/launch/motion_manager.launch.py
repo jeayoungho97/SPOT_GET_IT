@@ -16,14 +16,6 @@ def generate_launch_description():
         parameters=[param_file],
     )
 
-    detect_motion_node = Node(
-        package='motion_manager',
-        executable='detect_motion_node',
-        name='detect_motion_node',
-        output='screen',
-        parameters=[param_file],
-    )
-
     joint_target_mux_node = Node(
         package='motion_manager',
         executable='joint_target_mux_node',
@@ -34,6 +26,5 @@ def generate_launch_description():
 
     return LaunchDescription([
         stand_motion_node,
-        detect_motion_node,
         joint_target_mux_node,
     ])

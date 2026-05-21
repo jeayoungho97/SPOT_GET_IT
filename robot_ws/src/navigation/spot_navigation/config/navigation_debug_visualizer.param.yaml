@@ -10,14 +10,11 @@ navigation_debug_visualizer_node:
 
     # 입력 토픽: mock global path
     # custom msg이므로 RViz에서 직접 볼 수 없어 nav_msgs/Path로 변환한다.
-    #global_path_topic: "/planning/mock_global_path/spot_01"
-    global_path_topic: "/planning/global_path/spot_01"
-    #global_path_topic: "/planning/global_path/spot_02"
+    global_path_topic: "/planning/mock_global_path/spot_01"
 
     # 입력 토픽: mock localization pose
     # custom msg이므로 RViz에서 직접 볼 수 없어 geometry_msgs/PoseStamped로 변환한다.
-    #localization_pose_topic: "/localization/mock_pose"
-    localization_pose_topic: "/localization/pose"
+    localization_pose_topic: "/localization/mock_pose"
 
     # 입력 토픽: path progress
     # nearest_index, target_index, goal_reached 등을 marker로 시각화한다.
@@ -27,8 +24,7 @@ navigation_debug_visualizer_node:
     debug_global_path_topic: "/debug/navigation/global_path"
 
     # 출력 토픽: RViz Pose display용 현재 mock pose
-    #debug_pose_topic: "/debug/navigation/mock_pose"
-    debug_pose_topic: "/debug/navigation/pose"
+    debug_pose_topic: "/debug/navigation/mock_pose"
 
     # 출력 토픽: RViz MarkerArray display용 nearest/target/goal/text marker
     debug_marker_topic: "/debug/navigation/progress_markers"

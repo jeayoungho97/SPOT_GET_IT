@@ -5,7 +5,7 @@ rl_locomotion_node:
     ik_profile: "exp043"
 
     action_scale: 0.25
-    action_clip: 100.0
+    action_clip: 0.5
 
     gait_period: 0.6
     duty_factor: 0.5

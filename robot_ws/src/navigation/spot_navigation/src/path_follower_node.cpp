@@ -16,7 +16,7 @@ PathFollowerNode::PathFollowerNode(const rclcpp::NodeOptions & options)
   // ============================================================
   robot_id_                    = declare_parameter<std::string>("robot_id", "spot_01");
   topic_pose_                  = declare_parameter<std::string>("topic_pose", "/localization/pose");
-  max_linear_x_mps_            = declare_parameter<double>("max_linear_x_mps", 0.10);
+  max_linear_x_mps_            = declare_parameter<double>("max_linear_x_mps", 0.40);
   min_linear_x_mps_            = declare_parameter<double>("min_linear_x_mps", 0.05);
   max_angular_z_radps_         = declare_parameter<double>("max_angular_z_radps", 0.40);
   k_yaw_                       = declare_parameter<double>("k_yaw", 1.0);

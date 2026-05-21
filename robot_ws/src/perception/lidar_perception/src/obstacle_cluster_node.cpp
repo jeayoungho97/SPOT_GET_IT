@@ -284,61 +284,15 @@ namespace lidar_perception
         pcl::fromROSMsg(*msg, *cloud);
 
         if (cloud->empty()) {
-            /*
-            입력 PointCloud가 비어 있는 상황도 정상적인 "장애물 없음" 상태일 수 있다.
-
-            기존에는 여기서 바로 return했기 때문에:
-                - /perception/lidar/obstacle_clusters가 publish되지 않음
-                - obstacle_model_node callback이 호출되지 않음
-                - /perception/lidar/obstacle_model publish가 멈춤
-                - local_path_planner_node에서 obstacle_model timeout 발생
-                - invalid obstacle model 상태로 전이되어 hold path 생성
-
-            따라서 cloud가 비어 있어도 빈 ObstacleClusters 메시지를 publish한다.
-            이 메시지의 의미는 "Perception pipeline은 살아 있고, 이번 LiDAR frame에서
-            obstacle cluster가 검출되지 않았다"는 뜻이다.
-            */
-            robot_interfaces::msg::ObstacleClusters out;
-            out.header = msg->header;
-
-            /*
-            tracking_enabled_가 true인 경우, 장애물이 없는 frame에서도 기존 track의
-            missed_count를 증가시켜야 오래 미검출된 track이 정리된다.
-            assignTrackIds()는 빈 cluster vector에 대해서도 기존 track의 missed_count를
-            증가시키고 tracking_max_missed_frames_를 넘은 track을 제거한다.
-            */
-            std::vector<robot_interfaces::msg::ObstacleCluster> empty_cluster_msgs;
-            assignTrackIds(empty_cluster_msgs);
-
-            cluster_pub_->publish(out);
-
-            /*
-            RViz 디버그용 colored cloud도 빈 PointCloud2로 publish한다.
-            이렇게 해야 이전 frame의 colored cluster가 RViz에 남아 보이는 현상을 줄일 수 있다.
-            */
-            pcl::PointCloud<pcl::PointXYZRGB>::Ptr empty_colored_cloud(
-                new pcl::PointCloud<pcl::PointXYZRGB>()
-            );
-
-            empty_colored_cloud->width = 0;
-            empty_colored_cloud->height = 1;
-            empty_colored_cloud->is_dense = true;
-
-            sensor_msgs::msg::PointCloud2 empty_colored_cloud_msg;
-            pcl::toROSMsg(*empty_colored_cloud, empty_colored_cloud_msg);
-            empty_colored_cloud_msg.header = msg->header;
-
-            clustered_cloud_pub_->publish(empty_colored_cloud_msg);
-
-            RCLCPP_INFO_THROTTLE(
+            RCLCPP_WARN_THROTTLE(
                 this->get_logger(),
                 *this->get_clock(),
                 2000,
-                "filtered cloud is empty. Publish empty obstacle clusters."
+                "filtered cloud is empty"
             );
-
             return;
         }
+
         // =========================================================
         // [2] KD-Tree 생성
         // - 3D 공간에서 가장 가까운 이웃 점을 빠르게 찾기 위한 자료구조

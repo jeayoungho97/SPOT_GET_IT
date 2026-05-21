@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool
 from cv_bridge import CvBridge
 
 from camera_perception.trt_inference import TRTInference
@@ -38,8 +38,8 @@ class CameraPerceptionNode(Node):
         self.bridge           = CvBridge()
 
         # 연속 카운터
-        self._detect_count    = 0
-        self._dismiss_count   = 0
+        self._detect_count    = 0   # 연속 탐지 카운터
+        self._dismiss_count   = 0   # 연속 미탐지 카운터
         self._person_detected = False
 
         # TensorRT 추론 모듈 초기화
@@ -64,9 +64,6 @@ class CameraPerceptionNode(Node):
         self.detected_pub = self.create_publisher(
             Bool, f'/perception/person_detected/{self.robot_id}', 1
         )
-        self.mode_pub = self.create_publisher(
-            String, '/control/behavior/mode', 1
-        )
 
         self.get_logger().info(
             f'camera_perception_node 시작 | robot_id: {self.robot_id} '
@@ -84,15 +81,15 @@ class CameraPerceptionNode(Node):
             self.get_logger().debug(f'탐지 없음 | 미탐지 연속: {self._dismiss_count}/{self.dismiss_consec_n}')
 
             # 연속 미탐지 기준 달성 시 False 1회 발행
-            #if self._dismiss_count == self.dismiss_consec_n and self._person_detected:
-            #    self._person_detected = False
-            #    out = Bool()
-            #    out.data = False
-            #    self.detected_pub.publish(out)
-            #    self.get_logger().info(
-            #        f'[person_detected] {self.robot_id} | False | '
-            #        f'{self.dismiss_consec_n}프레임 연속 미탐지 확정'
-            #    )
+            if self._dismiss_count == self.dismiss_consec_n and self._person_detected:
+                self._person_detected = False
+                out = Bool()
+                out.data = False
+                self.detected_pub.publish(out)
+                self.get_logger().info(
+                    f'[person_detected] {self.robot_id} | False | '
+                    f'{self.dismiss_consec_n}프레임 연속 미탐지 확정'
+                )
             return
 
         self._dismiss_count = 0
@@ -104,18 +101,12 @@ class CameraPerceptionNode(Node):
             f'| 연속: {self._detect_count}/{self.detect_consec_n}'
         )
 
-        # 연속 탐지 기준 달성 시 True + DETECT 모드 1회 발행
+        # 연속 탐지 기준 달성 시 True 1회 발행
         if self._detect_count == self.detect_consec_n and not self._person_detected:
             self._person_detected = True
-
             out = Bool()
             out.data = True
             self.detected_pub.publish(out)
-
-            mode = String()
-            mode.data = 'DETECT'
-            self.mode_pub.publish(mode)
-
             self.get_logger().info(
                 f'[person_detected] {self.robot_id} | True | '
                 f'{self.detect_consec_n}프레임 연속 탐지 확정'
