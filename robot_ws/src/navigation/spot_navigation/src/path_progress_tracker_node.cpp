@@ -50,7 +50,7 @@ namespace spot_navigation
         loadParameters();
 
         // [2] global path, localization pose Subscriber 생성
-        auto path_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
+        auto path_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable();
 
         global_path_sub_ =
             this->create_subscription<GlobalPathMsg>(
@@ -110,7 +110,7 @@ namespace spot_navigation
 
         localization_pose_topic_ = this->declare_parameter<std::string>(
             "localization_pose_topic",
-            "/localization/pose");
+            "/localization/mock_pose");
 
         path_progress_topic_ = this->declare_parameter<std::string>(
             "path_progress_topic",

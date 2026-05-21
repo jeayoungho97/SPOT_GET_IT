@@ -54,7 +54,6 @@ namespace spot_localization
             
             // [3] IMU yaw 기반 odom yaw 계산 함수
             double computeOdomYaw(const StmMotion &msg) const;
-            //double computeOdomYaw(const StmMotion &msg, uint8_t mapped_motion_state) const; // 추가0518
 
             // [4] Odometry 누적 함수
             // - base_link 기준 delta 이동량을 odom 좌표계 기준 delta 이동량으로 변환
@@ -62,7 +61,7 @@ namespace spot_localization
             void integrateOdom(
                 double delta_body_x_m,
                 double delta_body_y_m,
-                double new_odom_yaw_rad);
+                double odom_yaw);
             
             // [5] Odometry 메시지 publish 함수
             void publishOdometry(
@@ -82,24 +81,6 @@ namespace spot_localization
 
             // [8] Numeric Utility : 입력값이 정상적인 유한수인지 확인
             static bool isFinite(double value);
-
-            /*
-            * STM에서 들어온 raw motion_state 값을 odometry 계산용 motion_state로 변환한다.
-            *
-            * 현재 STM 담당자 구현:
-            *   - 0: 정지
-            *   - 8: 주행
-            *
-            * 기존 StmMotion.msg 정의:
-            *   - 0: STOP
-            *   - 1: WALK_FORWARD
-            *   - 8: UNKNOWN
-            *
-            * 따라서 현재 MVP에서는 raw 8을 WALK_FORWARD로 매핑한다.
-            * 추후 STM이 WALK_FORWARD, TURN_LEFT, STRAFE_LEFT 등을 구분해서 보내면
-            * 이 mapping 함수를 제거하거나 direct mapping으로 변경하면 된다.
-            */
-            //uint8_t mapRawMotionState(uint8_t raw_motion_state) const;
             
             // ==============
             // ROS Interface

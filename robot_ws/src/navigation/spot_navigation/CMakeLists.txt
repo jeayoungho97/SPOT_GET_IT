@@ -234,44 +234,6 @@ ament_target_dependencies(safety_supervisor_node
   robot_interfaces
 )
 
-# ============================================================
-# [7] local_path_planner_node
-# ------------------------------------------------------------
-# 역할:
-#   PathProgress와 현재 localization pose를 기반으로
-#   follower/controller가 따라갈 짧은 local path를 생성하는 노드
-#
-# Input:
-#   - /navigation/path_progress/spot_01
-#     Type: robot_interfaces/msg/PathProgress
-#
-#   - /localization/mock_pose
-#     Type: robot_interfaces/msg/LocalizedRobotPose
-#
-# Output:
-#   - /navigation/local_path/spot_01
-#     Type: nav_msgs/msg/Path
-#
-#   - /navigation/local_planner_status/spot_01
-#     Type: robot_interfaces/msg/LocalPlannerStatus
-# ============================================================
-add_executable(local_path_planner_node
-  src/local_path_planner_node.cpp
-)
-
-target_include_directories(local_path_planner_node PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>
-)
-
-ament_target_dependencies(local_path_planner_node
-  rclcpp
-  geometry_msgs
-  nav_msgs
-  robot_interfaces
-)
-
-
 # 추가 노드 구현 후 add_executable(), ament_target_dependencies() 추가
 
 
@@ -286,7 +248,6 @@ install(TARGETS
   mock_global_path_publisher_node
   mock_localization_pose_publisher_node
   path_progress_tracker_node
-  local_path_planner_node
   navigation_fsm_node
   path_follower_node
   safety_supervisor_node

@@ -1,4 +1,3 @@
-# mission_map 안에서 로봇의 시작 위치와 방향을 결정하는 config
 mission_tf_node:
   ros__parameters:
     # Frame names
@@ -7,8 +6,8 @@ mission_tf_node:
 
     # mission_map 기준 Spot 시작 위치
     # 즉, odom frame의 원점이 mission_map 안에서 어디에 놓이는지 정의한다.
-    start_x_m: 2.0
-    start_y_m: 1.0
+    start_x_m: 0.0
+    start_y_m: 0.0
     start_z_m: 0.0
 
     # mission_map 기준 Spot 시작 방향

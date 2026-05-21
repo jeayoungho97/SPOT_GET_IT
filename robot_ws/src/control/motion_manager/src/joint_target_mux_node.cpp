@@ -48,17 +48,12 @@ public:
     rl_timeout_ms_ = this->declare_parameter<double>("rl_timeout_ms", 100.0);
     classic_timeout_ms_ = this->declare_parameter<double>("classic_timeout_ms", 100.0);
     stand_timeout_ms_ = this->declare_parameter<double>("stand_timeout_ms", 100.0);
-    detect_timeout_ms_ = this->declare_parameter<double>("detect_timeout_ms", 100.0);
     behavior_mode_ = normalizeMode(this->declare_parameter<std::string>("default_mode", "STAND"));
 
     mode_sub_ = this->create_subscription<std_msgs::msg::String>(
       "/control/behavior/mode",
       rclcpp::QoS(10),
       std::bind(&JointTargetMuxNode::modeCallback, this, std::placeholders::_1));
-
-    active_mode_pub_ = this->create_publisher<std_msgs::msg::String>(
-      "/control/behavior/active_mode",
-      rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
 
     rl_sub_ = this->create_subscription<JointTarget>(
       "/control/rl/joint_target",
@@ -75,16 +70,9 @@ public:
       rclcpp::QoS(rclcpp::KeepLast(1)).best_effort(),
       std::bind(&JointTargetMuxNode::standCallback, this, std::placeholders::_1));
 
-    detect_sub_ = this->create_subscription<JointTarget>(
-      "/control/detect/joint_target",
-      rclcpp::QoS(rclcpp::KeepLast(1)).best_effort(),
-      std::bind(&JointTargetMuxNode::detectCallback, this, std::placeholders::_1));
-
     selected_pub_ = this->create_publisher<JointTarget>(
       "/control/selected/joint_target",
       rclcpp::QoS(rclcpp::KeepLast(1)).best_effort());
-
-    publishActiveMode();
 
     const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::duration<double>(1.0 / rate_hz_));
@@ -109,10 +97,10 @@ private:
       return;
     }
 
-    if (new_mode != "RL" && new_mode != "CLASSIC" && new_mode != "STAND" && new_mode != "DETECT") {
+    if (new_mode != "RL" && new_mode != "CLASSIC" && new_mode != "STAND") {
       RCLCPP_WARN(
         this->get_logger(),
-        "unsupported mode '%s'. Allowed modes: RL, CLASSIC, STAND, DETECT. Keeping current mode=%s",
+        "unsupported mode '%s'. Allowed modes: RL, CLASSIC, STAND. Keeping current mode=%s",
         msg->data.c_str(),
         behavior_mode_.c_str());
       return;
@@ -126,15 +114,6 @@ private:
         new_mode.c_str());
       behavior_mode_ = new_mode;
     }
-
-    publishActiveMode();
-  }
-
-  void publishActiveMode()
-  {
-    std_msgs::msg::String msg;
-    msg.data = behavior_mode_;
-    active_mode_pub_->publish(msg);
   }
 
   void rlCallback(const JointTarget::SharedPtr msg)
@@ -153,12 +132,6 @@ private:
   {
     latest_stand_ = *msg;
     latest_stand_time_ = this->now();
-  }
-
-  void detectCallback(const JointTarget::SharedPtr msg)
-  {
-    latest_detect_ = *msg;
-    latest_detect_time_ = this->now();
   }
 
   void timerCallback()
@@ -226,27 +199,6 @@ private:
       return false;
     }
 
-    if (behavior_mode_ == "DETECT") {
-      if (isDetectFresh()) {
-        selected = latest_detect_.value();
-        return true;
-      }
-
-      RCLCPP_WARN_THROTTLE(
-        this->get_logger(),
-        *this->get_clock(),
-        1000,
-        "DETECT target stale. Falling back to STAND.");
-
-      if (isStandFresh()) {
-        selected = latest_stand_.value();
-        selected.mode = MODE_STAND;
-        return true;
-      }
-
-      return false;
-    }
-
     // default: STAND
     if (isStandFresh()) {
       selected = latest_stand_.value();
@@ -293,34 +245,21 @@ private:
     return age_ms <= stand_timeout_ms_;
   }
 
-  bool isDetectFresh() const
-  {
-    if (!latest_detect_.has_value()) {
-      return false;
-    }
-
-    const double age_ms = (this->now() - latest_detect_time_).seconds() * 1000.0;
-    return age_ms <= detect_timeout_ms_;
-  }
-
 private:
   double rate_hz_{50.0};
   double rl_timeout_ms_{100.0};
   double classic_timeout_ms_{100.0};
   double stand_timeout_ms_{100.0};
-  double detect_timeout_ms_{100.0};
 
   std::string behavior_mode_{"STAND"};
 
   std::optional<JointTarget> latest_rl_;
   std::optional<JointTarget> latest_classic_;
   std::optional<JointTarget> latest_stand_;
-  std::optional<JointTarget> latest_detect_;
 
   rclcpp::Time latest_rl_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time latest_classic_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time latest_stand_time_{0, 0, RCL_ROS_TIME};
-  rclcpp::Time latest_detect_time_{0, 0, RCL_ROS_TIME};
 
   uint32_t seq_{0};
 
@@ -328,8 +267,6 @@ private:
   rclcpp::Subscription<JointTarget>::SharedPtr rl_sub_;
   rclcpp::Subscription<JointTarget>::SharedPtr classic_sub_;
   rclcpp::Subscription<JointTarget>::SharedPtr stand_sub_;
-  rclcpp::Subscription<JointTarget>::SharedPtr detect_sub_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr active_mode_pub_;
   rclcpp::Publisher<JointTarget>::SharedPtr selected_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };

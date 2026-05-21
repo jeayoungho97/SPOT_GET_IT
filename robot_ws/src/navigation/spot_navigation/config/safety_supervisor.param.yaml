@@ -17,8 +17,8 @@ safety_supervisor_node:
     # front_clearance < emergency_stop_distance_m → v=0, w=0 즉시
     emergency_stop_distance_m: 0.30
 
-    # safety 통과 후 허용 최대 선속도 (m/s) - 실측 기준
-    max_safe_linear_x_mps: 0.10
+    # safety 통과 후 허용 최대 선속도 (m/s)
+    max_safe_linear_x_mps: 0.40
 
     # safety 통과 후 허용 최대 각속도 (rad/s)
     max_safe_angular_z_radps: 0.40

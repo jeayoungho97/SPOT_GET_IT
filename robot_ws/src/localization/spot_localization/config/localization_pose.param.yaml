@@ -32,7 +32,7 @@ localization_pose_node:
     # /localization/pose publish 주기 [Hz]
     # gait odometry가 50Hz로 publish되므로, 관제/상위 계층용 pose는 30Hz부터 시작
     # 더 부드러운 표시나 제어 입력이 필요하면 50Hz로 올릴 수 있음
-    publish_rate_hz: 50.0
+    publish_rate_hz: 30.0
 
     # TF lookup timeout [s]
     # 너무 길게 잡으면 timer callback이 오래 막힐 수 있으므로 짧게 설정

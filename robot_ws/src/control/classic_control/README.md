@@ -61,29 +61,6 @@ motion manager에서 이 target을 선택하려면 `CLASSIC` mode를 사용한�
 ros2 topic pub /control/behavior/mode std_msgs/msg/String "data: 'CLASSIC'" --once
 ```
 
-한 phase cycle만 걷는 하드웨어 테스트는 `classic_one_cycle_test_node`를
-사용한다. 이 노드는 `CLASSIC` mode와 `cmd_vel`을 publish하고,
-`/control/classic_control/joint_target`의 `gait_cycle_count + gait_phase`가
-지정한 cycle 수만큼 증가하면 0 속도 명령을 보낸 뒤 `STAND` mode로 되돌린다.
-
-```bash
-ros2 launch classic_control classic_one_cycle_test.launch.py vx_mps:=0.05 cycles:=1.0
-```
-
-yaw 회전도 같은 테스트 노드로 확인할 수 있다:
-
-```bash
-# 제자리 yaw 회전 1 cycle
-ros2 launch classic_control classic_one_cycle_test.launch.py vx_mps:=0.0 wz_radps:=0.12 cycles:=1.0
-
-# 전진하면서 yaw 회전 1 cycle
-ros2 launch classic_control classic_one_cycle_test.launch.py vx_mps:=0.04 wz_radps:=0.12 cycles:=1.0
-```
-
-`classic_control_node`, `joint_target_mux_node`, `stand_motion_node`,
-`actuator_bridge_node`가 먼저 실행 중이어야 한다. 같은 `cmd_vel` topic에
-다른 navigation/safety 노드가 동시에 publish하지 않게 단독 테스트로 실행한다.
-
 ## 참고
 
 이 노드는 `Twist.linear.x`, `Twist.linear.y`, `Twist.angular.z`를 이용해 전진,

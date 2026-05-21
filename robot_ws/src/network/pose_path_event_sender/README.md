@@ -26,12 +26,11 @@ Jetson에서 ROS2 토픽을 구독하여 RPi5 BridgeDaemon으로 UDP 전송한�
 
 | 패킷 타입 | 크기 | 설명 |
 |---|---|---|
-| `PKT_TYPE_ODOM (0x03)` | 52B | PktHeader(24B) + OdomPayload(28B) |
-| `PKT_TYPE_GLOBAL_PATH (0x0B)` | 668B | PktHeader(24B) + GlobalPathPayload(644B) |
+| `PKT_TYPE_ODOM (0x03)` | 48B | PktHeader(24B) + OdomPayload(24B) |
+| `PKT_TYPE_GLOBAL_PATH (0x0B)` | 140B | PktHeader(24B) + GlobalPathPayload(116B) |
 | `PKT_TYPE_EVENT (0x07)` | 128B | PktHeader(24B) + EventPayload(104B) |
 
-- `GlobalPathPayload` waypoint 최대 수: 40개, 초과 시 전체 경로 구간에서 균등 샘플링
-- global path는 새 토픽 수신 시 즉시 전송하고, 마지막 수신 path를 `global_path_send_hz`로 계속 재전송
+- `GlobalPathPayload` waypoint 최대 수: 7개, 초과 시 앞에서 자름
 - `person_detected`: severity=CRITICAL(4), event_type=VICTIM_DETECTED(8)
 - `/localization/pose`에 속도 정보 없음 → `vx / vy / omega = 0`
 
@@ -45,7 +44,6 @@ Jetson에서 ROS2 토픽을 구독하여 RPi5 BridgeDaemon으로 UDP 전송한�
 | `rpi5_ip` | string | `"192.168.0.13"` | BridgeDaemon 수신 IP |
 | `bridge_port` | int | `9000` | BridgeDaemon 수신 포트 |
 | `pose_send_hz` | double | `10.0` | odom UDP 전송 주파수 상한 (Hz) |
-| `global_path_send_hz` | double | `1.0` | 마지막 global path UDP 재전송 주파수 (Hz), 0 이하이면 재전송 비활성화 |
 
 ---
 
