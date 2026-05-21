@@ -38,7 +38,7 @@ import argparse, sys
 def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False):
     # ============ 환경 설정 ============
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
-    env_cfg.env.num_envs = min(env_cfg.env.num_envs, 256)
+    env_cfg.env.num_envs = min(env_cfg.env.num_envs, 64)
     env_cfg.terrain.num_rows = 5
     env_cfg.terrain.num_cols = 5
     env_cfg.terrain.curriculum = False
