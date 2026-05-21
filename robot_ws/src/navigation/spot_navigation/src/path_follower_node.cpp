@@ -8,14 +8,15 @@ namespace spot_navigation
 
 PathFollowerNode::PathFollowerNode(const rclcpp::NodeOptions & options)
 : Node("path_follower_node", options),
-  current_waypoint_index_(0)
+  current_waypoint_index_(0),
+  prev_heading_error_(0.0)
 {
   // ============================================================
   // Parameters
   // ============================================================
   robot_id_                    = declare_parameter<std::string>("robot_id", "spot_01");
-  topic_pose_                  = declare_parameter<std::string>("topic_pose", "/localization/mock_pose");
-  max_linear_x_mps_            = declare_parameter<double>("max_linear_x_mps", 0.40);
+  topic_pose_                  = declare_parameter<std::string>("topic_pose", "/localization/pose");
+  max_linear_x_mps_            = declare_parameter<double>("max_linear_x_mps", 0.10);
   min_linear_x_mps_            = declare_parameter<double>("min_linear_x_mps", 0.05);
   max_angular_z_radps_         = declare_parameter<double>("max_angular_z_radps", 0.40);
   k_yaw_                       = declare_parameter<double>("k_yaw", 1.0);
@@ -23,7 +24,8 @@ PathFollowerNode::PathFollowerNode(const rclcpp::NodeOptions & options)
   turn_in_place_threshold_rad_ = declare_parameter<double>("turn_in_place_threshold_rad", 0.7);
   slow_down_angle_rad_         = declare_parameter<double>("slow_down_angle_rad", 0.5);
   waypoint_reach_tolerance_m_  = declare_parameter<double>("waypoint_reach_tolerance_m", 0.2);
-  timer_period_sec_            = declare_parameter<double>("timer_period_sec", 0.1);
+  heading_error_rate_limit_rad_= declare_parameter<double>("heading_error_rate_limit_rad", 0.04);
+  timer_period_sec_            = declare_parameter<double>("timer_period_sec", 0.02);
 
   // ============================================================
   // Subscribers
@@ -145,7 +147,17 @@ void PathFollowerNode::on_timer()
   // ----------------------------------------------------------
   // heading error 계산
   // ----------------------------------------------------------
-  const double heading_error = compute_heading_error(target_x, target_y);
+  const double raw_heading_error = compute_heading_error(target_x, target_y);
+
+  // ----------------------------------------------------------
+  // heading_error rate limiter : 보행 노이즈 차단
+  // 이전 tick 대비 변화량을 heading_error_rate_limit_rad_ 이내로 제한
+  // ----------------------------------------------------------
+  const double delta = raw_heading_error - prev_heading_error_;
+  const double clamped_delta = std::max(-heading_error_rate_limit_rad_,
+                                        std::min(heading_error_rate_limit_rad_, delta));
+  const double heading_error = prev_heading_error_ + clamped_delta;
+  prev_heading_error_ = heading_error;
 
   // ----------------------------------------------------------
   // v, w 계산
@@ -207,12 +219,15 @@ double PathFollowerNode::compute_linear_velocity(double heading_error)
   }
 
   // heading_error 기반 감속
-  // 0.15 ~ turn_in_place(0.7) 구간에서 선형 감속, min_v 항상 보장
+  // 0.15 ~ 0.50 구간에서 선형 감속, min_v 보장
+  // 0.50 ~ 0.70 구간에서 v=0 (방향 많이 틀어짐, 전진 안 함)
   double v_cmd = max_linear_x_mps_;
   if (std::abs(heading_error) > heading_tolerance_rad_) {
     const double ratio = 1.0 - std::abs(heading_error) / slow_down_angle_rad_;
-    v_cmd = max_linear_x_mps_ * ratio;
-    v_cmd = std::max(v_cmd, min_linear_x_mps_);
+    v_cmd = max_linear_x_mps_ * std::max(ratio, 0.0);
+    if (v_cmd > 0.0) {
+      v_cmd = std::max(v_cmd, min_linear_x_mps_);
+    }
   }
 
   return v_cmd;

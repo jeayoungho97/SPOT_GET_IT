@@ -23,35 +23,22 @@
 #include "proto.h"
 #include "shm_def.h"
 #include "bridge_ctx.h"
+#include "bridge_api.h"
 #include "utils.h"
 
 /* ─── heartbeat 1개 송신 ─────────────────────────────────────── */
-static void send_heartbeat(int udp_fd, uint8_t robot_id,
-                           const struct sockaddr_in *dst,
+static void send_heartbeat(ProtoTimerCtx *ctx, int udp_fd, uint8_t robot_id,
                            uint32_t seq) {
-    uint8_t buf[sizeof(PktHeader) + sizeof(CmdPayload)];
-    PktHeader  *hdr = (PktHeader *)buf;
-    CmdPayload *cmd = (CmdPayload *)(buf + sizeof(PktHeader));
-
-    hdr->type           = PKT_TYPE_CMD;
-    hdr->robot_id       = robot_id;
-    hdr->frag_idx       = 0;
-    hdr->frag_total     = 1;
-    hdr->payload_len    = (uint16_t)sizeof(CmdPayload);
-    hdr->frame_id       = seq;
-    hdr->payload_offset = 0;
-    hdr->timestamp_us   = now_us();
-
-    cmd->cmd_type = CMD_TYPE_HEARTBEAT;
-    cmd->vx       = 0.0f;
-    cmd->vy       = 0.0f;
-    cmd->omega    = 0.0f;
-    cmd->seq      = seq;
-
-    ssize_t sent = sendto(udp_fd, buf, sizeof(buf), 0,
-                          (const struct sockaddr *)dst, sizeof(*dst));
-    if (sent < 0)
-        perror("[proto_timer] sendto");
+    CmdPacket cmd = {
+        .robot_id = robot_id,
+        .cmd_type = CMD_TYPE_HEARTBEAT,
+        .vx = 0.0f,
+        .vy = 0.0f,
+        .omega = 0.0f,
+        .seq = seq,
+    };
+    bridge_api_send_command(ctx->api, udp_fd, &cmd, CMD_PRIORITY_LOW, 0,
+                            "proto_timer");
 }
 
 /* ─── 스레드 메인 ────────────────────────────────────────────── */
@@ -72,14 +59,14 @@ void *protocol_timer_thread(void *arg) {
     struct timespec next;
     clock_gettime(CLOCK_MONOTONIC, &next);
 
-    while (!ctx->stop) {
+    while (!atomic_load_explicit(ctx->stop, memory_order_acquire)) {
         /* 1초 후 시각 계산 */
         next.tv_sec += 1;
 
         /* 다음 주기까지 대기 (stop 체크를 위해 100ms 단위로 쪼갬) */
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
-        while (!ctx->stop) {
+        while (!atomic_load_explicit(ctx->stop, memory_order_acquire)) {
             struct timespec rem = {
                 .tv_sec  = next.tv_sec  - now.tv_sec,
                 .tv_nsec = next.tv_nsec - now.tv_nsec,
@@ -99,7 +86,7 @@ void *protocol_timer_thread(void *arg) {
             nanosleep(&sleep_t, NULL);
             clock_gettime(CLOCK_MONOTONIC, &now);
         }
-        if (ctx->stop) break;
+        if (atomic_load_explicit(ctx->stop, memory_order_acquire)) break;
 
         /* addr_table 스냅샷 (lock 최소화: sendto는 lock 밖에서) */
         struct sockaddr_in snap_addr[MAX_ROBOTS];
@@ -114,9 +101,11 @@ void *protocol_timer_thread(void *arg) {
         /* lock 해제 후 heartbeat 송신 */
         for (int i = 0; i < ctx->num_robots; i++) {
             if (snap_set[i])
-                send_heartbeat(udp_fd, (uint8_t)i, &snap_addr[i], seq);
+                send_heartbeat(ctx, udp_fd, (uint8_t)i, seq);
         }
+        (void)snap_addr;
 
+        bridge_api_poll_timeouts(ctx->api, udp_fd, "proto_timer");
         fprintf(stderr, "[proto_timer] heartbeat seq=%u\n", seq);
         seq++;
     }

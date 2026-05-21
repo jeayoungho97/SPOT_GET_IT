@@ -15,7 +15,7 @@ rl_locomotion_node:
     feedback_timeout_ms: 150.0
     imu_timeout_ms: 150.0
     status_timeout_ms: 150.0
-    max_feedback_joint_velocity_rad_s: 50.0
+    max_feedback_joint_velocity_rad_s: 300.0
     max_raw_action_abs: 10.0
 
     # 0 MODE_DISABLE

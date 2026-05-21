@@ -4,7 +4,7 @@ safety_supervisor_node:
     robot_id: "spot_01"
 
     # 토픽 이름
-    # topic_pose : 임시로 mock_pose 사용 중. 실제 연동 시 /localization/pose로 변경
+    # topic_pose : 실제 pose 토픽 사용
     topic_pose: "/localization/pose"
     topic_obstacle: "/perception/lidar/obstacle_model"
     topic_free_space: "/perception/lidar/free_space_model"
@@ -17,8 +17,8 @@ safety_supervisor_node:
     # front_clearance < emergency_stop_distance_m → v=0, w=0 즉시
     emergency_stop_distance_m: 0.30
 
-    # safety 통과 후 허용 최대 선속도 (m/s)
-    max_safe_linear_x_mps: 0.40
+    # safety 통과 후 허용 최대 선속도 (m/s) - 실측 기준
+    max_safe_linear_x_mps: 0.10
 
     # safety 통과 후 허용 최대 각속도 (rad/s)
     max_safe_angular_z_radps: 0.40
@@ -46,5 +46,5 @@ safety_supervisor_node:
     # perception stale 판단 시간 (s)
     perception_timeout_sec: 0.50
 
-    # 제어 주기 (s) : 0.1 = 10Hz
-    timer_period_sec: 0.1
+    # 제어 주기 (s) : 0.02 = 50Hz
+    timer_period_sec: 0.02

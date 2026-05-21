@@ -26,39 +26,27 @@
 #include "shm_def.h"
 #include "bridge_ctx.h"
 #include "cmd_dispatch.h"
+#include "bridge_api.h"
 #include "utils.h"
 
 #define STATUS_INTERVAL_MS  1000   /* 상태 패킷 송신 주기 */
 
 /* ─── 상태 패킷 전체 로봇 송신 ──────────────────────────────── */
 static void send_status_all(int udp_fd,
-                            SharedData            **shm_arr,
-                            int                     num_robots,
+                            BridgeApi              *api,
                             const struct sockaddr_in *pc_addr) {
-    for (int i = 0; i < num_robots; i++) {
-        SharedData *shm = shm_arr[i];
-
-        PcStatusPacket s;
-        s.robot_id    = (uint8_t)i;
-        s.connected   = (uint8_t)atomic_load(&shm->meta.jetson_connected);
-        s.timestamp_us = now_us();
-
-        /* Odom 읽기 */
-        pthread_rwlock_rdlock(&shm->odom_lock);
-        s.x        = shm->odom_x;
-        s.y        = shm->odom_y;
-        s.theta    = shm->odom_theta;
-        s.odom_seq = shm->odom_seq;
-        pthread_rwlock_unlock(&shm->odom_lock);
-
-        /* 드롭 카운트 읽기 */
-        pthread_rwlock_rdlock(&shm->meta_lock);
-        s.img_drop   = shm->meta.img_drop_count;
-        s.lidar_drop = shm->meta.lidar_drop_count;
-        pthread_rwlock_unlock(&shm->meta_lock);
-
+    for (int i = 0; i < api->num_robots; i++) {
+        PcStatusPacketV2 s;
+        if (bridge_api_snapshot_status(api, (uint8_t)i, &s) < 0) continue;
         sendto(udp_fd, &s, sizeof(s), 0,
                (const struct sockaddr *)pc_addr, sizeof(*pc_addr));
+
+        PcGlobalPathPacket path;
+        if (bridge_api_snapshot_global_path(api, (uint8_t)i, &path) == 0 &&
+            path.count > 0) {
+            sendto(udp_fd, &path, sizeof(path), 0,
+                   (const struct sockaddr *)pc_addr, sizeof(*pc_addr));
+        }
     }
 }
 
@@ -102,7 +90,7 @@ void *pc_link_thread(void *arg) {
     uint8_t buf[sizeof(CmdPacket)];
     uint64_t last_status_us = now_us();
 
-    while (!ctx->stop) {
+    while (!atomic_load_explicit(ctx->stop, memory_order_acquire)) {
         struct sockaddr_in src;
         socklen_t slen = sizeof(src);
         ssize_t n = recvfrom(fd, buf, sizeof(buf), 0,
@@ -112,7 +100,7 @@ void *pc_link_thread(void *arg) {
         uint64_t now = now_us();
         if (pc_addr_set &&
             (now - last_status_us) >= (uint64_t)STATUS_INTERVAL_MS * 1000) {
-            send_status_all(fd, ctx->shm_arr, ctx->num_robots, &pc_addr);
+            send_status_all(fd, ctx->api, &pc_addr);
             last_status_us = now;
         }
 
@@ -134,8 +122,9 @@ void *pc_link_thread(void *arg) {
         }
 
         CmdPacket *cmd = (CmdPacket *)buf;
-        send_cmd_to_jetson(cmd, ctx->addr_table, fd,
-                           ctx->num_robots, "pc_link");
+        send_cmd_to_jetson(cmd, ctx->api, fd, CMD_PRIORITY_NORMAL,
+                           CMD_FLAG_REQUIRES_ACK, "pc_link");
+        bridge_api_poll_timeouts(ctx->api, fd, "pc_link");
     }
 
     close(fd);

@@ -1,6 +1,6 @@
 rl_locomotion_node:
   ros__parameters:
-    model_path: "models/v6_0_2_shared_ik_policy.onnx"
+    model_path: "models/spotmicro_v6_1_3_model_4100.onnx"
 
     ik_profile: "shared_v1"
 

@@ -1,30 +1,16 @@
 #include "mainwindow.h"
 
 #include <QApplication>
-#include <QFile>
-#include "shm_reader.h"
+#include <QFont>
 
 int main(int argc, char *argv[])
 {
-    QApplication a(argc, argv);
+    QApplication app(argc, argv);
+    QFont font = app.font();
+    font.setFamilies({"Noto Sans CJK KR", "Noto Sans KR", "DejaVu Sans"});
+    app.setFont(font);
 
-    // QSS 다크 테마 파일 로드 및 적용
-    QFile styleFile(":/style.qss");
-
-    if (styleFile.open(QFile::ReadOnly | QFile::Text)) {
-        
-        QString styleSheet = QLatin1String(styleFile.readAll());
-        a.setStyleSheet(styleSheet);
-        styleFile.close();
-    }
-
-    qRegisterMetaType<OdomData>("OdomData");
-    qRegisterMetaType<MetaData>("MetaData");
-    qRegisterMetaType<LidarData>("LidarData");
-
-    MainWindow w;
-    w.show();
-
-    return QCoreApplication::exec();
-
+    MainWindow window;
+    window.show();
+    return app.exec();
 }

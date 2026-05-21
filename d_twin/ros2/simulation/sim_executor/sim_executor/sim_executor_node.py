@@ -6,36 +6,36 @@ sim_executor_node.py
 작성일   : 2026-05-18
 위치     : robot_ws/src/simulation/sim_executor/sim_executor/sim_executor_node.py
 
-spot_02 / spot_03 시뮬 데이터를 BridgeDaemon(RPi5)으로 직접 UDP 송신.
-ROS2 토픽으로 올리면 Jetson이 의도치 않게 수신하므로 토픽 사용 안 함.
+단일 노드에서 spot_02 / spot_03 을 각각 독립 스레드로 처리.
+노드가 하나이므로 stdin 키보드 입력이 정상 동작.
 
 기능
-  1. /planning/global_path/spot_02|03 수신 → 경로 추종
-  2. Pose   → PKT_TYPE_ODOM  (0x03)  UDP 직송  (10 Hz)
-  3. MJPEG  → PKT_TYPE_IMAGE (0x01)  UDP 직송  (15 fps, 루프 재생)
-  4. person_detected → PKT_TYPE_EVENT (0x07) UDP 직송  (키보드 수동 트리거)
+  1. /planning/global_path/{robot_id} 수신 → 경로 추종
+  2. Pose   → PKT_TYPE_ODOM  (0x03)  UDP 직송  (pose_send_hz)
+  3. MJPEG  → PKT_TYPE_IMAGE (0x01)  UDP 직송  (video_fps, 루프 재생)
+  4. person_detected → PKT_TYPE_EVENT (0x07) UDP 직송  (키보드)
 
-UDP 프로토콜 (proto.h 기준, little-endian)
+UDP 프로토콜 (proto.h, little-endian)
   PktHeader 24B
     type(1)  robot_id(1)  frag_idx(2)  frag_total(2)
     payload_len(2)  frame_id(4)  payload_offset(4)  timestamp_us(8)
-
-  OdomPayload 24B  — x(f) y(f) theta(f) vx(f) vy(f) omega(f)
+  OdomPayload  24B  — x y theta vx vy omega (모두 float)
   EventPayload 104B — severity(B) reserved(B) event_type(H) code(I) message[96s]
-  IMAGE: PROTO_MTU(1400B) 단위 프래그먼트
+  IMAGE: 1400B 단위 프래그먼트
 
-robot_id 체계 (0-based, pose_path_event_sender.yaml 동일)
-  spot_01 = 0  (Jetson/oak_camera_driver 담당)
+robot_id 체계 (0-based)
+  spot_01 = 0  (Jetson 담당)
   spot_02 = 1
   spot_03 = 2
 
-키보드 입력 (stdin, 줄 단위)
-  s     시작 (경로 추종 + pose/영상 송출)
-  v2    spot_02 탐지 ON
-  f2    spot_02 탐지 OFF
-  v3    spot_03 탐지 ON
-  f3    spot_03 탐지 OFF
-  q     종료
+키보드 (stdin, 줄 단위)
+  s2   spot_02 시작 (경로 추종 + 영상)
+  s3   spot_03 시작
+  v2   spot_02 person_detected ON
+  f2   spot_02 person_detected OFF
+  v3   spot_03 person_detected ON
+  f3   spot_03 person_detected OFF
+  q    종료
 """
 
 import math
@@ -63,119 +63,168 @@ PROTO_MTU   = 1400
 EVENT_SEVERITY_CRITICAL    = 4
 EVENT_TYPE_VICTIM_DETECTED = 8
 
-# PktHeader: little-endian, 24B
-# type(B) robot_id(B) frag_idx(H) frag_total(H) payload_len(H)
-# frame_id(I) payload_offset(I) timestamp_us(Q)
-_HDR_FMT  = '<BBHHHIIQ'
-_HDR_SIZE = struct.calcsize(_HDR_FMT)   # 24
-
-# OdomPayload: little-endian, 24B — x y theta vx vy omega
+_HDR_FMT   = '<BBHHHIIQ'
 _ODOM_FMT  = '<ffffff'
-_ODOM_SIZE = struct.calcsize(_ODOM_FMT)  # 24
+_EVENT_FMT = '<BBHi96s'
 
-# EventPayload: little-endian, 104B — severity reserved event_type code message[96]
-_EVENT_FMT  = '<BBHi96s'
-_EVENT_SIZE = struct.calcsize(_EVENT_FMT)  # 104
+_HDR_SIZE   = struct.calcsize(_HDR_FMT)   # 24
+_ODOM_SIZE  = struct.calcsize(_ODOM_FMT)  # 24
+_EVENT_SIZE = struct.calcsize(_EVENT_FMT) # 104
 
 
 def _now_us() -> int:
     return int(time.monotonic() * 1_000_000)
 
 
-def _hdr(pkt_type: int, robot_id: int, payload_len: int,
-         frame_id: int, frag_idx: int = 0, frag_total: int = 1,
-         offset: int = 0) -> bytes:
-    return struct.pack(
-        _HDR_FMT,
-        pkt_type, robot_id,
-        frag_idx, frag_total, payload_len,
-        frame_id, offset,
-        _now_us(),
-    )
+def _hdr(pkt_type: int, robot_id: int, payload_len: int, frame_id: int,
+         frag_idx: int = 0, frag_total: int = 1, offset: int = 0) -> bytes:
+    return struct.pack(_HDR_FMT,
+                       pkt_type, robot_id,
+                       frag_idx, frag_total, payload_len,
+                       frame_id, offset, _now_us())
 
 
-def _build_odom(robot_id: int, frame_id: int,
+def _build_odom(robot_id: int, seq: int,
                 x: float, y: float, theta: float) -> bytes:
-    hdr = _hdr(PKT_TYPE_ODOM, robot_id, _ODOM_SIZE, frame_id)
-    payload = struct.pack(_ODOM_FMT, x, y, theta, 0.0, 0.0, 0.0)
-    return hdr + payload
+    return (_hdr(PKT_TYPE_ODOM, robot_id, _ODOM_SIZE, seq)
+            + struct.pack(_ODOM_FMT, x, y, theta, 0.0, 0.0, 0.0))
 
 
-def _build_event(robot_id: int, frame_id: int, detected: bool) -> bytes:
-    hdr = _hdr(PKT_TYPE_EVENT, robot_id, _EVENT_SIZE, frame_id)
-    code    = 1 if detected else 0
-    msg_str = b'person detected' if detected else b'person cleared'
-    payload = struct.pack(_EVENT_FMT,
+def _build_event(robot_id: int, seq: int, detected: bool) -> bytes:
+    msg_b = b'person detected' if detected else b'person cleared'
+    return (_hdr(PKT_TYPE_EVENT, robot_id, _EVENT_SIZE, seq)
+            + struct.pack(_EVENT_FMT,
                           EVENT_SEVERITY_CRITICAL, 0,
                           EVENT_TYPE_VICTIM_DETECTED,
-                          code,
-                          msg_str)
-    return hdr + payload
+                          1 if detected else 0,
+                          msg_b))
 
 
-def _build_image_fragments(robot_id: int, frame_id: int,
-                           jpeg: bytes) -> list[bytes]:
-    size       = len(jpeg)
-    frag_total = math.ceil(size / PROTO_MTU)
-    packets    = []
+def _build_image_frags(robot_id: int, seq: int, jpeg: bytes) -> list[bytes]:
+    frag_total = math.ceil(len(jpeg) / PROTO_MTU)
+    pkts = []
     for idx in range(frag_total):
-        offset  = idx * PROTO_MTU
-        chunk   = jpeg[offset: offset + PROTO_MTU]
-        hdr     = _hdr(PKT_TYPE_IMAGE, robot_id, len(chunk),
-                       frame_id, idx, frag_total, offset)
-        packets.append(hdr + chunk)
-    return packets
+        offset = idx * PROTO_MTU
+        chunk  = jpeg[offset: offset + PROTO_MTU]
+        pkts.append(_hdr(PKT_TYPE_IMAGE, robot_id, len(chunk),
+                         seq, idx, frag_total, offset) + chunk)
+    return pkts
 
 
-# ─── 단일 로봇 시뮬 상태 ──────────────────────────────────────────────────────
-class RobotSim:
+# ─── 단일 로봇 워커 ───────────────────────────────────────────────────────────
+class RobotWorker:
+    """pose 추종 + MJPEG 송출을 독립 스레드로 수행"""
 
     def __init__(self, ros_id: str, udp_id: int,
                  video_path: str, speed: float,
-                 quality: int, max_size: int):
-        self.ros_id    = ros_id
-        self.udp_id    = udp_id          # proto.h robot_id (0-based)
-        self.speed     = speed
-        self._quality  = quality
-        self._max_size = max_size
+                 quality: int, max_size: int,
+                 pose_hz: float, video_fps: int,
+                 sock: socket.socket, dst: tuple,
+                 logger):
+        self.ros_id  = ros_id
+        self.udp_id  = udp_id
+        self._sock   = sock
+        self._dst    = dst
+        self._log    = logger
+        self._max_sz = max_size
+        self._quality = quality
 
         # 경로 추종
-        self._waypoints: list[tuple[float, float]] = []
-        self._seg     = 0
-        self._prog    = 0.0
-        self._cur_x   = 0.0
-        self._cur_y   = 0.0
+        self._speed     = speed
+        self._wps: list[tuple[float, float]] = []
+        self._seg    = 0
+        self._prog   = 0.0
+        self._cur_x  = 0.0
+        self._cur_y  = 0.0
         self._cur_yaw = 0.0
+        self._wps_lock = threading.Lock()
 
-        # 시퀀스 번호
-        self.odom_seq  = 0
-        self.event_seq = 0
-        self.img_seq   = 0
-
-        # rate limit (odom)
-        self._last_odom_us = 0
+        # 시퀀스
+        self._odom_seq  = 0
+        self._event_seq = 0
+        self._img_seq   = 0
 
         # 영상
         self._cap = cv2.VideoCapture(video_path)
+        if not self._cap.isOpened():
+            self._log.warn(f'[{ros_id}] 영상 열기 실패: {video_path}')
 
-    # ── 경로 ─────────────────────────────────────────────────────────────────
+        # 스레드 제어
+        self._running  = False
+        self._stop_evt = threading.Event()
+
+        # 주기
+        self._pose_dt  = 1.0 / pose_hz
+        self._video_dt = 1.0 / video_fps
+        self._odom_min_us = int(1_000_000 / pose_hz)
+        self._last_odom   = 0
+
+        # FPS 모니터링
+        self._fps_cnt = 0
+        self._fps_t   = time.monotonic()
+
+    # ── 외부 제어 ─────────────────────────────────────────────────────────────
     def set_path(self, waypoints_msg: list) -> None:
-        self._waypoints = [(wp.x_m, wp.y_m) for wp in waypoints_msg]
-        self._seg  = 0
-        self._prog = 0.0
-        if self._waypoints:
-            self._cur_x, self._cur_y = self._waypoints[0]
+        with self._wps_lock:
+            self._wps  = [(wp.x_m, wp.y_m) for wp in waypoints_msg]
+            self._seg  = 0
+            self._prog = 0.0
+            if self._wps:
+                self._cur_x, self._cur_y = self._wps[0]
+        self._log.info(f'[{self.ros_id}] 경로 수신  waypoints={len(self._wps)}')
 
-    def has_path(self) -> bool:
-        return len(self._waypoints) >= 2
+    def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._t_last  = time.monotonic()
+        threading.Thread(target=self._pose_loop,  daemon=True,
+                         name=f'{self.ros_id}_pose').start()
+        threading.Thread(target=self._video_loop, daemon=True,
+                         name=f'{self.ros_id}_video').start()
+        self._log.info(f'[{self.ros_id}] ▶ 시작')
+        print(f'[{self.ros_id}] ▶ 시작')
 
-    def advance(self, dt: float) -> tuple[float, float, float]:
-        if not self.has_path():
-            return self._cur_x, self._cur_y, self._cur_yaw
+    def send_event(self, detected: bool) -> None:
+        pkt = _build_event(self.udp_id, self._event_seq, detected)
+        self._event_seq += 1
+        self._send(pkt)
+        label = 'ON  ✓' if detected else 'OFF ✗'
+        self._log.info(f'[EVENT/{self.ros_id}] {label}')
+        print(f'[EVENT/{self.ros_id}] {label}')
 
-        wps = self._waypoints
+    def stop(self) -> None:
+        self._stop_evt.set()
+
+    def release(self) -> None:
+        self._cap.release()
+
+    # ── Pose 스레드 ───────────────────────────────────────────────────────────
+    def _pose_loop(self) -> None:
+        while not self._stop_evt.is_set():
+            t0 = time.monotonic()
+
+            now  = t0
+            dt   = now - self._t_last
+            self._t_last = now
+
+            with self._wps_lock:
+                x, y, yaw = self._advance(dt)
+
+            now_us = _now_us()
+            if now_us - self._last_odom >= self._odom_min_us:
+                self._last_odom = now_us
+                self._send(_build_odom(self.udp_id, self._odom_seq, x, y, yaw))
+                self._odom_seq += 1
+
+            elapsed = time.monotonic() - t0
+            time.sleep(max(0.0, self._pose_dt - elapsed))
+
+    def _advance(self, dt: float) -> tuple[float, float, float]:
+        wps = self._wps
         n   = len(wps)
-
+        if n < 2:
+            return self._cur_x, self._cur_y, self._cur_yaw
         if self._seg >= n - 1:
             self._cur_x, self._cur_y = wps[-1]
             return self._cur_x, self._cur_y, self._cur_yaw
@@ -186,7 +235,7 @@ class RobotSim:
         dy      = p1[1] - p0[1]
         seg_len = math.hypot(dx, dy) or 1e-6
 
-        self._prog += self.speed * dt
+        self._prog += self._speed * dt
         while self._prog >= seg_len and self._seg < n - 2:
             self._prog -= seg_len
             self._seg  += 1
@@ -202,47 +251,65 @@ class RobotSim:
         self._cur_yaw = math.atan2(dy, dx)
         return self._cur_x, self._cur_y, self._cur_yaw
 
-    # ── odom rate limit ───────────────────────────────────────────────────────
-    def odom_due(self, min_interval_us: int) -> bool:
-        now = _now_us()
-        if now - self._last_odom_us < min_interval_us:
-            return False
-        self._last_odom_us = now
-        return True
+    # ── MJPEG 스레드 ──────────────────────────────────────────────────────────
+    def _video_loop(self) -> None:
+        while not self._stop_evt.is_set():
+            t0 = time.monotonic()
 
-    # ── 영상 ─────────────────────────────────────────────────────────────────
-    def next_jpeg(self) -> bytes | None:
-        if not self._cap.isOpened():
-            return None
-        ret, frame = self._cap.read()
-        if not ret:
-            self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            ret, frame = self._cap.read()
-            if not ret:
-                return None
-        ok, buf = cv2.imencode(
-            '.jpg', frame,
-            [cv2.IMWRITE_JPEG_QUALITY, self._quality],
-        )
-        return buf.tobytes() if ok else None
+            if self._cap.isOpened():
+                ret, frame = self._cap.read()
+                if not ret:
+                    self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    ret, frame = self._cap.read()
 
-    def video_ok(self) -> bool:
-        return self._cap.isOpened()
+                if ret:
+                    ok, buf = cv2.imencode(
+                        '.jpg', frame,
+                        [cv2.IMWRITE_JPEG_QUALITY, self._quality],
+                    )
+                    if ok:
+                        jpeg = buf.tobytes()
+                        if len(jpeg) <= self._max_sz:
+                            for pkt in _build_image_frags(
+                                self.udp_id, self._img_seq, jpeg
+                            ):
+                                self._send(pkt)
+                            self._img_seq = (self._img_seq + 1) & 0xFFFF_FFFF
+                            self._fps_cnt += 1
+                        else:
+                            self._log.warn(
+                                f'[{self.ros_id}] 프레임 너무 큼: {len(jpeg)}B — skip'
+                            )
 
-    def release(self) -> None:
-        self._cap.release()
+            # FPS 로그 (1초마다)
+            now = time.monotonic()
+            if now - self._fps_t >= 1.0:
+                self._log.info(f'[MJPEG/{self.ros_id}] {self._fps_cnt}fps')
+                self._fps_cnt = 0
+                self._fps_t   = now
+
+            elapsed = time.monotonic() - t0
+            time.sleep(max(0.0, self._video_dt - elapsed))
+
+    # ── 공용 송신 ─────────────────────────────────────────────────────────────
+    def _send(self, data: bytes) -> None:
+        try:
+            self._sock.sendto(data, self._dst)
+        except OSError as e:
+            self._log.error(f'[{self.ros_id}] UDP 오류: {e}')
 
 
 # ─── 메인 노드 ────────────────────────────────────────────────────────────────
 class SimExecutorNode(Node):
 
     _KEY_HELP = (
-        '  s     시작  (pose 추종 + 영상 송출)\n'
-        '  v2    spot_02 탐지 ON\n'
-        '  f2    spot_02 탐지 OFF\n'
-        '  v3    spot_03 탐지 ON\n'
-        '  f3    spot_03 탐지 OFF\n'
-        '  q     종료\n'
+        '  s2   spot_02 시작\n'
+        '  s3   spot_03 시작\n'
+        '  v2   spot_02 탐지 ON\n'
+        '  f2   spot_02 탐지 OFF\n'
+        '  v3   spot_03 탐지 ON\n'
+        '  f3   spot_03 탐지 OFF\n'
+        '  q    종료\n'
     )
 
     def __init__(self):
@@ -253,8 +320,8 @@ class SimExecutorNode(Node):
         self.declare_parameter('bridge_port',      BRIDGE_PORT)
         self.declare_parameter('video_path_02',    'REQUIRED')
         self.declare_parameter('video_path_03',    'REQUIRED')
-        self.declare_parameter('udp_robot_id_02',  1)   # 0-based: spot_02=1
-        self.declare_parameter('udp_robot_id_03',  2)   # 0-based: spot_03=2
+        self.declare_parameter('udp_robot_id_02',  1)
+        self.declare_parameter('udp_robot_id_03',  2)
         self.declare_parameter('robot_speed_mps',  0.4)
         self.declare_parameter('pose_send_hz',     10.0)
         self.declare_parameter('video_fps',        15)
@@ -274,38 +341,29 @@ class SimExecutorNode(Node):
         max_size  = int(self.get_parameter('max_size_bytes').value)
 
         for label, val in [
-            ('rpi5_ip',        rpi5_ip),
-            ('video_path_02',  video_02),
-            ('video_path_03',  video_03),
+            ('rpi5_ip',       rpi5_ip),
+            ('video_path_02', video_02),
+            ('video_path_03', video_03),
         ]:
             if val == 'REQUIRED':
                 self.get_logger().fatal(f'파라미터 {label} 미설정')
                 raise RuntimeError(f'{label} 파라미터 필수')
 
-        self._odom_min_us = int(1_000_000 / pose_hz)
-
-        # ── RobotSim ──────────────────────────────────────────────────────────
-        self._robots: dict[str, RobotSim] = {
-            'spot_02': RobotSim('spot_02', udp_id_02, video_02, speed, quality, max_size),
-            'spot_03': RobotSim('spot_03', udp_id_03, video_03, speed, quality, max_size),
-        }
-        for rid, sim in self._robots.items():
-            if not sim.video_ok():
-                self.get_logger().warn(f'[{rid}] 영상 열기 실패 — 영상 송출 비활성화')
-
-        # ── 실행 상태 ─────────────────────────────────────────────────────────
-        self._running = False
-        self._t_last  = time.monotonic()
-
-        # ── UDP ───────────────────────────────────────────────────────────────
+        # ── UDP 소켓 (두 워커가 공유) ─────────────────────────────────────────
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._dst  = (rpi5_ip, port)
+        dst        = (rpi5_ip, port)
 
-        # FPS 모니터링
-        self._fps_cnt = {rid: 0 for rid in self._robots}
-        self._fps_t   = time.monotonic()
+        # ── RobotWorker ───────────────────────────────────────────────────────
+        common = dict(speed=speed, quality=quality, max_size=max_size,
+                      pose_hz=pose_hz, video_fps=video_fps,
+                      sock=self._sock, dst=dst, logger=self.get_logger())
 
-        # ── QoS (global_path 수신용만) ────────────────────────────────────────
+        self._workers: dict[str, RobotWorker] = {
+            'spot_02': RobotWorker('spot_02', udp_id_02, video_02, **common),
+            'spot_03': RobotWorker('spot_03', udp_id_03, video_03, **common),
+        }
+
+        # ── QoS ───────────────────────────────────────────────────────────────
         transient_qos = QoSProfile(
             depth=1,
             reliability=QoSReliabilityPolicy.RELIABLE,
@@ -313,7 +371,7 @@ class SimExecutorNode(Node):
         )
 
         # ── Subscriber ────────────────────────────────────────────────────────
-        for rid in self._robots:
+        for rid in self._workers:
             self.create_subscription(
                 GlobalPathWaypoints,
                 f'/planning/global_path/{rid}',
@@ -321,139 +379,47 @@ class SimExecutorNode(Node):
                 transient_qos,
             )
 
-        # ── 타이머 ────────────────────────────────────────────────────────────
-        self.create_timer(1.0 / pose_hz,   self._pose_timer)
-        self.create_timer(1.0 / video_fps, self._video_timer)
-
-        # ── 키보드 스레드 ─────────────────────────────────────────────────────
-        threading.Thread(
-            target=self._keyboard_loop, daemon=True, name='kb',
-        ).start()
-
         self.get_logger().info(
             f'sim_executor_node 시작\n'
             f'  UDP    : {rpi5_ip}:{port}\n'
-            f'  spot_02: robot_id={udp_id_02}  {video_02}\n'
-            f'  spot_03: robot_id={udp_id_03}  {video_03}\n'
+            f'  spot_02: udp_id={udp_id_02}  {video_02}\n'
+            f'  spot_03: udp_id={udp_id_03}  {video_03}\n'
             f'  속도={speed}m/s  pose={pose_hz}Hz  video={video_fps}fps\n'
-            f'  ▶ 경로 수신 후 [s] 를 눌러 시작하십시오.'
+            f'키보드:\n{self._KEY_HELP}'
         )
 
     # ── 콜백: global_path ─────────────────────────────────────────────────────
     def _path_cb(self, msg: GlobalPathWaypoints, robot_id: str) -> None:
-        sim = self._robots.get(robot_id)
-        if sim is None:
-            return
-        sim.set_path(msg.waypoints)
-        self.get_logger().info(
-            f'[{robot_id}] 경로 수신  waypoints={len(msg.waypoints)}'
-        )
-
-    # ── 타이머: pose (PKT_TYPE_ODOM) ─────────────────────────────────────────
-    def _pose_timer(self) -> None:
-        if not self._running:
-            return
-
-        now  = time.monotonic()
-        dt   = now - self._t_last
-        self._t_last = now
-
-        for rid, sim in self._robots.items():
-            x, y, yaw = sim.advance(dt)
-
-            if not sim.odom_due(self._odom_min_us):
-                continue
-
-            pkt = _build_odom(sim.udp_id, sim.odom_seq, x, y, yaw)
-            sim.odom_seq += 1
-            self._send(pkt)
-
-    # ── 타이머: 영상 (PKT_TYPE_IMAGE) ────────────────────────────────────────
-    def _video_timer(self) -> None:
-        if not self._running:
-            return
-
-        for rid, sim in self._robots.items():
-            jpeg = sim.next_jpeg()
-            if jpeg is None:
-                continue
-            if len(jpeg) > sim._max_size:
-                self.get_logger().warn(f'[{rid}] 프레임 너무 큼: {len(jpeg)}B — skip')
-                continue
-
-            for pkt in _build_image_fragments(sim.udp_id, sim.img_seq, jpeg):
-                self._send(pkt)
-            sim.img_seq = (sim.img_seq + 1) & 0xFFFF_FFFF
-            self._fps_cnt[rid] = self._fps_cnt.get(rid, 0) + 1
-
-        now = time.monotonic()
-        if now - self._fps_t >= 1.0:
-            parts = '  '.join(f'{r}={c}fps' for r, c in self._fps_cnt.items())
-            self.get_logger().info(f'[MJPEG] {parts}')
-            for r in self._fps_cnt:
-                self._fps_cnt[r] = 0
-            self._fps_t = now
-
-    # ── person_detected (PKT_TYPE_EVENT) ─────────────────────────────────────
-    def _send_victim(self, rid: str, detected: bool) -> None:
-        sim = self._robots.get(rid)
-        if sim is None:
-            return
-        pkt = _build_event(sim.udp_id, sim.event_seq, detected)
-        sim.event_seq += 1
-        self._send(pkt)
-        label = 'ON  ✓' if detected else 'OFF ✗'
-        self.get_logger().info(f'[EVENT/person_detected/{rid}] {label}')
-        print(f'[EVENT/person_detected/{rid}] {label}')
-
-    # ── UDP 송신 ──────────────────────────────────────────────────────────────
-    def _send(self, data: bytes) -> None:
-        try:
-            self._sock.sendto(data, self._dst)
-        except OSError as e:
-            self.get_logger().error(f'UDP 오류: {e}')
+        w = self._workers.get(robot_id)
+        if w:
+            w.set_path(msg.waypoints)
 
     # ── 키보드 ───────────────────────────────────────────────────────────────
-    def _keyboard_loop(self) -> None:
-        print(f'[sim_executor] 키 입력 대기:\n{self._KEY_HELP}')
-        for line in sys.stdin:
-            key = line.strip().lower()
-
-            if key == 's':
-                if self._running:
-                    print('[sim_executor] 이미 실행 중입니다.')
-                else:
-                    self._running = True
-                    self._t_last  = time.monotonic()
-                    print('[sim_executor] ▶ 시작 — pose 추종 + 영상 송출')
-
-            elif key == 'v2':
-                self._send_victim('spot_02', True)
-            elif key == 'f2':
-                self._send_victim('spot_02', False)
-            elif key == 'v3':
-                self._send_victim('spot_03', True)
-            elif key == 'f3':
-                self._send_victim('spot_03', False)
-
-            elif key == 'q':
-                self.get_logger().info('종료 요청')
-                rclpy.shutdown()
-                break
-
-            else:
-                print(f'[sim_executor] 알 수 없는 입력: "{key}"\n{self._KEY_HELP}')
+    def handle_key(self, key: str) -> bool:
+        """키 처리. q 입력 시 True 반환 (종료 신호)."""
+        if   key == 's2': self._workers['spot_02'].start()
+        elif key == 's3': self._workers['spot_03'].start()
+        elif key == 'v2': self._workers['spot_02'].send_event(True)
+        elif key == 'f2': self._workers['spot_02'].send_event(False)
+        elif key == 'v3': self._workers['spot_03'].send_event(True)
+        elif key == 'f3': self._workers['spot_03'].send_event(False)
+        elif key == 'q':  return True
+        else: print(f'알 수 없는 입력: "{key}"\n{self._KEY_HELP}')
+        return False
 
     # ── 종료 ─────────────────────────────────────────────────────────────────
     def destroy_node(self):
-        for sim in self._robots.values():
-            sim.release()
+        for w in self._workers.values():
+            w.stop()
+            w.release()
         self._sock.close()
         super().destroy_node()
 
 
 # ─── 진입점 ───────────────────────────────────────────────────────────────────
 def main(args=None):
+    import select
+
     rclpy.init(args=args)
     try:
         node = SimExecutorNode()
@@ -461,8 +427,25 @@ def main(args=None):
         rclpy.shutdown()
         return
 
+    executor = rclpy.executors.SingleThreadedExecutor()
+    executor.add_node(node)
+
+    print(f'키보드:\n{SimExecutorNode._KEY_HELP}')
+
     try:
-        rclpy.spin(node)
+        while rclpy.ok():
+            # ROS2 콜백 처리 (0.05초 타임아웃)
+            executor.spin_once(timeout_sec=0.05)
+
+            # stdin 입력 확인 (블로킹 없이)
+            r, _, _ = select.select([sys.stdin], [], [], 0)
+            if r:
+                line = sys.stdin.readline()
+                if not line:          # EOF
+                    break
+                if node.handle_key(line.strip().lower()):
+                    break
+
     except KeyboardInterrupt:
         pass
     finally:

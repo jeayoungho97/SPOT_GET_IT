@@ -17,15 +17,19 @@ from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 import numpy as np
 import yaml
 
+# ═══════════════════════════════════════════════════════════
+# ── 공통 설정 (버전 간 반드시 동일, 여기서만 수정) ──────────
+SEARCH_GRID_STEP   = 1.0    # 경로 탐색 격자 간격 (m) — 0.5로 바꾸면 더 세밀
+GRID_STEP          = 1.0    # 커버리지 격자 크기 (m)
+COVER_RADIUS       = 1.0    # 커버리지 판정 반경 (m)
+# ═══════════════════════════════════════════════════════════
+
 # ── 탐색 설정 ─────────────────────────────────────────────
 MAX_WAYPOINTS      = 6      
-SEARCH_GRID_STEP   = 1.0    
 
 # ── 격자 / 반경 설정 ──────────────────────────────────────
-GRID_STEP         = 1.0
 FOOTPRINT_RADIUS  = 0.3    
 SEPARATION_RADIUS = 0.6    
-COVER_RADIUS      = 1.0    
 COLLINEAR_RADIUS  = 0.1
 PATH_SAMPLE_D     = 0.2
 
@@ -33,16 +37,17 @@ PATH_SAMPLE_D     = 0.2
 SAFE_DISTANCE     = 1.2    
 
 # ── 선정 가중치 ───────────────────────────────────────────
-COVERAGE_WEIGHT         = 8.0    
-SEPARATION_WEIGHT       = 60.0   
+COVERAGE_WEIGHT         = 15.0    
+SEPARATION_WEIGHT       = 20.0   
 COVERAGE_OVERLAP_WEIGHT = 5.0    
 OVERLAP_WEIGHT          = 150.0  
 COLLINEAR_WEIGHT        = 200.0  
-CROSS_PENALTY           = 5000   # 교차 허용 (물리적 병렬 충돌 방지를 위해 상대적으로 하향)
-PROXIMITY_PENALTY       = 15000  # 근접 주행 절대 금지 (선간 거리 강제 확보)
-WP_COUNT_PENALTY        = 2.0    
-OUTWARD_PUSH_WEIGHT     = 100.0  
-FINAL_SEG_PENALTY       = 30.0   
+CROSS_PENALTY           = 20000  # 교차 절대 금지 수준으로 강화   # 교차 허용 (물리적 병렬 충돌 방지를 위해 상대적으로 하향)
+PROXIMITY_PENALTY       = 30000  # 근접 주행 절대 금지 강화  # 근접 주행 절대 금지 (선간 거리 강제 확보)
+WP_COUNT_PENALTY        = 0.2    
+WALL_RADIUS              = 1.5    # 벽/장애물 경계 인접 판단 반경 (m)
+WALL_COVERAGE_WEIGHT     = 40.0   # 벽 담당 로봇: 벽 인접 셀 커버리지 가중치
+INTERIOR_COVERAGE_WEIGHT = 40.0   # 내부 담당 로봇: 내부 셀 커버리지 가중치
 
 Waypoint = Tuple[float, float]
 Cell     = Tuple[int, int]
@@ -58,6 +63,9 @@ class MapConfig:
         self.corridor_1:  Optional[dict]       = cfg.get("corridor_1")
         self.wp_sampling: dict                 = cfg["waypoint_sampling"]
         self.obstacles:   List[dict]           = cfg.get("obstacles", [])
+        rt = cfg.get("robot_types", {})
+        self.wall_robots:     List[str] = rt.get("wall", [])
+        self.interior_robots: List[str] = rt.get("interior", [])
 
     def xs(self) -> List[float]:
         s = self.wp_sampling
@@ -247,6 +255,53 @@ def _paths_min_dist(
     return min_d
 
 
+def _turn_count(wps: List[Waypoint]) -> int:
+    turns = 0
+    for i in range(1, len(wps) - 1):
+        a, b, c = wps[i - 1], wps[i], wps[i + 1]
+        yaw_1 = math.atan2(b[1] - a[1], b[0] - a[0])
+        yaw_2 = math.atan2(c[1] - b[1], c[0] - b[0])
+        delta = abs((yaw_2 - yaw_1 + math.pi) % (2 * math.pi) - math.pi)
+        if delta > 0.1:
+            turns += 1
+    return turns
+
+
+def _selection_quality(
+    selected: Dict[str, "GlobalPath"],
+    cfg: Optional[MapConfig],
+    starts: Dict[str, Waypoint],
+) -> Tuple[int, int, int, int, int, int]:
+    paths = list(selected.values())
+    end_pt = cfg.end if cfg is not None else paths[0].waypoints[-1]
+    start_pts = list(starts.values())
+
+    cross_count = 0
+    close_count = 0
+    footprint_overlap = 0
+    for i in range(len(paths)):
+        for j in range(i + 1, len(paths)):
+            if _paths_cross(paths[i].waypoints, paths[j].waypoints):
+                cross_count += 1
+            if _paths_min_dist(paths[i].waypoints, paths[j].waypoints,
+                               end_pt, start_pts) < SAFE_DISTANCE:
+                close_count += 1
+            footprint_overlap += len(paths[i].footprint & paths[j].footprint)
+
+    coverage = len(frozenset().union(*(p.coverage for p in paths)))
+    turn_count = sum(_turn_count(p.waypoints) for p in paths)
+    wp_count = sum(len(p.waypoints) for p in paths)
+
+    return (
+        cross_count,
+        -coverage,
+        footprint_overlap,
+        turn_count,
+        close_count,
+        wp_count,
+    )
+
+
 # ── 데이터 클래스 ─────────────────────────────────────────
 @dataclass
 class GlobalPath:
@@ -263,6 +318,54 @@ class GlobalPath:
 
 def shape_of(path: GlobalPath) -> str:
     return 'dynamic'
+
+
+def _build_wall_cells(cfg: MapConfig, all_cells: FrozenSet[Cell]) -> FrozenSet[Cell]:
+    """장애물/맵 경계로부터 WALL_RADIUS 이내 셀을 반환."""
+    x_min, y_min = 0.0, 0.0
+    wall: Set[Cell] = set()
+    r2 = WALL_RADIUS ** 2
+
+    boundary_pts: List[Waypoint] = []
+    l = cfg.lobby
+    for t in np.arange(0, 1.01, 0.1):
+        boundary_pts += [
+            (l['x_min'] + t * (l['x_max'] - l['x_min']), l['y_min']),
+            (l['x_min'] + t * (l['x_max'] - l['x_min']), l['y_max']),
+            (l['x_min'], l['y_min'] + t * (l['y_max'] - l['y_min'])),
+            (l['x_max'], l['y_min'] + t * (l['y_max'] - l['y_min'])),
+        ]
+    if cfg.corridor_1:
+        c = cfg.corridor_1
+        for t in np.arange(0, 1.01, 0.1):
+            boundary_pts += [
+                (c['x_min'] + t * (c['x_max'] - c['x_min']), c['y_max']),
+                (c['x_min'], c['y_min'] + t * (c['y_max'] - c['y_min'])),
+                (c['x_max'], c['y_min'] + t * (c['y_max'] - c['y_min'])),
+            ]
+    for obs in cfg.obstacles:
+        for t in np.arange(0, 1.01, 0.1):
+            boundary_pts += [
+                (obs['x_min'] + t * (obs['x_max'] - obs['x_min']), obs['y_min']),
+                (obs['x_min'] + t * (obs['x_max'] - obs['x_min']), obs['y_max']),
+                (obs['x_min'], obs['y_min'] + t * (obs['y_max'] - obs['y_min'])),
+                (obs['x_max'], obs['y_min'] + t * (obs['y_max'] - obs['y_min'])),
+            ]
+
+    r_idx = int(WALL_RADIUS / GRID_STEP) + 1
+    for px, py in boundary_pts:
+        bc = math.floor((px - x_min) / GRID_STEP)
+        br = math.floor((py - y_min) / GRID_STEP)
+        for dc in range(-r_idx, r_idx + 1):
+            for dr in range(-r_idx, r_idx + 1):
+                cell = (bc + dc, br + dr)
+                if cell not in all_cells:
+                    continue
+                cx, cy = _cell_center(cell, x_min, y_min)
+                if (cx - px) ** 2 + (cy - py) ** 2 <= r2:
+                    wall.add(cell)
+
+    return frozenset(wall)
 
 
 # ── 로봇별 Path Set 동적 생성 ───────────────────────────────
@@ -346,101 +449,162 @@ def validate_path_set(
     return path_sets
 
 
-# ── 각도 기반 shape 배정 ──────────────────────────────────
-def _angle_to_shape(ratio: float) -> str:
-    if ratio < 0.33: return 'x_first'
-    elif ratio < 0.66: return 'diagonal'
-    else: return 'y_first'
-
-
-# ── 공간 분리 가중치 산출 ──────────────────
-def get_spatial_bonus(wps: List[Waypoint], target_shape: str) -> float:
-    scores = []
-    for wp in wps:
-        nx = wp[0] / 12.0
-        ny = wp[1] / 8.0
-        
-        if target_shape == 'y_first':
-            scores.append(ny + (1.0 - nx))
-        elif target_shape == 'x_first':
-            scores.append(nx + (1.0 - ny))
-        else:
-            scores.append(- (abs(nx - 0.5) + abs(ny - 0.5)))
-            
-    return max(scores) * OUTWARD_PUSH_WEIGHT
-
-
-# ── 경로 선정 ─────────────────────────────
+# ── 경로 선정 ─────────────────────────────────────────────
 def select_paths(
     path_sets: Dict[str, List[GlobalPath]],
     starts:    Optional[Dict[str, Waypoint]] = None,
+    cfg:       Optional[MapConfig] = None,
 ) -> Dict[str, GlobalPath]:
-    
+    """
+    y-x 기준 상위 절반 → 벽 담당 (wall_cells 우선 커버)
+    y-x 기준 하위 절반 → 내부 담당 (interior_cells 우선 커버)
+    벽 담당 먼저 선정 후 내부 담당 선정.
+    """
     first_path = next((p[0] for p in path_sets.values() if p), None)
     end_pt = first_path.waypoints[-1] if first_path else (11.2, 7.0)
 
     if starts is None:
         starts = {k: paths[0].waypoints[0] for k, paths in path_sets.items() if paths}
 
-    n = len(starts)
-    sorted_robots = sorted(starts.keys(), key=lambda k: starts[k][1] - starts[k][0], reverse=True)
-    target_shapes = {rk: _angle_to_shape(i / (n - 1) if n > 1 else 0.5) for i, rk in enumerate(reversed(sorted_robots))}
+    # 벽/내부 셀 계산. cfg가 있으면 실제 맵/장애물 경계를 사용하고,
+    # 없을 때만 기존 coverage union 기반 heuristic으로 fallback한다.
+    if cfg is not None:
+        all_cells = _build_map_cells(cfg)
+        wall_cells = _build_wall_cells(cfg, all_cells)
+    else:
+        all_cells = frozenset().union(
+            *(p.coverage for paths in path_sets.values() for p in paths if p.valid)
+        )
+        wall_cells = _build_wall_cells_from_sets(path_sets, all_cells)
+    interior_cells = all_cells - wall_cells
 
-    eval_order = [rk for rk in sorted_robots if target_shapes[rk] != 'diagonal'] + \
-                 [rk for rk in sorted_robots if target_shapes[rk] == 'diagonal']
+    def wall_priority(robot_key: str) -> Tuple[float, float, float]:
+        x, y = starts[robot_key]
+        return (y - x, y, -x)
+
+    # 로봇 타입 배정: 위치 기준 정렬 → 상위 절반 wall, 하위 절반 interior.
+    # y-x 동점도 좌표로 결정해서 robot id / yaml 순서가 결과를 흔들지 않게 한다.
+    n = len(starts)
+    sorted_robots = sorted(starts.keys(), key=wall_priority, reverse=True)
+    n_wall = n // 2
+    wall_robots     = set(sorted_robots[:n_wall])
+    interior_robots = set(sorted_robots[n_wall:])
+
+    # 벽 담당 먼저 선정. 내부 담당은 x가 큰 로봇을 먼저 고르게 해서
+    # 바깥쪽 하단 경로를 선점하고, x가 작은 로봇은 대각 우회 후보를 타도록 유도한다.
+    wall_order = [r for r in sorted_robots if r in wall_robots]
+    interior_order = sorted(
+        (r for r in sorted_robots if r in interior_robots),
+        key=lambda k: (starts[k][0], starts[k][1]),
+        reverse=True,
+    )
+    eval_order = wall_order + interior_order
 
     selected:          Dict[str, GlobalPath] = {}
     covered_cov:       Set[Cell] = set()
     covered_sep:       Set[Cell] = set()
     covered_foot:      Set[Cell] = set()
     covered_collinear: Set[Cell] = set()
-    
     start_pts = list(starts.values())
 
     for robot_key in eval_order:
         candidates = [p for p in path_sets[robot_key] if p.valid]
-        if not candidates: continue
+        if not candidates:
+            continue
 
-        target_shape = target_shapes[robot_key]
+        is_wall = robot_key in wall_robots
 
-        for p in candidates:
-            p.pivot = get_spatial_bonus(p.waypoints, target_shape)
+        def score(p: GlobalPath, _wall=is_wall,
+                  _wc=wall_cells, _ic=interior_cells) -> float:
+            new_cov = p.coverage - covered_cov
 
-        def score(p: GlobalPath) -> float:
-            cross_p = sum(CROSS_PENALTY for sel in selected.values() if _paths_cross(p.waypoints, sel.waypoints))
-            
-            prox_p = 0
-            for sel in selected.values():
-                if _paths_min_dist(p.waypoints, sel.waypoints, end_pt, start_pts) < SAFE_DISTANCE:
-                    prox_p += PROXIMITY_PENALTY
+            if _wall:
+                primary   = WALL_COVERAGE_WEIGHT     * len(new_cov & _wc)
+                secondary = COVERAGE_WEIGHT           * len(new_cov - _wc)
+            else:
+                primary   = INTERIOR_COVERAGE_WEIGHT * len(new_cov & _ic)
+                secondary = COVERAGE_WEIGHT           * len(new_cov - _ic)
 
-            sep_overlap = len(p.separation & covered_sep)
-            
-            final_seg_len = math.hypot(p.waypoints[-2][0] - p.waypoints[-1][0], p.waypoints[-2][1] - p.waypoints[-1][1])
-            final_seg_penalty = final_seg_len * FINAL_SEG_PENALTY
-
+            cross_p = sum(CROSS_PENALTY for sel in selected.values()
+                          if _paths_cross(p.waypoints, sel.waypoints))
+            prox_p  = sum(PROXIMITY_PENALTY for sel in selected.values()
+                          if _paths_min_dist(p.waypoints, sel.waypoints,
+                                             end_pt, start_pts) < SAFE_DISTANCE)
+            sep_overlap     = len(p.separation & covered_sep)
             collinear_ratio = len(p.collinear & covered_collinear) / max(1, len(p.collinear))
-            wp_penalty = WP_COUNT_PENALTY * len(p.waypoints)
+            wp_penalty      = WP_COUNT_PENALTY * len(p.waypoints)
 
             return (
-                COVERAGE_WEIGHT * len(p.coverage - covered_cov)
+                primary
+                + secondary
                 - COVERAGE_OVERLAP_WEIGHT * len(p.coverage & covered_cov)
-                - SEPARATION_WEIGHT * sep_overlap
-                - OVERLAP_WEIGHT * len(p.footprint & covered_foot)
-                + p.pivot
+                - SEPARATION_WEIGHT       * sep_overlap
+                - OVERLAP_WEIGHT          * len(p.footprint & covered_foot)
+                - COLLINEAR_WEIGHT        * collinear_ratio
+                - wp_penalty
                 - cross_p
                 - prox_p
-                - final_seg_penalty
-                - COLLINEAR_WEIGHT * collinear_ratio
-                - wp_penalty
             )
 
         best = max(candidates, key=score)
+        best.pivot = float(robot_key in wall_robots)   # 범례 표시용
         selected[robot_key] = best
-        
+
         covered_cov       |= best.coverage
         covered_sep       |= best.separation
         covered_foot      |= best.footprint
         covered_collinear |= best.collinear
 
+    # Greedy 선정 뒤, 교차가 남아 있으면 로봇 하나씩 후보를 바꿔 보며
+    # coverage를 크게 잃지 않는 더 단순한 조합으로 국소 보정한다.
+    for _ in range(2):
+        current_quality = _selection_quality(selected, cfg, starts)
+        improved = False
+
+        for robot_key in eval_order:
+            original = selected[robot_key]
+            best_path = original
+            best_quality = current_quality
+
+            for candidate in path_sets[robot_key]:
+                if not candidate.valid or candidate is original:
+                    continue
+
+                selected[robot_key] = candidate
+                quality = _selection_quality(selected, cfg, starts)
+                if quality < best_quality:
+                    best_quality = quality
+                    best_path = candidate
+
+            selected[robot_key] = best_path
+            if best_path is not original:
+                current_quality = best_quality
+                improved = True
+
+        if not improved:
+            break
+
+    for robot_key, path in selected.items():
+        path.pivot = float(robot_key in wall_robots)
+
     return selected
+
+
+def _build_wall_cells_from_sets(
+    path_sets: Dict[str, List[GlobalPath]],
+    all_cells: FrozenSet[Cell],
+) -> FrozenSet[Cell]:
+    """
+    all_cells 중 맵 경계/장애물 인접 셀.
+    path_set 내부에 cfg 접근이 없으므로 좌표 기반 heuristic 사용:
+      x < 2.5 또는 x > 10.5 또는 y < 2.0 또는 y > 6.5 인 셀 → 벽 근접
+    실제 WALL_RADIUS 판단은 _build_wall_cells(cfg) 를 사용하는 것이 정확하나
+    select_paths 는 cfg 를 받지 않으므로 근사값 사용.
+    """
+    wall: Set[Cell] = set()
+    for cell in all_cells:
+        cx = (cell[0] + 0.5) * GRID_STEP
+        cy = (cell[1] + 0.5) * GRID_STEP
+        if cx < 2.5 or cx > 10.5 or cy < 2.0 or cy > 6.5:
+            wall.add(cell)
+    return frozenset(wall)
