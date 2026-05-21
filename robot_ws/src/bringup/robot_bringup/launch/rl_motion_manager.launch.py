@@ -79,6 +79,14 @@ def generate_launch_description():
         parameters=[motion_param],
     )
 
+    detect_motion_node = Node(
+        package='motion_manager',
+        executable='detect_motion_node',
+        name='detect_motion_node',
+        output='screen',
+        parameters=[motion_param],
+    )
+
     classic_control_node = Node(
         package='classic_control',
         executable='classic_control_node',
@@ -109,6 +117,7 @@ def generate_launch_description():
         classic_config_arg,
         rl_locomotion_launch,
         stand_motion_node,
+        detect_motion_node,
         classic_control_node,
         joint_target_mux_node,
         actuator_bridge_node,

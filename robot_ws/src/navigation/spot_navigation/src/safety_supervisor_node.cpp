@@ -20,7 +20,7 @@ SafetySupervisorNode::SafetySupervisorNode(const rclcpp::NodeOptions & options)
   topic_free_space_           = declare_parameter<std::string>("topic_free_space", "/perception/lidar/free_space_model");
   soft_stop_distance_m_       = declare_parameter<double>("soft_stop_distance_m", 0.65);
   emergency_stop_distance_m_  = declare_parameter<double>("emergency_stop_distance_m", 0.30);
-  max_safe_linear_x_mps_      = declare_parameter<double>("max_safe_linear_x_mps", 0.40);
+  max_safe_linear_x_mps_      = declare_parameter<double>("max_safe_linear_x_mps", 0.10);
   max_safe_angular_z_radps_   = declare_parameter<double>("max_safe_angular_z_radps", 0.40);
   max_linear_accel_mps2_      = declare_parameter<double>("max_linear_accel_mps2", 0.33);
   max_linear_decel_mps2_      = declare_parameter<double>("max_linear_decel_mps2", 0.20);
