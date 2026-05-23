@@ -72,3 +72,4 @@
 | 068 | 05/20 | spotmicro_v6_1_2_transition_recovery | v6.1.2: roll/pitch recovery reward 추가 | 100.0% | 0.020 | 2.6% | ✅ |
 | 069 | 05/20 | spotmicro_v6_1_3_stronger_transition_push | v6.1.3: push, roll 수치 강화 | 99.8% | 0.020 | 2.7% | ✅ |
 | 070 | 05/20 | spotmicro_v6_1_4_moderate_shove_recovery | v6.1.4: recovery 수치 강화 | 99.8% | 0.020 | 3.1% | ✅ |
+| 071 | 05/23 | spotmicro_v6_1_5_slippery_rear_com_motor_dr | v6.1.5: 랜덤화 추가 및 마찰 감소 | 100.0% | 0.030 | 2.1% | ✅ |
