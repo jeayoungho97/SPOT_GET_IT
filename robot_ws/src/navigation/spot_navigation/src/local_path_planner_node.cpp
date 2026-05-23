@@ -219,6 +219,17 @@ namespace spot_navigation
 
         front_clear_distance_m_ = this->declare_parameter<double>(
             "front_clear_distance_m", 0.80);
+        
+        // [추가] 측면 장애물 판단 거리
+        // side_block_distance_m_: left/right 대표 장애물이 이 거리보다 가까우면 측면 위험으로 판단한다.
+        // side_clear_distance_m_: left/right 대표 장애물이 이 거리보다 멀어져야 측면 clear로 판단한다.
+        // block/clear를 분리해 hysteresis를 만든다.
+        side_block_distance_m_ = this->declare_parameter<double>(
+            "side_block_distance_m", 0.45);
+
+        side_clear_distance_m_ = this->declare_parameter<double>(
+            "side_clear_distance_m", 0.70);
+        
 
         avoidance_min_clearance_m_ = this->declare_parameter<double>(
             "avoidance_min_clearance_m", 0.60);
@@ -369,10 +380,22 @@ namespace spot_navigation
         const auto &obstacle_model   = *latest_obstacle_model_;
         const auto &free_space_model = *latest_free_space_model_;
 
-        const bool front_danger  = isFrontDanger(obstacle_model);
-        const bool front_clear   = isFrontClear(obstacle_model);
-        const bool free_space_ok = isFreeSpaceAcceptableForMotion(free_space_model); 
-        const bool rejoin_done   = isRejoinDone(progress);
+        // 전방 위험 판단 & 해소 여부
+        const bool front_danger   = isFrontDanger(obstacle_model);   // 전방 위험 판단 flag
+        const bool front_clear    = isFrontClear(obstacle_model);    // 전방 위험 해소 flag
+
+        // [추가] 측면 위험 판단 & 해소 여부
+        const bool side_danger    = isSideDanger(obstacle_model);    // 측면 위험 판단 Flag
+        const bool side_clear     = isSideClear(obstacle_model);     // 측면 위험 해소 Flag
+
+        // [추가] front 또는 side 중 하나라도 가까우면 장애물 위험으로 판단
+        const bool obstacle_danger = front_danger || side_danger;
+        
+        // [추가] front와 side가 모두 clear일 때만 REJOIN/GLOBAL 복귀를 허용
+        const bool obstacle_clear = front_clear && side_clear;
+
+        const bool free_space_ok  = isFreeSpaceAcceptableForMotion(free_space_model); 
+        const bool rejoin_done    = isRejoinDone(progress);
 
         // ======================================================================
         // [5] Local Planner FSM
@@ -398,57 +421,132 @@ namespace spot_navigation
             case LocalPlannerStatusMsg::GLOBAL_GOAL_REACHED:
             case LocalPlannerStatusMsg::GLOBAL_SUB_GOAL:
             {
-                if (!front_danger) publishGlobalSubGoalPath(stamp, pose, progress);
+                /*
+                정상 global path 추종 상태.
+
+                기존: front_danger만 보고 AVOIDANCE 진입 여부 판단.
+
+                변경:
+                    front 또는 side 중 하나라도 위험하면 obstacle_danger로 판단.
+                    단, side_block_distance_m_를 너무 크게 잡으면 벽/측면 물체에도 자주 회피하므로
+                    YAML 튜닝이 중요하다.
+                */
+                // [추가]
+                if (!obstacle_danger) publishGlobalSubGoalPath(stamp, pose, progress);
                 else if (free_space_ok) publishAvoidancePath(stamp, pose, progress, obstacle_model, free_space_model);
                 else {
                     publishBlocked(
                         stamp, pose, progress, obstacle_model, free_space_model,
-                        "front obstacle danger and no acceptable free-space"
+                        "obstacle danger and no acceptable free-space"
                     );
                 }
+
+                // 기존
+                // if (!front_danger) publishGlobalSubGoalPath(stamp, pose, progress);
+                // else if (free_space_ok) publishAvoidancePath(stamp, pose, progress, obstacle_model, free_space_model);
+                // else {
+                //     publishBlocked(
+                //         stamp, pose, progress, obstacle_model, free_space_model,
+                //         "front obstacle danger and no acceptable free-space"
+                //     );
+                // }
+
                 break;
             }
 
             case LocalPlannerStatusMsg::AVOIDANCE:
             {
-                if (front_danger && free_space_ok) publishAvoidancePath(stamp, pose, progress, obstacle_model, free_space_model);
-                else if (front_danger && !free_space_ok) {
-                    publishBlocked(
-                        stamp, pose, progress, obstacle_model, free_space_model,
-                        "avoidance lost acceptable free-space"
-                    );
-                }
-                else if (front_clear) {
+                /*
+                AVOIDANCE 상태.
+
+                핵심 변경:
+                    front가 clear여도 side가 clear가 아니면 REJOIN 금지.
+                    obstacle_clear = front_clear && side_clear일 때만 REJOIN 허용.
+                */
+                // [추가]
+                if (obstacle_clear) {
                     publishRejoinPath(stamp, pose, progress, obstacle_model, free_space_model);
                 }
+                else if (free_space_ok) {
+                    publishAvoidancePath(stamp, pose, progress, obstacle_model, free_space_model);
+                }
                 else {
-                    /*
-                    hysteresis 구간:
-                    - front_danger == false
-                    - front_clear == false
+                    publishBlocked(
+                        stamp, pose, progress, obstacle_model, free_space_model,
+                        "avoidance active but no acceptable free-space"
+                    );
+                }
 
-                    즉, 전방 장애물이 block distance에서는 벗어났지만
-                    아직 clear distance 이상으로 충분히 멀어진 것은 아니다.
+                // 기존
+                // if (front_danger && free_space_ok) publishAvoidancePath(stamp, pose, progress, obstacle_model, free_space_model);
+                // else if (front_danger && !free_space_ok) {
+                //     publishBlocked(
+                //         stamp, pose, progress, obstacle_model, free_space_model,
+                //         "avoidance lost acceptable free-space"
+                //     );
+                // }
+                // else if (front_clear) {
+                //     publishRejoinPath(stamp, pose, progress, obstacle_model, free_space_model);
+                // }
+                // else {
+                //     /*
+                //     hysteresis 구간:
+                //     - front_danger == false
+                //     - front_clear == false
+
+                //     즉, 전방 장애물이 block distance에서는 벗어났지만
+                //     아직 clear distance 이상으로 충분히 멀어진 것은 아니다.
+                //     */
+                //     if (free_space_ok) {
+                //         publishAvoidancePath(stamp, pose, progress, obstacle_model, free_space_model);
+                //     } else {
+                //         publishBlocked(
+                //             stamp, pose, progress, obstacle_model, free_space_model,
+                //             "avoidance hysteresis zone and no acceptable free-space");
+                //     }                   
+                // }
+
+                break;
+            }
+
+            case LocalPlannerStatusMsg::REJOIN:
+            {
+                /*
+                REJOIN 상태.
+
+                회피 후 global path로 복귀 중에도 장애물이 다시 가까워지면
+                AVOIDANCE 또는 BLOCKED로 되돌린다.
+
+                또한 front/side가 모두 clear가 아니면 global path 복귀 완료로 보지 않는다.
+                */
+
+                if (obstacle_danger && free_space_ok) {
+                    publishAvoidancePath(stamp, pose, progress, obstacle_model, free_space_model);
+                }
+                else if (obstacle_danger && !free_space_ok) {
+                    publishBlocked(
+                        stamp, pose, progress, obstacle_model, free_space_model,
+                        "rejoin interrupted by obstacle danger and no acceptable free-space"
+                    );
+                }
+                else if (!obstacle_clear) {
+                    /*
+                    danger는 아니지만 clear도 아닌 hysteresis 구간.
+                    예:
+                        side distance가 side_block_distance_m_보다 멀지만
+                        side_clear_distance_m_보다 아직 가까운 경우.
+
+                    이때 global path로 바로 복귀하면 장애물 옆면을 비빌 수 있으므로
+                    free-space가 가능하면 AVOIDANCE를 조금 더 유지한다.
                     */
                     if (free_space_ok) {
                         publishAvoidancePath(stamp, pose, progress, obstacle_model, free_space_model);
                     } else {
                         publishBlocked(
                             stamp, pose, progress, obstacle_model, free_space_model,
-                            "avoidance hysteresis zone and no acceptable free-space");
-                    }                   
-                }
-                break;
-            }
-
-            case LocalPlannerStatusMsg::REJOIN:
-            {
-                if (front_danger && free_space_ok) publishAvoidancePath(stamp, pose, progress, obstacle_model, free_space_model);
-                else if (front_danger && !free_space_ok) {
-                    publishBlocked(
-                        stamp, pose, progress, obstacle_model, free_space_model,
-                        "rejoin interrupted by blocked obstacle"
-                    );
+                            "rejoin hysteresis zone and no acceptable free-space"
+                        );
+                    }
                 }
                 else if (rejoin_done) {
                     publishGlobalSubGoalPath(stamp, pose, progress);
@@ -456,37 +554,75 @@ namespace spot_navigation
                 else {
                     publishRejoinPath(stamp, pose, progress, obstacle_model, free_space_model);
                 }
+
+                // 기존
+                // if (front_danger && free_space_ok) publishAvoidancePath(stamp, pose, progress, obstacle_model, free_space_model);
+                // else if (front_danger && !free_space_ok) {
+                //     publishBlocked(
+                //         stamp, pose, progress, obstacle_model, free_space_model,
+                //         "rejoin interrupted by blocked obstacle"
+                //     );
+                // }
+                // else if (rejoin_done) {
+                //     publishGlobalSubGoalPath(stamp, pose, progress);
+                // }
+                // else {
+                //     publishRejoinPath(stamp, pose, progress, obstacle_model, free_space_model);
+                // }
+
                 break;
             }
 
             case LocalPlannerStatusMsg::BLOCKED:
             {
-                if (front_danger && !free_space_ok) {
-                    publishBlocked(
-                        stamp,
-                        pose,
-                        progress,
-                        obstacle_model,
-                        free_space_model,
-                        "blocked waiting for acceptable free-space"
-                    );
-                }
-                else if (front_danger && free_space_ok) {
-                    publishAvoidancePath(stamp, pose, progress, obstacle_model, free_space_model);
-                }
-                else if (front_clear) {
+                /*
+                BLOCKED 상태.
+
+                obstacle_clear가 되면 REJOIN으로 복귀.
+                clear는 아니지만 free-space가 회복되면 AVOIDANCE 재개.
+                */
+                
+                if (obstacle_clear) {
                     publishRejoinPath(stamp, pose, progress, obstacle_model, free_space_model);
+                }
+                else if (free_space_ok) {
+                    publishAvoidancePath(stamp, pose, progress, obstacle_model, free_space_model);
                 }
                 else {
                     publishBlocked(
-                        stamp,
-                        pose,
-                        progress,
-                        obstacle_model,
-                        free_space_model,
-                        "blocked hysteresis zone before front clear"
+                        stamp, pose, progress, obstacle_model, free_space_model,
+                        "blocked waiting for obstacle clear or acceptable free-space"
                     );
                 }
+
+                // 기존
+                // if (front_danger && !free_space_ok) {
+                //     publishBlocked(
+                //         stamp,
+                //         pose,
+                //         progress,
+                //         obstacle_model,
+                //         free_space_model,
+                //         "blocked waiting for acceptable free-space"
+                //     );
+                // }
+                // else if (front_danger && free_space_ok) {
+                //     publishAvoidancePath(stamp, pose, progress, obstacle_model, free_space_model);
+                // }
+                // else if (front_clear) {
+                //     publishRejoinPath(stamp, pose, progress, obstacle_model, free_space_model);
+                // }
+                // else {
+                //     publishBlocked(
+                //         stamp,
+                //         pose,
+                //         progress,
+                //         obstacle_model,
+                //         free_space_model,
+                //         "blocked hysteresis zone before front clear"
+                //     );
+                // }
+
                 break;
             }
 
@@ -678,6 +814,97 @@ namespace spot_navigation
         if (!isFinite(static_cast<double>(obstacle_model.front.nearest_distance_xy))) return false;
 
         return static_cast<double>(obstacle_model.front.nearest_distance_xy) > front_clear_distance_m_;
+    }
+
+    // [추가] 좌측 위험 여부 판단 함수
+    bool LocalPathPlannerNode::isLeftDanger(const ObstacleModelMsg &obstacle_model) const
+    {
+        /*
+        left_danger 의미:
+            left sector를 점유한 대표 cluster가 존재하고,
+            그 cluster의 nearest_distance_xy가 side_block_distance_m_보다 가까운 상태.
+
+        주의:
+            left.valid == false이면 좌측 대표 장애물이 없다는 뜻이므로 left_danger=false.
+        */
+        if (!obstacle_model.left.valid) return false;
+        
+        if (!isFinite(static_cast<double>(obstacle_model.left.nearest_distance_xy))) return false;
+
+        return static_cast<double>(obstacle_model.left.nearest_distance_xy) < side_block_distance_m_;
+    }
+
+    // [추가] 우측 위험 여부 판단 함수
+    bool LocalPathPlannerNode::isRightDanger(const ObstacleModelMsg &obstacle_model) const
+    {
+        /*
+        right_danger 의미:
+            right sector를 점유한 대표 cluster가 존재하고,
+            그 cluster의 nearest_distance_xy가 side_block_distance_m_보다 가까운 상태.
+        */
+        if (!obstacle_model.right.valid) return false;
+
+        if (!isFinite(static_cast<double>(obstacle_model.right.nearest_distance_xy))) return false;
+
+        return static_cast<double>(obstacle_model.right.nearest_distance_xy) < side_block_distance_m_;
+    }
+
+    // [추가] 측면 위험 여부 판단 함수
+    bool LocalPathPlannerNode::isSideDanger(const ObstacleModelMsg &obstacle_model) const
+    {
+        /*
+        side_danger 의미:
+            left 또는 right 중 하나라도 side_block_distance_m_보다 가까운 상태.
+
+        목적:
+            AVOIDANCE 중 장애물이 front sector에서 벗어나 left/right sector로 넘어가도
+            곧바로 REJOIN하지 않고 회피 상태를 유지하기 위함.
+        */
+
+        return isLeftDanger(obstacle_model) || isRightDanger(obstacle_model);
+    }
+
+    // [추가] 좌측 위험 해소 여부 판단 함수
+    bool LocalPathPlannerNode::isLeftClear(const ObstacleModelMsg &obstacle_model) const
+    {
+        /*
+        left_clear 의미:
+            left sector 대표 cluster가 없거나,
+            left 대표 cluster가 side_clear_distance_m_보다 멀어진 상태.
+        */
+        if (!obstacle_model.left.valid) return true;
+
+        if (!isFinite(static_cast<double>(obstacle_model.left.nearest_distance_xy))) return false;
+
+        return static_cast<double>(obstacle_model.left.nearest_distance_xy) > side_clear_distance_m_;
+    }
+
+    // [추가] 우측 위험 해소 여부 판단 함수
+    bool LocalPathPlannerNode::isRightClear(const ObstacleModelMsg &obstacle_model) const
+    {
+        /*
+        right_clear 의미:
+            right sector 대표 cluster가 없거나,
+            right 대표 cluster가 side_clear_distance_m_보다 멀어진 상태.
+        */
+        if (!obstacle_model.right.valid) return true;
+
+        if (!isFinite(static_cast<double>(obstacle_model.right.nearest_distance_xy))) return false;
+
+        return static_cast<double>(obstacle_model.right.nearest_distance_xy) > side_clear_distance_m_;
+    }
+
+    // [추가] 측면 위험 해소 여부 판단 함수
+    bool LocalPathPlannerNode::isSideClear(const ObstacleModelMsg &obstacle_model) const
+    {
+        /*
+        side_clear 의미:
+            left와 right가 모두 clear인 상태.
+
+        중요:
+            front가 clear여도 side_clear가 false이면 REJOIN을 허용하지 않는다.
+        */
+        return isLeftClear(obstacle_model) && isRightClear(obstacle_model);
     }
 
     // FreeSpaceModel이 제안한 gap을 실제 회피 주행에 사용할 수 있는지 판단하는 함수
