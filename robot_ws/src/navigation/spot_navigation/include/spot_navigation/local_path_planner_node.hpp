@@ -100,6 +100,18 @@ namespace spot_navigation
             // ==========================================
             bool isFrontDanger(const ObstacleModelMsg &obstacle_model) const;
             bool isFrontClear(const ObstacleModelMsg &obstacle_model) const;
+
+            // [추가] 측면 장애물 위험/해소 판단 함수
+            // - Left/Right sector의 대표 장애물 기반으로
+            //   AVOIDANCE 유지 및 REJOIN 허용 여부 판단
+            bool isLeftDanger(const ObstacleModelMsg &obstacle_model) const;
+            bool isRightDanger(const ObstacleModelMsg &obstacle_model) const;
+            bool isSideDanger(const ObstacleModelMsg &obstacle_model) const;
+
+            bool isLeftClear(const ObstacleModelMsg &obstacle_model) const;
+            bool isRightClear(const ObstacleModelMsg &obstacle_model) const;
+            bool isSideClear(const ObstacleModelMsg &obstacle_model) const;
+
             bool isFreeSpaceAcceptableForMotion(const FreeSpaceModelMsg &free_space_model) const;
             bool isRejoinDone(const PathProgressMsg &progress) const;
 
@@ -278,6 +290,12 @@ namespace spot_navigation
 
             double front_block_distance_m_;         // 전방 위험 진입 거리
             double front_clear_distance_m_;         // 전방 위험 해제 거리
+
+            // [추가] 측면 장애물 위험/해제 거리
+            // - AVOIDANCE 중 장애물이 front에서 Left/Right로 빠졌을 때,
+            //   너무 빨리 REJOIN하지 않도록 측면 clearance를 함께 판단
+            double side_block_distance_m_;          // 측면 위험 진입 거리
+            double side_clear_distance_m_;          // 측면 위험 해제 거리
 
             double avoidance_min_clearance_m_;      // 실제 회피 주행에 사용할 최소 clearance
             double avoidance_horizon_m_;            // FreeSpaceModel이 선택한 회피 heading 방향으로 70cm 앞에 target 생성 거리

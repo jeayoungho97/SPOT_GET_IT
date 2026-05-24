@@ -15,18 +15,28 @@ local_path_planner_node:
     local_path_topic: "/navigation/local_path/spot_01"
     local_planner_status_topic: "/navigation/local_planner_status/spot_01"
     
-    publish_rate_hz: 10.0               # local path/status publish 주기
-
-    obstacle_model_timeout_sec: 0.5      # Obstacle Model's timeout: 0.5s
+    # local path/status publish 주기
+    publish_rate_hz: 10.0
+    
+    obstacle_model_timeout_sec: 0.5     # Obstacle Model's timeout: 0.5s
     free_space_model_timeout_sec: 0.5   # Free Space Model's timeout: 0.5s
     path_progress_timeout_sec: 0.5      # PathProgress's timeout: 0.5s
     pose_timeout_sec: 0.5               # Localization Pose's timeout: 0.5s
 
-    front_block_distance_m: 0.60        # GLOBAL_SUB_GOAL → AVOIDANCE/BLOCKED 진입 기준
-    front_clear_distance_m: 0.80        # AVOIDANCE → REJOIN 전이 기준
+    # Front obstacle hysteresis
+    # - 0.60m 이내: front danger
+    # - 1.00m 이상: 멀어져야 front clear
+    front_block_distance_m: 0.60        # GLOBAL_SUB_GOAL → AVOIDANCE/BLOCKED 진입 기준 (기존: 0.60)
+    front_clear_distance_m: 1.00        # AVOIDANCE → REJOIN 전이 기준 (기존: 0.80)
 
-    avoidance_min_clearance_m: 0.60     # FreeSpaceModel's Gap을 실제 회피 path로 쓸 수 있는지의 Planner 기준
-    avoidance_horizon_m: 0.70           # 회피 target을 현재 pose 기준 몇 m 앞에 둘지
+    # [추가] Side obstacle hysteresis
+    # AVOIDANCE 중 장애물이 front에서 left/right로 빠져도
+    # side가 충분히 멀어지기 전까지 REJOIN하지 않도록 한다.
+    side_block_distance_m: 0.40         # 위험 진입 기준
+    side_clear_distance_m: 0.70         # 위험 해제 기준: 있어도 side_clear_distance_m보다 멀면 is*Clear() = True 
+
+    avoidance_min_clearance_m: 0.45     # FreeSpaceModel's Gap을 실제 회피 path로 쓸 수 있는지의 Planner 기준
+    avoidance_horizon_m: 0.60           # 회피 target을 현재 pose 기준 몇 m 앞에 둘지 (기존: 0.70)
 
     rejoin_tolerance_m: 0.30            # REJOIN 상태에서 global path로 복귀했는지 판단하는 거리 기준
     rejoin_heading_tolerance_rad: 0.35  # REJOIN 상태에서 로봇 yaw가 global path target 방향과 정렬되었는지 판단하는 각도 기준
