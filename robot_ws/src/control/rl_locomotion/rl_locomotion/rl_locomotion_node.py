@@ -9,6 +9,7 @@ from typing import List, Optional, Sequence, Tuple
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rcl_interfaces.msg import SetParametersResult
 
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Imu
@@ -157,6 +158,10 @@ class RlLocomotionNode(Node):
         )
 
         self.declare_parameter("max_joint_speed_rad_s", 1.5)
+        self.declare_parameter("walk_start_cmd_norm", 0.01)
+        self.declare_parameter("walk_start_ramp_s", 1.2)
+        self.declare_parameter("reset_phase_on_walk_start", False)
+        self.declare_parameter("reset_target_to_feedback_on_walk_start", True)
 
         # ---------------- Read parameters ----------------
         self.policy_rate_hz = float(self.get_parameter("policy_rate_hz").value)
@@ -231,6 +236,14 @@ class RlLocomotionNode(Node):
         self.joint_min_rad = [float(x) for x in self.get_parameter("joint_min_rad").value]
         self.joint_max_rad = [float(x) for x in self.get_parameter("joint_max_rad").value]
         self.max_joint_speed_rad_s = float(self.get_parameter("max_joint_speed_rad_s").value)
+        self.walk_start_cmd_norm = float(self.get_parameter("walk_start_cmd_norm").value)
+        self.walk_start_ramp_s = float(self.get_parameter("walk_start_ramp_s").value)
+        self.reset_phase_on_walk_start = bool(
+            self.get_parameter("reset_phase_on_walk_start").value
+        )
+        self.reset_target_to_feedback_on_walk_start = bool(
+            self.get_parameter("reset_target_to_feedback_on_walk_start").value
+        )
 
         self._validate_config()
 
@@ -292,6 +305,9 @@ class RlLocomotionNode(Node):
 
         self.prev_actions = [0.0] * 12
         self.prev_target_rad = list(self.default_joint_angles)
+        self.walk_active = False
+        self.walk_ramp_start_time: Optional[float] = None
+        self.walk_ramp_scale = 0.0
 
         self.joint_position = list(self.default_joint_angles)
         self.joint_velocity = [0.0] * 12
@@ -369,6 +385,8 @@ class RlLocomotionNode(Node):
             f"safe_mode={self.safe_mode}"
         )
 
+        self.add_on_set_parameters_callback(self.on_parameter_update)
+
     def _validate_config(self):
         if self.obs_dim != 47:
             raise RuntimeError(f"exp043 obs_dim must be 47, got {self.obs_dim}")
@@ -445,6 +463,10 @@ class RlLocomotionNode(Node):
             raise RuntimeError("shoulder_ref_limit must be non-negative")
         if self.upper_link_z <= 0.0 or self.lower_link <= 0.0:
             raise RuntimeError("shared IK link lengths must be positive")
+        if self.walk_start_cmd_norm < 0.0:
+            raise RuntimeError("walk_start_cmd_norm must be non-negative")
+        if self.walk_start_ramp_s < 0.0:
+            raise RuntimeError("walk_start_ramp_s must be non-negative")
 
     def resolve_model_path(self, model_path: str) -> str:
         if not model_path:
@@ -610,6 +632,63 @@ class RlLocomotionNode(Node):
     # -------------------------------------------------------------------------
     # Policy pipeline
     # -------------------------------------------------------------------------
+    def command_norm(self, cmd_vx: float, cmd_vy: float, cmd_wz: float) -> float:
+        return math.sqrt(cmd_vx * cmd_vx + cmd_vy * cmd_vy + cmd_wz * cmd_wz)
+
+    def reset_walk_transition(self):
+        self.walk_active = False
+        self.walk_ramp_start_time = None
+        self.walk_ramp_scale = 0.0
+
+    def apply_walk_transition(self, snapshot, now: float):
+        cmd_norm = self.command_norm(
+            snapshot["cmd_vx"],
+            snapshot["cmd_vy"],
+            snapshot["cmd_wz"],
+        )
+        active = cmd_norm > self.walk_start_cmd_norm
+
+        effective = dict(snapshot)
+        if not active:
+            self.reset_walk_transition()
+            effective["cmd_vx"] = 0.0
+            effective["cmd_vy"] = 0.0
+            effective["cmd_wz"] = 0.0
+            return effective
+
+        if not self.walk_active:
+            self.walk_active = True
+            self.walk_ramp_start_time = now
+            self.walk_ramp_scale = 0.0
+
+            if self.reset_phase_on_walk_start:
+                self.gait_phase_gen.reset()
+                self.gait_phase = 0.0
+
+            if self.reset_target_to_feedback_on_walk_start:
+                self.prev_target_rad = list(snapshot["joint_position"])
+                self.prev_actions = [0.0] * 12
+
+            self.get_logger().info(
+                "walk start: "
+                f"cmd_norm={cmd_norm:.3f}, "
+                f"ramp_s={self.walk_start_ramp_s:.2f}, "
+                f"phase_reset={self.reset_phase_on_walk_start}, "
+                f"target_from_feedback={self.reset_target_to_feedback_on_walk_start}"
+            )
+
+        if self.walk_start_ramp_s <= 0.0 or self.walk_ramp_start_time is None:
+            scale = 1.0
+        else:
+            ramp_elapsed = now - self.walk_ramp_start_time
+            scale = clamp(ramp_elapsed / self.walk_start_ramp_s, 0.0, 1.0)
+
+        self.walk_ramp_scale = scale
+        effective["cmd_vx"] = snapshot["cmd_vx"] * scale
+        effective["cmd_vy"] = snapshot["cmd_vy"] * scale
+        effective["cmd_wz"] = snapshot["cmd_wz"] * scale
+        return effective
+
     def update_gait_phase(self, cmd_vx: float, cmd_vy: float, cmd_wz: float):
         prev_phase = self.gait_phase
         self.gait_phase = self.gait_phase_gen.update(
@@ -708,6 +787,64 @@ class RlLocomotionNode(Node):
 
         self._warn_throttled("safe_target", f"publishing safe target: {reason}")
 
+    def on_parameter_update(self, params):
+        for param in params:
+            if param.name == "max_joint_speed_rad_s":
+                value = float(param.value)
+                if not math.isfinite(value) or value <= 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason="max_joint_speed_rad_s must be positive and finite",
+                    )
+            elif param.name == "walk_start_cmd_norm":
+                value = float(param.value)
+                if not math.isfinite(value) or value < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason="walk_start_cmd_norm must be non-negative and finite",
+                    )
+            elif param.name == "walk_start_ramp_s":
+                value = float(param.value)
+                if not math.isfinite(value) or value < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason="walk_start_ramp_s must be non-negative and finite",
+                    )
+
+        for param in params:
+            if param.name == "max_joint_speed_rad_s":
+                self.max_joint_speed_rad_s = float(param.value)
+                self.max_delta_rad = [self.max_joint_speed_rad_s * self.dt] * 12
+                self.get_logger().info(
+                    "updated "
+                    f"max_joint_speed_rad_s={self.max_joint_speed_rad_s:.3f}, "
+                    f"max_delta_rad={self.max_delta_rad[0]:.4f}"
+                )
+            elif param.name == "walk_start_cmd_norm":
+                self.walk_start_cmd_norm = float(param.value)
+                self.get_logger().info(
+                    f"updated walk_start_cmd_norm={self.walk_start_cmd_norm:.3f}"
+                )
+            elif param.name == "walk_start_ramp_s":
+                self.walk_start_ramp_s = float(param.value)
+                self.get_logger().info(
+                    f"updated walk_start_ramp_s={self.walk_start_ramp_s:.3f}"
+                )
+            elif param.name == "reset_phase_on_walk_start":
+                self.reset_phase_on_walk_start = bool(param.value)
+                self.get_logger().info(
+                    f"updated reset_phase_on_walk_start={self.reset_phase_on_walk_start}"
+                )
+            elif param.name == "reset_target_to_feedback_on_walk_start":
+                self.reset_target_to_feedback_on_walk_start = bool(param.value)
+                self.get_logger().info(
+                    "updated "
+                    f"reset_target_to_feedback_on_walk_start="
+                    f"{self.reset_target_to_feedback_on_walk_start}"
+                )
+
+        return SetParametersResult(successful=True)
+
     # -------------------------------------------------------------------------
     # Debug
     # -------------------------------------------------------------------------
@@ -782,6 +919,7 @@ class RlLocomotionNode(Node):
         ready, reason = self.policy_ready(snapshot)
 
         if not ready:
+            self.reset_walk_transition()
             self.publish_safe_target(reason, stamp_msg)
             total_loop_ms = (time.perf_counter() - loop_start) * 1000.0
             self.publish_debug(
@@ -802,10 +940,12 @@ class RlLocomotionNode(Node):
             self.seq = (self.seq + 1) & 0xFFFF
             return
 
+        effective_snapshot = self.apply_walk_transition(snapshot, loop_start)
+
         self.update_gait_phase(
-            cmd_vx=snapshot["cmd_vx"],
-            cmd_vy=snapshot["cmd_vy"],
-            cmd_wz=snapshot["cmd_wz"],
+            cmd_vx=effective_snapshot["cmd_vx"],
+            cmd_vy=effective_snapshot["cmd_vy"],
+            cmd_wz=effective_snapshot["cmd_wz"],
         )
 
         try:
@@ -813,12 +953,12 @@ class RlLocomotionNode(Node):
 
             ik_ref = self.ik_reference.get_reference(
                 phase=self.gait_phase,
-                cmd_vx=snapshot["cmd_vx"],
-                cmd_vy=snapshot["cmd_vy"],
-                cmd_wz=snapshot["cmd_wz"],
+                cmd_vx=effective_snapshot["cmd_vx"],
+                cmd_vy=effective_snapshot["cmd_vy"],
+                cmd_wz=effective_snapshot["cmd_wz"],
             )
 
-            obs = self.build_observation(snapshot, ik_ref)
+            obs = self.build_observation(effective_snapshot, ik_ref)
             t1 = time.perf_counter()
 
             raw_action = self.policy_runner.infer(obs)
@@ -840,7 +980,7 @@ class RlLocomotionNode(Node):
 
             self.publish_debug(
                 stamp_msg=stamp_msg,
-                snapshot=snapshot,
+                snapshot=effective_snapshot,
                 obs=obs,
                 raw_action=raw_action,
                 ik_ref=ik_ref,

@@ -13,7 +13,7 @@ actuator_bridge_node:
     data_ready_timeout_us: 5000
     data_ready_poll_interval_us: 50
 
-    max_target_age_ms: 200.0
+    max_target_age_ms: 1000.0
     freeze_seq_when_stale: true
     target_topic: "/control/selected/joint_target"
 

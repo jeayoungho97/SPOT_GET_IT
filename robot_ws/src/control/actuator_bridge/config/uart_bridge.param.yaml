@@ -1,7 +1,7 @@
 actuator_bridge_node:
   ros__parameters:
     control_rate_hz: 50.0
-    max_target_age_ms: 200.0
+    max_target_age_ms: 1000.0
     freeze_seq_when_stale: true
 
     # Jetson UART device는 실제 연결에 맞게 수정하세요.
@@ -14,7 +14,7 @@ actuator_bridge_node:
 
     target_topic: "/control/selected/joint_target"
     cmd_vel_topic: "/control/cmd_vel/spot_01"
-    motion_state_deadband: 0.05
+    motion_state_deadband: 0.02
 
     default_joint_angles:
       [0.0, -0.926379, 1.531409,

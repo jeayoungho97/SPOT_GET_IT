@@ -154,7 +154,7 @@ public:
   : Node("actuator_bridge_node")
   {
     control_rate_hz_ = this->declare_parameter("control_rate_hz", 50.0);
-    max_target_age_ms_ = this->declare_parameter("max_target_age_ms", 200.0);
+    max_target_age_ms_ = this->declare_parameter("max_target_age_ms", 1000.0);
     freeze_seq_when_stale_ = this->declare_parameter("freeze_seq_when_stale", true);
 
     uart_device_ = this->declare_parameter("uart_device", "/dev/ttyTHS1");
@@ -586,7 +586,7 @@ private:
 
 private:
   double control_rate_hz_{50.0};
-  double max_target_age_ms_{200.0};
+  double max_target_age_ms_{1000.0};
   bool freeze_seq_when_stale_{true};
 
   std::string uart_device_{"/dev/ttyTHS1"};
