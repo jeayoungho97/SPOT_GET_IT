@@ -22,7 +22,7 @@ def generate_launch_description():
     policy_config = os.path.join(
         rl_share,
         'config',
-        'policy_v5_4_4.yaml'
+        'policy_v6_1_3.yaml'
     )
 
     actuator_param = os.path.join(
