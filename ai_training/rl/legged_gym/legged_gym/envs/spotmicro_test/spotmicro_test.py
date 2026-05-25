@@ -985,3 +985,8 @@ class SpotmicroTest(LeggedRobot):
         ang_vel_xy = torch.norm(self.base_ang_vel[:, :2], dim=1)
         damping = torch.clamp(self.last_ang_vel_xy_metric - ang_vel_xy, min=0.0, max=0.5)
         return damping * mask
+
+    def _reward_recovery_stance_contact(self):
+        contact = (self.contact_forces[:, self.feet_indices, 2] > 1.0).float()
+        contact_ratio = torch.mean(contact, dim=1)
+        return contact_ratio * self._recovery_blend()

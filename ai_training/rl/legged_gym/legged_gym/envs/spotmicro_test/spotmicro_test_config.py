@@ -81,12 +81,12 @@ class SpotmicroTestCfg(LeggedRobotCfg):
 
     class recovery:
         enabled = True
-        tilt_threshold_deg = 14.0
-        full_tilt_deg = 25.0
+        tilt_threshold_deg = 17.0
+        full_tilt_deg = 27.0
         command_scale_enabled = True
-        command_scale = 0.15
+        command_scale = 0.0
         phase_enabled = True
-        phase_scale = 0.1
+        phase_scale = 0.0
         phase_freeze = False
         action_scale_enabled = True
 
@@ -131,15 +131,16 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             stand_still = -0.4
             tilt_recovery = 4.0
             ang_vel_xy_recovery = 0.5
+            recovery_stance_contact = 0.25
         soft_dof_pos_limit = 0.9
         base_height_target = 0.175
         min_base_height = 0.13
         max_base_tilt_deg = 50.0
         recovery_min_height = 0.165
-        recovery_reward_tilt_threshold_deg = 12.0
+        recovery_reward_tilt_threshold_deg = 15.0
         recovery_diagnostic_initial_tilt_threshold_deg = 12.0
-        recovery_relief_tilt_threshold_deg = 14.0
-        recovery_relief_full_tilt_deg = 25.0
+        recovery_relief_tilt_threshold_deg = 17.0
+        recovery_relief_full_tilt_deg = 27.0
         recovery_gait_relief_scale = 0.65
         recovery_ik_relief_scale = 0.65
         transition_recovery_horizon_s = 0.75
@@ -229,9 +230,9 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         learning_rate = 1e-4
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v6_3_3_prefall_transition_tilt_sampler_stable'
+        run_name = 'spotmicro_v6_4_prefall_brace_mode'
         experiment_name = 'spotmicro_test'
-        max_iterations = 400
+        max_iterations = 500
         save_interval = 100
         resume = True
         load_run = "May25_16-41-52_spotmicro_v6_3_1_prefall_transition_tilt_sampler_soft"

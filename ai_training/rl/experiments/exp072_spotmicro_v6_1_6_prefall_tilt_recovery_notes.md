@@ -404,3 +404,43 @@ Expected effect:
 - recover timeout toward `90%+`
 - keep transition `18+ overall` near or above `70%`
 - keep transition `25-30 deg` around `55-60%` without increasing `30+` stress cases
+
+## Assessment After exp083
+
+exp083 recovered from exp082 but did not beat exp081:
+
+- versus exp082:
+  - timeout improved `79.3% -> 86.1%`
+  - transition recovery improved `68.3% -> 81.1%`
+  - transition `18+ overall` improved `66.3% -> 77.1%`
+- versus exp081:
+  - timeout is worse `88.9% -> 86.1%`
+  - action rate is worse `0.00806 -> 0.00832`
+  - transition `25-30 deg` is slightly worse `58.3% -> 56.9%`
+
+Conclusion: sampler tuning alone is saturating. The current recovery implementation is a continuous gated locomotion policy, not a hard mode switch. Large tilt already scales commands/phase/action and relaxes gait/IK rewards, but at full tilt it still keeps `15%` command, `10%` phase progression, and `65%` IK/gait influence. That is not a strong enough "stop and brace" behavior, which explains why visual bracing is weak.
+
+Also, simply making the robot fall more often is not enough. Once it enters full fall/body-contact states, this task terminates or leaves the pre-fall scope, so the policy does not get a useful recoverable gradient. The right next step is to keep sampling recoverable pre-fall states but make the high-tilt behavior more explicitly brace-like inside the locomotion policy.
+
+Applied next config/code:
+
+- run: `spotmicro_v6_3_4_prefall_brace_mode`
+- resume from exp081: `May25_16-41-52_spotmicro_v6_3_1_prefall_transition_tilt_sampler_soft`, checkpoint `8100`
+- `max_iterations = 500`
+- recovery mode begins later to avoid breaking real-world normal gait wobble:
+  - `tilt_threshold_deg = 17.0`
+  - `full_tilt_deg = 27.0`
+  - `recovery_reward_tilt_threshold_deg = 15.0`
+  - `recovery_relief_tilt_threshold_deg = 17.0`
+  - `recovery_relief_full_tilt_deg = 27.0`
+- full high-tilt command scale `0.15 -> 0.0`
+- full high-tilt phase scale `0.1 -> 0.0`
+- add `recovery_stance_contact = 0.25` reward
+- keep normal action scale `0.25` and recovery action scale `0.35`
+- keep sampler stable range `18-27 deg`, probability `0.20`, angular velocity `0.30 rad/s`
+
+Expected effect:
+
+- high tilt should look more like stopping/bracing than continuing trot
+- normal gait should remain mostly controlled because the change is gated by tilt blend
+- watch timeout/action rate carefully; if normal gait degrades, reduce `recovery_stance_contact` or move the full-tilt threshold upward
