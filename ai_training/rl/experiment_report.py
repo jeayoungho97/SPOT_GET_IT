@@ -436,18 +436,36 @@ def load_previous_experiment(experiments_dir, current_id):
 # ============================================================
 # 8. Pass/Fail 자동 판정
 # ============================================================
-def auto_judge(metrics, run_name=''):
+def _find_tilt_band(summary, label):
+    for band in summary.get('tilt_bands', []) if summary else []:
+        if band.get('label') == label:
+            return band
+    return {}
+
+
+def auto_judge(metrics, run_name='', recovery_data=None, transition_recovery_data=None):
     if not metrics:
         return "⚠ 수치 데이터 없음 — 수동 판정 필요", []
 
     judgments = []
     all_pass = True
+    prefall_mode = (
+        'prefall' in run_name
+        or bool(recovery_data)
+        or bool(transition_recovery_data)
+    )
 
     timeout = metrics.get('timeout_pct', 0)
-    if timeout >= 80:
-        judgments.append(f"✅ Timeout: {timeout:.1f}% (≥80%)")
+    timeout_pass = 95 if prefall_mode else 80
+    timeout_warn = 90 if prefall_mode else 60
+    if timeout >= timeout_pass:
+        judgments.append(f"✅ Timeout: {timeout:.1f}% (≥{timeout_pass}%)")
+    elif timeout >= timeout_warn:
+        judgments.append(f"⚠️ Timeout: {timeout:.1f}% ({timeout_warn}~{timeout_pass}%, 개선 필요)")
+        if prefall_mode:
+            all_pass = False
     elif timeout >= 60:
-        judgments.append(f"⚠️ Timeout: {timeout:.1f}% (60~80%, 보통)")
+        judgments.append(f"⚠️ Timeout: {timeout:.1f}% (60~{timeout_warn}%, 보통)")
         all_pass = False
     else:
         judgments.append(f"❌ Timeout: {timeout:.1f}% (<60%, 미달)")
@@ -482,10 +500,13 @@ def auto_judge(metrics, run_name=''):
         all_pass = False
 
     early_death = metrics.get('early_death_pct', 0)
-    if early_death < 5:
-        judgments.append(f"✅ 조기종료: {early_death:.1f}% (<5%)")
+    early_death_pass = 5 if prefall_mode else 5
+    if early_death < early_death_pass:
+        judgments.append(f"✅ 조기종료: {early_death:.1f}% (<{early_death_pass}%)")
     elif early_death < 20:
         judgments.append(f"⚠️ 조기종료: {early_death:.1f}% (5~20%)")
+        if prefall_mode:
+            all_pass = False
     else:
         judgments.append(f"❌ 조기종료: {early_death:.1f}% (>20%)")
         all_pass = False
@@ -503,15 +524,52 @@ def auto_judge(metrics, run_name=''):
     prefall_trials = metrics.get('transition_prefall_trials', 0)
     prefall_sr = metrics.get('transition_prefall_success_rate_pct')
     if prefall_trials:
-        if prefall_sr is not None and prefall_sr >= 85:
-            judgments.append(f"✅ 18도+ pre-fall 복구: {prefall_sr:.1f}% (≥85%)")
+        prefall_pass = 70 if prefall_mode else 85
+        prefall_warn = 60
+        if prefall_sr is not None and prefall_sr >= prefall_pass:
+            judgments.append(f"✅ 18도+ pre-fall 복구: {prefall_sr:.1f}% (≥{prefall_pass}%)")
         elif prefall_sr is not None and prefall_sr >= 60:
-            judgments.append(f"⚠️ 18도+ pre-fall 복구: {prefall_sr:.1f}% (60~85%)")
+            judgments.append(f"⚠️ 18도+ pre-fall 복구: {prefall_sr:.1f}% ({prefall_warn}~{prefall_pass}%, 개선 필요)")
+            if prefall_mode:
+                all_pass = False
         elif prefall_sr is not None:
-            judgments.append(f"❌ 18도+ pre-fall 복구: {prefall_sr:.1f}% (<60%)")
+            judgments.append(f"❌ 18도+ pre-fall 복구: {prefall_sr:.1f}% (<{prefall_warn}%)")
             all_pass = False
     else:
         judgments.append("⚠️ 18도+ pre-fall 복구: trial 없음 (30도 목표 미검증)")
+        if prefall_mode:
+            all_pass = False
+
+    if prefall_mode:
+        reset_25_30 = _find_tilt_band(recovery_data, '25-30 deg')
+        reset_sr = reset_25_30.get('success_rate_pct')
+        reset_trials = reset_25_30.get('trials', 0)
+        if reset_trials <= 0:
+            judgments.append("❌ Reset 25-30도 복구: trial 없음")
+            all_pass = False
+        elif reset_sr is not None and reset_sr >= 75:
+            judgments.append(f"✅ Reset 25-30도 복구: {reset_sr:.1f}% (≥75%, n={reset_trials})")
+        elif reset_sr is not None and reset_sr >= 65:
+            judgments.append(f"⚠️ Reset 25-30도 복구: {reset_sr:.1f}% (65~75%, n={reset_trials})")
+            all_pass = False
+        elif reset_sr is not None:
+            judgments.append(f"❌ Reset 25-30도 복구: {reset_sr:.1f}% (<65%, n={reset_trials})")
+            all_pass = False
+
+        transition_25_30 = _find_tilt_band(transition_recovery_data, '25-30 deg')
+        transition_sr = transition_25_30.get('success_rate_pct')
+        transition_trials = transition_25_30.get('trials', 0)
+        if transition_trials < 20:
+            judgments.append(f"❌ Transition 25-30도 복구: trial 부족 (n={transition_trials}, 최소 20)")
+            all_pass = False
+        elif transition_sr is not None and transition_sr >= 65:
+            judgments.append(f"✅ Transition 25-30도 복구: {transition_sr:.1f}% (≥65%, n={transition_trials})")
+        elif transition_sr is not None and transition_sr >= 55:
+            judgments.append(f"⚠️ Transition 25-30도 복구: {transition_sr:.1f}% (55~65%, n={transition_trials})")
+            all_pass = False
+        elif transition_sr is not None:
+            judgments.append(f"❌ Transition 25-30도 복구: {transition_sr:.1f}% (<55%, n={transition_trials})")
+            all_pass = False
 
     overall = "✅ PASS" if all_pass else "❌ FAIL (일부 기준 미달)"
     return overall, judgments
@@ -548,7 +606,12 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
     transition_recovery_data = diag_data.get('transition_recovery', {}) if diag_data else {}
 
     # 자동 판정
-    overall_judge, judgments = auto_judge(metrics, run_name)
+    overall_judge, judgments = auto_judge(
+        metrics,
+        run_name,
+        recovery_data=recovery_data,
+        transition_recovery_data=transition_recovery_data,
+    )
 
     # 변경점 요약
     changes_summary = parse_config_changes(diff_text)

@@ -160,6 +160,23 @@ Recommended next step:
 - either continue from exp076 or make one small recovery-only adjustment, not a broad expansion
 - treat `30+ deg` as diagnostic stress only until `25-30 deg` transition recovery is reliable
 
+Applied next config:
+
+- run: `spotmicro_v6_2_4_prefall_tilt_recovery_30deg_continue`
+- resume: `May25_13-32-12_spotmicro_v6_2_3_prefall_tilt_recovery_30deg`, checkpoint `6600`
+- `max_iterations = 500`
+- keep `recovery_roll_pitch_range_deg = 30.0`
+- reduce recovery-only internal command scale from `0.25` to `0.15`
+- reduce recovery-only gait phase progression from `0.2` to `0.1`
+- keep residual recovery action scale at `0.35`
+
+Report auto-judge was tightened for this pre-fall objective:
+
+- normal gait timeout must be near `95%+`
+- warning-level pre-fall metrics now fail the headline PASS in pre-fall runs
+- reset `25-30 deg` and transition `25-30 deg` bands are checked explicitly
+- transition `25-30 deg` requires at least 20 trials and about `65%+` success for PASS
+
 Suggested readiness criteria before real testing or 30+ expansion:
 
 - normal gait timeout `95%+` and early death `<3-5%`

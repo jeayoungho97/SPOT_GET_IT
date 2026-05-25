@@ -84,9 +84,9 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         tilt_threshold_deg = 14.0
         full_tilt_deg = 25.0
         command_scale_enabled = True
-        command_scale = 0.25
+        command_scale = 0.15
         phase_enabled = True
-        phase_scale = 0.2
+        phase_scale = 0.1
         phase_freeze = False
         action_scale_enabled = True
 
@@ -222,10 +222,10 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         learning_rate = 1e-4
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v6_2_3_prefall_tilt_recovery_30deg'
+        run_name = 'spotmicro_v6_2_4_prefall_tilt_recovery_30deg_continue'
         experiment_name = 'spotmicro_test'
-        max_iterations = 600
+        max_iterations = 500
         save_interval = 100
         resume = True
-        load_run = "May25_11-58-44_spotmicro_v6_2_2_prefall_tilt_recovery_25deg_continue"
-        checkpoint = 6000
+        load_run = "May25_13-32-12_spotmicro_v6_2_3_prefall_tilt_recovery_30deg"
+        checkpoint = 6600
