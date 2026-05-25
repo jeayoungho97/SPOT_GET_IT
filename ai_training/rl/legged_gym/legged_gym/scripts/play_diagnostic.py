@@ -2,6 +2,7 @@
 # SpotMicro RL 학습 결과 종합 진단 스크립트 v3
 # 사용법: python legged_gym/scripts/play_diagnostic.py --task=spotmicro_test
 #         python legged_gym/scripts/play_diagnostic.py --task=spotmicro_test --checkpoint /path/to/model_500.pt --lightweight
+#         python legged_gym/scripts/play_diagnostic.py --task=spotmicro_test --with_dr --prefall-eval
 #
 # 출력:
 #   1. 터미널에 종합 진단 리포트
@@ -35,7 +36,7 @@ import matplotlib.pyplot as plt
 from collections import defaultdict
 import argparse, sys 
  
-def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False):
+def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False, recovery_range_deg=None):
     # ============ 환경 설정 ============
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
     env_cfg.env.num_envs = min(env_cfg.env.num_envs, 256)
@@ -48,6 +49,11 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
         env_cfg.domain_rand.push_robots = False
     else:
         print("[진단] DR 활성화 상태로 진단합니다")
+    if recovery_range_deg is not None:
+        env_cfg.domain_rand.recovery_roll_pitch_range_deg = float(recovery_range_deg)
+        print(
+            "[진단] recovery_roll_pitch_range_deg override: "
+            f"{env_cfg.domain_rand.recovery_roll_pitch_range_deg:.1f} deg")
  
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     obs = env.get_observations()
@@ -219,12 +225,18 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
     # ============================================================
     # Recovery assist 분석용 상태 추적
     # - reset 직후 일부러 기울어진 초기 상태가 1초 이내 안정화되는지 측정
-    # - eligible trial: 초기 |roll| 또는 |pitch|가 7도 이상인 trial
+    # - eligible trial: 초기 |roll| 또는 |pitch|가 설정 기준 이상인 trial
     # - success: 1초 이내 안정 기준에 도달했고, horizon 시점에도 안정 상태 유지
     # ============================================================
     recovery_horizon_s = 1.0
     recovery_horizon_steps = max(1, int(recovery_horizon_s / env.dt))
-    recovery_initial_tilt_threshold = np.radians(7.0)
+    recovery_initial_tilt_threshold = np.radians(
+        float(getattr(
+            env.cfg.rewards,
+            "recovery_diagnostic_initial_tilt_threshold_deg",
+            getattr(env.cfg.rewards, "recovery_reward_tilt_threshold_deg", 12.0),
+        ))
+    )
     recovery_stable_threshold = np.radians(5.0)
     recovery_min_height = float(
         getattr(
@@ -259,6 +271,72 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
     transition_first_stable_step = np.full(num_envs, -1, dtype=np.int32)
     transition_trials = []
     last_seen_transition_push_step = -1
+    tilt_band_defs = [
+        (12.0, 18.0, "12-18 deg"),
+        (18.0, 25.0, "18-25 deg"),
+        (25.0, 30.0, "25-30 deg"),
+        (30.0, None, "30+ deg"),
+    ]
+
+    def _mean_or_none(values):
+        return float(np.mean(values)) if values else None
+
+    def _summarize_tilt_rows(rows, tilt_key):
+        successes = [t for t in rows if t.get('success')]
+        failures = [t for t in rows if not t.get('success')]
+        times = [
+            t['recovery_time_s'] for t in successes
+            if t.get('recovery_time_s') is not None
+        ]
+        end_tilts = [
+            max(t.get('end_roll_deg', 0.0), t.get('end_pitch_deg', 0.0))
+            for t in rows
+        ]
+        return {
+            'trials': int(len(rows)),
+            'success_count': int(len(successes)),
+            'failure_count': int(len(failures)),
+            'success_rate_pct': (
+                float(len(successes) / len(rows) * 100) if rows else None
+            ),
+            'early_failure_rate_pct': (
+                float(sum(1 for t in rows if t.get('forced_failure')) / len(rows) * 100)
+                if rows else None
+            ),
+            'mean_recovery_time_s': _mean_or_none(times),
+            'mean_tilt_deg': _mean_or_none([t[tilt_key] for t in rows]),
+            'mean_end_tilt_deg': _mean_or_none(end_tilts),
+            'mean_end_roll_deg': _mean_or_none([t.get('end_roll_deg', 0.0) for t in rows]),
+            'mean_end_pitch_deg': _mean_or_none([t.get('end_pitch_deg', 0.0) for t in rows]),
+            'mean_end_height_m': _mean_or_none([t.get('end_height_m', 0.0) for t in rows]),
+        }
+
+    def _summarize_tilt_bands(trials, tilt_key):
+        bands = []
+        for low, high, label in tilt_band_defs:
+            rows = [
+                t for t in trials
+                if t.get(tilt_key) is not None
+                and t[tilt_key] >= low
+                and (high is None or t[tilt_key] < high)
+            ]
+            band = _summarize_tilt_rows(rows, tilt_key)
+            band.update({
+                'label': label,
+                'min_tilt_deg': float(low),
+                'max_tilt_deg': float(high) if high is not None else None,
+            })
+            bands.append(band)
+        return bands
+
+    def _summarize_prefall(trials, tilt_key):
+        rows = [
+            t for t in trials
+            if t.get(tilt_key) is not None and t[tilt_key] >= 18.0
+        ]
+        summary = _summarize_tilt_rows(rows, tilt_key)
+        summary['min_tilt_deg'] = 18.0
+        return summary
 
     def _start_recovery_trials(env_ids_np, roll_abs_np, pitch_abs_np, height_np):
         """새 episode/reset 직후 recovery trial 초기화"""
@@ -314,6 +392,8 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
         successes = [t for t in eligible if t['success']]
         failures = [t for t in eligible if not t['success']]
         times = [t['recovery_time_s'] for t in successes if t['recovery_time_s'] is not None]
+        tilt_bands = _summarize_tilt_bands(recovery_trials, 'init_tilt_deg')
+        prefall = _summarize_prefall(recovery_trials, 'init_tilt_deg')
 
         def _mean(key, rows):
             return float(np.mean([r[key] for r in rows])) if rows else None
@@ -344,6 +424,8 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
             'mean_end_roll_deg': _mean('end_roll_deg', eligible),
             'mean_end_pitch_deg': _mean('end_pitch_deg', eligible),
             'mean_end_height_m': _mean('end_height_m', eligible),
+            'tilt_bands': tilt_bands,
+            'prefall': prefall,
         }
 
     def _start_transition_trials(env_ids_np, roll_abs_np, pitch_abs_np, height_np, push_step):
@@ -390,6 +472,8 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
         successes = [t for t in eligible if t['success']]
         failures = [t for t in eligible if not t['success']]
         times = [t['recovery_time_s'] for t in successes if t['recovery_time_s'] is not None]
+        tilt_bands = _summarize_tilt_bands(transition_trials, 'max_tilt_deg')
+        prefall = _summarize_prefall(transition_trials, 'max_tilt_deg')
 
         def _mean(key, rows):
             return float(np.mean([r[key] for r in rows])) if rows else None
@@ -412,6 +496,8 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
             'mean_end_roll_deg': _mean('end_roll_deg', eligible),
             'mean_end_pitch_deg': _mean('end_pitch_deg', eligible),
             'mean_end_height_m': _mean('end_height_m', eligible),
+            'tilt_bands': tilt_bands,
+            'prefall': prefall,
         }
     # 에너지 추적
     power_list = []
@@ -823,6 +909,8 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
             'recovery_success_rate_pct': recovery_summary.get('success_rate_pct'),
             'recovery_eligible_trials': recovery_summary.get('eligible_trials', 0),
             'mean_recovery_time_s': recovery_summary.get('mean_recovery_time_s'),
+            'recovery_prefall_success_rate_pct': recovery_summary.get('prefall', {}).get('success_rate_pct'),
+            'recovery_prefall_trials': recovery_summary.get('prefall', {}).get('trials', 0),
             'feet_contact_pct': feet_contact_pct_dict,
             'diagonal_sync': float(overall_trot * 100),
         }
@@ -1126,6 +1214,34 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
 
 
     # --- [15] Recovery assist 분석 ---
+    def _fmt_pct(value):
+        return "N/A" if value is None else f"{value:.1f}%"
+
+    def _fmt_num(value, suffix=""):
+        return "N/A" if value is None else f"{value:.2f}{suffix}"
+
+    def _print_tilt_band_summary(title, summary):
+        bands = summary.get('tilt_bands', [])
+        prefall = summary.get('prefall', {})
+        print(f"\n  {title} tilt band summary")
+        print(f"  {'Band':<10} {'Trials':>7} {'Success':>9} {'EndTilt':>9} {'Time':>8}")
+        print(f"  {'-'*48}")
+        for band in bands:
+            print(
+                f"  {band['label']:<10} "
+                f"{band.get('trials', 0):>7} "
+                f"{_fmt_pct(band.get('success_rate_pct')):>9} "
+                f"{_fmt_num(band.get('mean_end_tilt_deg'), '°'):>9} "
+                f"{_fmt_num(band.get('mean_recovery_time_s'), 's'):>8}"
+            )
+        print(
+            f"  {'18+ deg':<10} "
+            f"{prefall.get('trials', 0):>7} "
+            f"{_fmt_pct(prefall.get('success_rate_pct')):>9} "
+            f"{_fmt_num(prefall.get('mean_end_tilt_deg'), '°'):>9} "
+            f"{_fmt_num(prefall.get('mean_recovery_time_s'), 's'):>8}"
+        )
+
     print(f"\n{'='*60}")
     print(f"  [15] Recovery Assist 분석")
     print(f"{'='*60}")
@@ -1152,6 +1268,7 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
             print("  → △ 일부 회복 가능. perturbation curriculum 또는 reward 조정 필요")
         else:
             print("  → ⚠ Recovery 성공률 낮음. perturbation 강도/termination/reward 확인 필요")
+    _print_tilt_band_summary("Recovery", recovery_summary)
 
     # --- [16] Transition recovery 분석 ---
     print(f"\n{'='*60}")
@@ -1179,6 +1296,7 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
         print(f"  horizon 후 평균 |roll|/|pitch|: "
               f"{transition_recovery_summary['mean_end_roll_deg']:.2f}° / "
               f"{transition_recovery_summary['mean_end_pitch_deg']:.2f}°")
+    _print_tilt_band_summary("Transition", transition_recovery_summary)
     # ============ 그래프 1: 종합 대시보드 ============
     fig, axes = plt.subplots(4, 2, figsize=(16, 20))
     fig.suptitle('SpotMicro RL Diagnostic Report v3', fontsize=16, fontweight='bold')
@@ -1316,6 +1434,8 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
         ax.plot(steps_range, [np.degrees(p) for p in data['pitch_abs']], 'b-', alpha=0.7, label='|Pitch|')
         ax.axhline(y=recovery_summary['stable_threshold_deg'], color='green', linestyle='--', alpha=0.5, label='Stable threshold')
         ax.axhline(y=recovery_summary['initial_tilt_threshold_deg'], color='orange', linestyle='--', alpha=0.5, label='Eligible threshold')
+        ax.axhline(y=18, color='purple', linestyle=':', alpha=0.4, label='Pre-fall 18 deg')
+        ax.axhline(y=25, color='red', linestyle=':', alpha=0.35, label='Pre-fall 25 deg')
         ax.set_xlabel('Step')
         ax.set_ylabel('Angle (deg)')
         ax.set_title('Roll/Pitch Stability During Diagnostic')
@@ -1327,6 +1447,9 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
             end_tilts = [max(t['end_roll_deg'], t['end_pitch_deg']) for t in eligible_trials]
             ax.hist(init_tilts, bins=20, alpha=0.6, label='Initial tilt')
             ax.hist(end_tilts, bins=20, alpha=0.6, label='Tilt at 1s/end')
+            ax.axvline(18, color='purple', linestyle=':', alpha=0.6, label='18 deg')
+            ax.axvline(25, color='red', linestyle=':', alpha=0.5, label='25 deg')
+            ax.axvline(30, color='black', linestyle=':', alpha=0.4, label='30 deg')
             ax.set_xlabel('Tilt (deg)')
             ax.set_ylabel('Count')
             ax.set_title('Initial vs End Tilt Distribution')
@@ -1411,11 +1534,17 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False)
             'recovery_eligible_trials': recovery_summary.get('eligible_trials', 0),
             'mean_recovery_time_s': recovery_summary.get('mean_recovery_time_s'),
             'recovery_early_failure_rate_pct': recovery_summary.get('early_failure_rate_pct'),
+            'recovery_prefall_success_rate_pct': recovery_summary.get('prefall', {}).get('success_rate_pct'),
+            'recovery_prefall_trials': recovery_summary.get('prefall', {}).get('trials', 0),
+            'recovery_prefall_mean_end_tilt_deg': recovery_summary.get('prefall', {}).get('mean_end_tilt_deg'),
             'transition_recovery_success_rate_pct': transition_recovery_summary.get('success_rate_pct'),
             'transition_recovery_eligible_trials': transition_recovery_summary.get('eligible_trials', 0),
             'mean_transition_recovery_time_s': transition_recovery_summary.get('mean_recovery_time_s'),
             'transition_recovery_early_failure_rate_pct': transition_recovery_summary.get('early_failure_rate_pct'),
             'transition_recovery_mean_max_tilt_deg': transition_recovery_summary.get('mean_max_tilt_deg'),
+            'transition_prefall_success_rate_pct': transition_recovery_summary.get('prefall', {}).get('success_rate_pct'),
+            'transition_prefall_trials': transition_recovery_summary.get('prefall', {}).get('trials', 0),
+            'transition_prefall_mean_end_tilt_deg': transition_recovery_summary.get('prefall', {}).get('mean_end_tilt_deg'),
         },
         'recovery': recovery_summary,
         'transition_recovery': transition_recovery_summary,
@@ -1517,7 +1646,25 @@ if __name__ == '__main__':
     with_dr = '--with_dr' in sys.argv
     if with_dr:
         sys.argv.remove('--with_dr')
-        
+
+    prefall_eval = '--prefall-eval' in sys.argv
+    if prefall_eval:
+        sys.argv.remove('--prefall-eval')
+
+    recovery_range_deg = 30.0 if prefall_eval else None
+    i = 1
+    while i < len(sys.argv):
+        arg = sys.argv[i]
+        if arg == '--recovery-range-deg' and i + 1 < len(sys.argv):
+            recovery_range_deg = float(sys.argv[i + 1])
+            del sys.argv[i:i + 2]
+            continue
+        if arg.startswith('--recovery-range-deg='):
+            recovery_range_deg = float(arg.split('=', 1)[1])
+            del sys.argv[i]
+            continue
+        i += 1
+
     args = get_args()
 
     # --- 항목 1-A: 추가 CLI 인자 파싱 ---
@@ -1540,4 +1687,10 @@ if __name__ == '__main__':
         else:
             i += 1
 
-    run_diagnostic(args, checkpoint_path=checkpoint_path, lightweight=lightweight, with_dr=with_dr)
+    run_diagnostic(
+        args,
+        checkpoint_path=checkpoint_path,
+        lightweight=lightweight,
+        with_dr=with_dr,
+        recovery_range_deg=recovery_range_deg,
+    )

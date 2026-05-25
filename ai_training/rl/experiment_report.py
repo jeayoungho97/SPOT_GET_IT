@@ -500,6 +500,19 @@ def auto_judge(metrics, run_name=''):
             judgments.append(f"❌ 전환복구: {transition_sr:.1f}% (<50%)")
             all_pass = False
 
+    prefall_trials = metrics.get('transition_prefall_trials', 0)
+    prefall_sr = metrics.get('transition_prefall_success_rate_pct')
+    if prefall_trials:
+        if prefall_sr is not None and prefall_sr >= 85:
+            judgments.append(f"✅ 18도+ pre-fall 복구: {prefall_sr:.1f}% (≥85%)")
+        elif prefall_sr is not None and prefall_sr >= 60:
+            judgments.append(f"⚠️ 18도+ pre-fall 복구: {prefall_sr:.1f}% (60~85%)")
+        elif prefall_sr is not None:
+            judgments.append(f"❌ 18도+ pre-fall 복구: {prefall_sr:.1f}% (<60%)")
+            all_pass = False
+    else:
+        judgments.append("⚠️ 18도+ pre-fall 복구: trial 없음 (30도 목표 미검증)")
+
     overall = "✅ PASS" if all_pass else "❌ FAIL (일부 기준 미달)"
     return overall, judgments
 
@@ -782,6 +795,45 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
 
 
     # --- Recovery assist 분석 ---
+    def _fmt_pct(value):
+        return "N/A" if value is None else f"{value:.1f}%"
+
+    def _fmt_num(value, suffix=""):
+        return "N/A" if value is None else f"{value:.2f}{suffix}"
+
+    def _tilt_band_table(summary, title):
+        bands = summary.get('tilt_bands', []) if summary else []
+        prefall = summary.get('prefall', {}) if summary else {}
+        if not bands and not prefall:
+            return ""
+
+        rows = []
+        for band in bands:
+            rows.append(
+                f"| {band.get('label', 'N/A')} | "
+                f"{band.get('trials', 0)} | "
+                f"{_fmt_pct(band.get('success_rate_pct'))} | "
+                f"{_fmt_num(band.get('mean_end_tilt_deg'), '°')} | "
+                f"{_fmt_num(band.get('mean_recovery_time_s'), 's')} |"
+            )
+        rows.append(
+            f"| 18+ deg 전체 | "
+            f"{prefall.get('trials', 0)} | "
+            f"{_fmt_pct(prefall.get('success_rate_pct'))} | "
+            f"{_fmt_num(prefall.get('mean_end_tilt_deg'), '°')} | "
+            f"{_fmt_num(prefall.get('mean_recovery_time_s'), 's')} |"
+        )
+
+        return f"""
+### {title} Tilt Band 분석
+
+| Tilt 구간 | Trials | 성공률 | Horizon 후 평균 tilt | 평균 회복 시간 |
+|-----------|--------|--------|----------------------|----------------|
+{chr(10).join(rows)}
+
+> 이번 pre-fall 목표는 특히 `18-25 deg`, `25-30 deg`, `18+ deg 전체` 행을 우선 봅니다. `25-30 deg` trial이 없으면 30도 근처 회복 성능은 아직 검증되지 않은 것입니다.
+"""
+
     recovery_section = ""
     if recovery_data:
         sr = recovery_data.get('success_rate_pct')
@@ -795,6 +847,7 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
         sr_str = f"{sr:.1f}%" if sr is not None else "N/A"
         ert_str = f"{ert:.1f}%" if ert is not None else "N/A"
         mrt_str = f"{mrt:.3f}s" if mrt is not None else "N/A"
+        recovery_band_section = _tilt_band_table(recovery_data, "Recovery")
 
         if sr is None:
             recovery_judge = "⚠️ eligible trial 없음"
@@ -825,6 +878,7 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
 | 1초 내 최대 roll/pitch 평균 | {recovery_data.get('mean_max_roll_first_1s_deg', 'N/A')}° / {recovery_data.get('mean_max_pitch_first_1s_deg', 'N/A')}° |
 
 > 해석: `Recovery 성공률`은 초기 tilt가 기준 이상인 episode 중 1초 내 안정 자세로 복귀한 비율입니다. 조기 실패율이 높으면 reset 직후 바로 넘어지는 것이고, 평균 회복 시간이 짧을수록 위기 대응이 빠른 것입니다.
+{recovery_band_section}
 """
     # --- 항목 3: Gait 분석 ---
     transition_recovery_section = ""
@@ -840,6 +894,7 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
         sr_str = f"{sr:.1f}%" if sr is not None else "N/A"
         ert_str = f"{ert:.1f}%" if ert is not None else "N/A"
         mrt_str = f"{mrt:.3f}s" if mrt is not None else "N/A"
+        transition_band_section = _tilt_band_table(transition_recovery_data, "Transition Recovery")
 
         if sr is None:
             transition_judge = "⚠️ eligible trial 없음"
@@ -868,6 +923,7 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
 | horizon 후 평균 roll/pitch | {transition_recovery_data.get('mean_end_roll_deg', 'N/A')}° / {transition_recovery_data.get('mean_end_pitch_deg', 'N/A')}° |
 
 > 해석: `Transition Recovery`는 학습 중 push/roll-pitch angular impulse가 들어간 뒤 일정 시간 안에 자세가 안정 기준으로 돌아오는지를 봅니다.
+{transition_band_section}
 """
 
     # --- 항목 3: Gait 분석 ---
@@ -1042,9 +1098,15 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
 | Recovery eligible trials | {metrics.get('recovery_eligible_trials', 'N/A')} |
 | 평균 회복 시간 | {metrics.get('mean_recovery_time_s', 'N/A')} s |
 | Recovery 조기 실패율 | {metrics.get('recovery_early_failure_rate_pct', 'N/A')}% |
+| Recovery 18도+ 성공률 | {metrics.get('recovery_prefall_success_rate_pct', 'N/A')}% |
+| Recovery 18도+ trials | {metrics.get('recovery_prefall_trials', 'N/A')} |
+| Recovery 18도+ horizon 후 tilt | {metrics.get('recovery_prefall_mean_end_tilt_deg', 'N/A')}° |
 | Transition recovery 성공률 | {metrics.get('transition_recovery_success_rate_pct', 'N/A')}% |
 | Transition recovery eligible trials | {metrics.get('transition_recovery_eligible_trials', 'N/A')} |
 | 평균 Transition recovery 시간 | {metrics.get('mean_transition_recovery_time_s', 'N/A')} s |
+| Transition 18도+ 성공률 | {metrics.get('transition_prefall_success_rate_pct', 'N/A')}% |
+| Transition 18도+ trials | {metrics.get('transition_prefall_trials', 'N/A')} |
+| Transition 18도+ horizon 후 tilt | {metrics.get('transition_prefall_mean_end_tilt_deg', 'N/A')}° |
 {recovery_section}
 {transition_recovery_section}
 {command_mode_section}

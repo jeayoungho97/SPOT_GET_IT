@@ -341,16 +341,31 @@ class SpotmicroTest(LeggedRobot):
 
     def post_physics_step(self):
         self.gym.refresh_rigid_body_state_tensor(self.sim)
-
-        # 속도 명령 크기에 비례하여 gait phase 진행
-        cmd_norm = torch.norm(self.commands[:, :3], dim=1, keepdim=True)  # [num_envs, 1]
-        phase_scale = torch.clamp(cmd_norm / self.phase_cmd_norm, 0.0, 1.0)  # phase_cmd_norm 이하면 감속→정지
-
-        dt_phase = self.dt / self.gait_period
-        self.gait_phase = (self.gait_phase + dt_phase * phase_scale) % 1.0
         super().post_physics_step()
         self.last_tilt_metric = torch.norm(self.projected_gravity[:, :2], dim=1)
         self.last_ang_vel_xy_metric = torch.norm(self.base_ang_vel[:, :2], dim=1)
+
+    def _post_physics_step_callback(self):
+        super()._post_physics_step_callback()
+
+        cmd_norm = torch.norm(
+            self._get_effective_commands(), dim=1, keepdim=True)
+        phase_scale = torch.clamp(cmd_norm / self.phase_cmd_norm, 0.0, 1.0)
+
+        recovery_cfg = getattr(self.cfg, "recovery", None)
+        if getattr(recovery_cfg, "phase_enabled", False):
+            blend = self._recovery_blend().unsqueeze(1)
+            if getattr(recovery_cfg, "phase_freeze", False):
+                phase_scale = torch.where(
+                    blend > 0.0, torch.zeros_like(phase_scale), phase_scale)
+            else:
+                recovery_phase_scale = float(
+                    getattr(recovery_cfg, "phase_scale", 0.2))
+                phase_scale = phase_scale * (
+                    1.0 - blend * (1.0 - recovery_phase_scale))
+
+        dt_phase = self.dt / self.gait_period
+        self.gait_phase = (self.gait_phase + dt_phase * phase_scale) % 1.0
               
     def check_termination(self):
         super().check_termination()
@@ -610,14 +625,15 @@ class SpotmicroTest(LeggedRobot):
         self.commands[env_ids, :2] *= (lin_norm > deadband).unsqueeze(1)
         
     def compute_observations(self):
-        ref_dof_pos = self._get_ik_target()
+        effective_commands = self._get_effective_commands()
+        ref_dof_pos = self._get_ik_target(effective_commands)
         dof_pos_obs = self.dof_pos + self.joint_obs_offsets
         phase_sin = torch.sin(2 * torch.pi * self.gait_phase)
         phase_cos = torch.cos(2 * torch.pi * self.gait_phase)
         self.obs_buf = torch.cat([
             self.base_ang_vel * self.obs_scales.ang_vel,           # 3
             self.projected_gravity,                                 # 3
-            self.commands[:, :3] * self.commands_scale,            # 3
+            effective_commands * self.commands_scale,               # 3
             (dof_pos_obs - ref_dof_pos) * self.obs_scales.dof_pos,  # 12
             self.dof_vel * self.obs_scales.dof_vel,                # 12
             self.actions,                                           # 12 (현재 액션)
@@ -663,17 +679,57 @@ class SpotmicroTest(LeggedRobot):
             device=self.device,
         )
 
+    def _recovery_tilt_metric(self):
+        return torch.norm(self.projected_gravity[:, :2], dim=1)
+
+    def _recovery_blend(self, threshold_deg=None, full_tilt_deg=None):
+        recovery_cfg = getattr(self.cfg, "recovery", None)
+        if not getattr(recovery_cfg, "enabled", False):
+            return torch.zeros(self.num_envs, device=self.device)
+
+        if threshold_deg is None:
+            threshold_deg = getattr(recovery_cfg, "tilt_threshold_deg", 14.0)
+        if full_tilt_deg is None:
+            full_tilt_deg = getattr(recovery_cfg, "full_tilt_deg", 25.0)
+
+        threshold = math.sin(math.radians(float(threshold_deg)))
+        full_tilt = math.sin(math.radians(float(full_tilt_deg)))
+        tilt = self._recovery_tilt_metric()
+        if full_tilt <= threshold:
+            return (tilt > threshold).float()
+        return torch.clamp((tilt - threshold) / (full_tilt - threshold), 0.0, 1.0)
+
+    def _get_effective_commands(self):
+        commands = self.commands[:, :3]
+        recovery_cfg = getattr(self.cfg, "recovery", None)
+        if not getattr(recovery_cfg, "command_scale_enabled", False):
+            return commands
+
+        blend = self._recovery_blend().unsqueeze(1)
+        recovery_cmd_scale = float(
+            getattr(recovery_cfg, "command_scale", 0.25))
+        scale = 1.0 - blend * (1.0 - recovery_cmd_scale)
+        return commands * scale
+
+    def _get_effective_action_scale(self):
+        normal_scale = float(self.cfg.control.action_scale)
+        recovery_cfg = getattr(self.cfg, "recovery", None)
+        if not getattr(recovery_cfg, "action_scale_enabled", False):
+            return normal_scale
+
+        recovery_scale = float(
+            getattr(self.cfg.control, "recovery_action_scale", normal_scale))
+        blend = self._recovery_blend().unsqueeze(1)
+        return normal_scale + blend * (recovery_scale - normal_scale)
+
     def _recovery_relief_scale(self, scale_attr):
         threshold_deg = getattr(
-            self.cfg.rewards, "recovery_relief_tilt_threshold_deg", 7.0)
-        threshold = math.sin(math.radians(threshold_deg))
+            self.cfg.rewards, "recovery_relief_tilt_threshold_deg", 14.0)
+        full_tilt_deg = getattr(
+            self.cfg.rewards, "recovery_relief_full_tilt_deg", 25.0)
         relief = getattr(self.cfg.rewards, scale_attr, 0.25)
-        tilt = torch.norm(self.projected_gravity[:, :2], dim=1)
-        return torch.where(
-            tilt > threshold,
-            torch.full_like(tilt, float(relief)),
-            torch.ones_like(tilt),
-        )
+        blend = self._recovery_blend(threshold_deg, full_tilt_deg)
+        return 1.0 - blend * (1.0 - float(relief))
         
     def _reward_feet_air_time(self):
         contact = self.contact_forces[:, self.feet_indices, 2] > 1.
@@ -682,7 +738,8 @@ class SpotmicroTest(LeggedRobot):
         first_contact = (self.feet_air_time > 0.) * contact_filt
         self.feet_air_time += self.dt
         rew_airTime = torch.sum((self.feet_air_time - 0.15) * first_contact, dim=1)
-        rew_airTime *= torch.norm(self.commands[:, :3], dim=1) > self.blend_cmd_norm
+        rew_airTime *= torch.norm(
+            self._get_effective_commands(), dim=1) > self.blend_cmd_norm
         self.feet_air_time *= ~contact_filt
         return rew_airTime
         
@@ -692,7 +749,8 @@ class SpotmicroTest(LeggedRobot):
         sync_1 = (contact[:, 1] == contact[:, 2]).float()  
         anti_phase = (contact[:, 0] != contact[:, 1]).float()
         reward = (sync_0 + sync_1 + anti_phase) / 3.0
-        reward *= (torch.norm(self.commands[:, :3], dim=1) > self.blend_cmd_norm).float()
+        reward *= (torch.norm(
+            self._get_effective_commands(), dim=1) > self.blend_cmd_norm).float()
         return reward
         
     def _reward_no_stuck_feet(self):
@@ -712,7 +770,8 @@ class SpotmicroTest(LeggedRobot):
             torch.clamp(self.feet_swing_contact_time - grace_time, min=0.),
             dim=1,
         )
-        penalty *= (torch.norm(self.commands[:, :3], dim=1) > self.blend_cmd_norm).float()
+        penalty *= (torch.norm(
+            self._get_effective_commands(), dim=1) > self.blend_cmd_norm).float()
         penalty *= self._recovery_relief_scale("recovery_gait_relief_scale")
         return penalty
 
@@ -734,7 +793,8 @@ class SpotmicroTest(LeggedRobot):
             torch.zeros_like(diff)
         )
         reward = balance
-        reward *= (torch.norm(self.commands[:, :3], dim=1) > self.blend_cmd_norm).float()
+        reward *= (torch.norm(
+            self._get_effective_commands(), dim=1) > self.blend_cmd_norm).float()
         return reward
 
     def _reward_feet_clearance(self):
@@ -756,7 +816,8 @@ class SpotmicroTest(LeggedRobot):
         )
         reward = torch.sum(height_reward * first_contact.float(), dim=1)
         self.max_feet_height *= is_air
-        reward *= (torch.norm(self.commands[:, :3], dim=1) > self.blend_cmd_norm).float()
+        reward *= (torch.norm(
+            self._get_effective_commands(), dim=1) > self.blend_cmd_norm).float()
         return reward
 
     def _reward_swing_contact(self):
@@ -764,14 +825,15 @@ class SpotmicroTest(LeggedRobot):
         desired_air = phases >= self.duty_factor
         actual_contact = self.contact_forces[:, self.feet_indices, 2] > 1.0
         dragging = (desired_air & actual_contact).float()
-        cmd_norm = torch.norm(self.commands[:, :3], dim=1, keepdim=True)
+        cmd_norm = torch.norm(
+            self._get_effective_commands(), dim=1, keepdim=True)
         is_moving = (cmd_norm > self.blend_cmd_norm).float()
         penalty = torch.sum(dragging * is_moving, dim=1) / 4.0
         return penalty * self._recovery_relief_scale("recovery_gait_relief_scale")
         
     
     def _reward_stand_still(self):
-        cmd_norm = torch.norm(self.commands[:, :3], dim=1)
+        cmd_norm = torch.norm(self._get_effective_commands(), dim=1)
         return torch.sum(torch.abs(self.dof_pos - self.default_dof_pos), dim=1) * (cmd_norm < self.blend_cmd_norm)
     '''
     def _reward_stand_still(self):
@@ -786,14 +848,16 @@ class SpotmicroTest(LeggedRobot):
 
         return (lin_penalty + 0.5 * yaw_penalty + pose_penalty) * is_stand
     '''
-    def _get_ik_target(self):
+    def _get_ik_target(self, commands=None):
+        if commands is None:
+            commands = self._get_effective_commands()
         ref_dof_pos = self.ik_reference.get_reference(
             self.gait_phase,
-            self.commands[:, :3],
+            commands,
         )
 
         # 정지 시 default pose로 블렌딩
-        cmd_norm = torch.norm(self.commands[:, :3], dim=1, keepdim=True)
+        cmd_norm = torch.norm(commands, dim=1, keepdim=True)
         blend = torch.clamp(cmd_norm / self.blend_cmd_norm, 0.0, 1.0)
 
         ref_dof_pos = blend * ref_dof_pos + (1.0 - blend) * self.default_dof_pos
@@ -801,7 +865,7 @@ class SpotmicroTest(LeggedRobot):
         return ref_dof_pos
         
     def _compute_torques(self, actions):
-        actions_scaled = actions * self.cfg.control.action_scale
+        actions_scaled = actions * self._get_effective_action_scale()
         ref_dof_pos = self._get_ik_target()
         p_gains = self.p_gains.unsqueeze(0) * self.stiffness_scales
         d_gains = self.d_gains.unsqueeze(0) * self.damping_scales
@@ -820,10 +884,17 @@ class SpotmicroTest(LeggedRobot):
         sigma = 2.0
         reward = torch.exp(-error / sigma)
         return reward * self._recovery_relief_scale("recovery_ik_relief_scale")
+
+    def _reward_tracking_lin_vel(self):
+        commands = self._get_effective_commands()
+        lin_vel_error = torch.sum(
+            torch.square(commands[:, :2] - self.base_lin_vel[:, :2]), dim=1)
+        return torch.exp(-lin_vel_error / self.cfg.rewards.tracking_sigma)
         
     def _reward_tracking_ang_vel(self):
+        commands = self._get_effective_commands()
         ang_vel_error = torch.square(
-            self.commands[:, 2] - self.base_ang_vel[:, 2])
+            commands[:, 2] - self.base_ang_vel[:, 2])
         return torch.exp(
             -ang_vel_error / self.cfg.rewards.tracking_sigma_ang_vel)
 
@@ -832,7 +903,8 @@ class SpotmicroTest(LeggedRobot):
         desired_contact = phases < self.duty_factor
         actual_contact = self.contact_forces[:, self.feet_indices, 2] > 1.0
         match = (actual_contact == desired_contact).float()
-        cmd_norm = torch.norm(self.commands[:, :3], dim=1, keepdim=True)
+        cmd_norm = torch.norm(
+            self._get_effective_commands(), dim=1, keepdim=True)
         is_moving = (cmd_norm > self.blend_cmd_norm).float()
         reward = torch.sum(match * is_moving, dim=1) / 4.0
         return reward * self._recovery_relief_scale("recovery_gait_relief_scale")
@@ -840,7 +912,7 @@ class SpotmicroTest(LeggedRobot):
     def _recovery_tilt_mask(self):
         threshold_deg = getattr(self.cfg.rewards, "recovery_reward_tilt_threshold_deg", 4.0)
         threshold = math.sin(math.radians(threshold_deg))
-        tilt = torch.norm(self.projected_gravity[:, :2], dim=1)
+        tilt = self._recovery_tilt_metric()
         return tilt, (tilt > threshold).float()
 
     def _reward_tilt_recovery(self):
