@@ -184,3 +184,70 @@ Suggested readiness criteria before real testing or 30+ expansion:
 - transition `25-30 deg` recovery `65-70%+`
 - transition `18+ overall` `70-75%+`
 - no rise in torque saturation/action rate
+
+## Assessment After exp077
+
+exp077 improved the stability side of the 30 deg stage but did not solve the main `25-30 deg` transition recovery bottleneck:
+
+- normal gait improved versus exp076:
+  - timeout `92.3% -> 94.8%`
+  - early death `6.1% -> 3.3%`
+  - torque saturation `4.0% -> 4.4%`
+- reset recovery improved slightly:
+  - `25-30 deg`: `67.1% -> 69.0%`
+  - `18+ overall`: `79.8% -> 80.3%`
+- transition recovery improved in the easier band:
+  - `18-25 deg`: `73.0% -> 78.2%`
+  - `18+ overall`: `60.8% -> 65.2%`
+- but the target band is nearly flat:
+  - transition `25-30 deg`: `52.5% -> 54.2%`
+
+Conclusion: the command/phase slowdown was useful and should stay. Do not expand past 30 deg. For the next run, give the policy a small amount of extra high-tilt residual authority and slightly more relief from IK/gait constraints, but keep normal gait settings unchanged.
+
+Applied next config:
+
+- run: `spotmicro_v6_2_5_prefall_tilt_recovery_30deg_authority`
+- resume: `May25_14-02-38_spotmicro_v6_2_4_prefall_tilt_recovery_30deg_continue`, checkpoint `7100`
+- keep `recovery_roll_pitch_range_deg = 30.0`
+- keep recovery command/phase slowdown: `command_scale = 0.15`, `phase_scale = 0.1`
+- increase recovery-only residual action scale from `0.35` to `0.40`
+- relax high-tilt gait/IK reward influence from `0.65` to `0.60`
+- keep `max_iterations = 500`
+
+Watch for torque/action-rate regression. If transition `25-30 deg` does not move above about `60%`, the next issue is likely not just more training; consider changing recovery sampling or reward shape rather than continuing indefinitely.
+
+## Assessment After exp078
+
+exp078 shows that the extra high-tilt authority was not a good next direction:
+
+- reset recovery improved, but that is not the main real-robot target:
+  - reset `25-30 deg`: `69.0% -> 74.4%`
+  - reset `18+ overall`: `80.3% -> 84.3%`
+- normal gait did not materially improve:
+  - timeout `94.8% -> 94.1%`
+  - early death `3.3% -> 3.7%`
+- the key target regressed:
+  - transition `25-30 deg`: `54.2% -> 44.4%`
+  - transition `18+ overall`: `65.2% -> 63.5%`
+- action rate rose (`0.0066 -> 0.0071`), which is not ideal for sim-to-real actuator tracking.
+
+Decision: roll back the v6.2.5 authority change. The likely issue is not simply residual authority; the policy can recover from static/reset tilt, but walking-transition cases are not being sampled or shaped in a way that produces a visible bracing/stop behavior.
+
+Applied rollback config:
+
+- run: `spotmicro_v6_2_6_prefall_tilt_recovery_30deg_rollback`
+- resume from exp077, not exp078: `May25_14-02-38_spotmicro_v6_2_4_prefall_tilt_recovery_30deg_continue`, checkpoint `7100`
+- restore `recovery_action_scale = 0.35`
+- restore `recovery_gait_relief_scale = 0.65`
+- restore `recovery_ik_relief_scale = 0.65`
+- keep recovery command/phase slowdown: `command_scale = 0.15`, `phase_scale = 0.1`
+- keep `recovery_roll_pitch_range_deg = 30.0`
+- set `max_iterations = 400`
+
+Also added a visual inspection script:
+
+```bash
+python legged_gym/legged_gym/scripts/play_prefall_visual.py --task=spotmicro_test --tilt-deg 28 --axis pitch --cmd-x 0.08
+```
+
+This runs a single robot, walks at slow `vx`, injects a 28 deg pre-fall tilt, and prints the recovery blend and effective command scaling. Use this to visually confirm whether recovery mode looks like bracing/settling or just continuing gait. Add `--record-frames` to save viewer frames under `logs/spotmicro_test/exported/prefall_visual_frames`.

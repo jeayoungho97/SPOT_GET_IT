@@ -222,10 +222,10 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         learning_rate = 1e-4
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v6_2_4_prefall_tilt_recovery_30deg_continue'
+        run_name = 'spotmicro_v6_2_6_prefall_tilt_recovery_30deg_rollback'
         experiment_name = 'spotmicro_test'
-        max_iterations = 500
+        max_iterations = 400
         save_interval = 100
         resume = True
-        load_run = "May25_13-32-12_spotmicro_v6_2_3_prefall_tilt_recovery_30deg"
-        checkpoint = 6600
+        load_run = "May25_14-02-38_spotmicro_v6_2_4_prefall_tilt_recovery_30deg_continue"
+        checkpoint = 7100
