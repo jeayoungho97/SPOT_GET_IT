@@ -83,3 +83,4 @@
 | 080 | 05/25 | spotmicro_v6_3_prefall_transition_tilt_sampler | v6.3 : transition tilt sampler 추가 | 76.3% | 0.024 | 5.1% | ❌ |
 | 081 | 05/25 | spotmicro_v6_3_1_prefall_transition_tilt_sampler_soft | v6.3.1 : sampler 강도 약화 | 88.9% | 0.021 | 4.4% | ❌ |
 | 082 | 05/25 | spotmicro_v6_3_2_prefall_transition_tilt_sampler_focused | v6.3.2 : sampler 각도 범위 집중 | 79.3% | 0.022 | 4.9% | ❌ |
+| 083 | 05/25 | spotmicro_v6_3_3_prefall_transition_tilt_sampler_stable | v6.3.3 : roll ang vel 감소 후 추가 학습 | 86.1% | 0.021 | 4.6% | ❌ |
