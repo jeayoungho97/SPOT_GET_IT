@@ -334,3 +334,39 @@ Expected effect:
 - keep the improved `25-30 deg` transition exposure
 - reduce excessive `30+ deg` / `40+ deg` stress cases
 - recover normal timeout and action/torque margin
+
+## Assessment After exp081
+
+exp081 recovered much of the stability lost in exp080 while keeping the transition-sampler benefit:
+
+- normal/stability improved versus exp080:
+  - timeout `76.3% -> 88.9%`
+  - early death `5.4% -> 3.1%`
+  - torque saturation `5.1% -> 4.4%`
+  - mean power `3.66W -> 3.40W`
+- recovery stayed strong:
+  - reset `25-30 deg`: `80.0% -> 79.5%`
+  - reset `18+ overall`: `85.9% -> 87.0%`
+- transition improved overall:
+  - transition recovery total: `75.2% -> 80.7%`
+  - transition `18+ overall`: `71.7% -> 76.8%`
+- target band became under-sampled/weaker:
+  - transition `25-30 deg`: `63.7%` over 201 trials -> `58.3%` over 72 trials
+- `30+ deg` is still outside the current target and should be treated as stress only.
+
+Decision: do not simply continue unchanged. Keep the soft sampler probability to protect gait, but shift the injected tilt range upward so sampled transition cases land more often in the `25-30 deg` band without reintroducing excessive angular velocity.
+
+Applied next config:
+
+- run: `spotmicro_v6_3_2_prefall_transition_tilt_sampler_focused`
+- resume from exp081: `May25_16-41-52_spotmicro_v6_3_1_prefall_transition_tilt_sampler_soft`, checkpoint `8100`
+- `max_iterations = 500`
+- keep `transition_tilt_push_prob = 0.20`
+- shift sampler range from `18-27 deg` to `22-27.5 deg`
+- reduce sampler roll/pitch angular velocity from `0.40` to `0.35 rad/s`
+
+Expected effect:
+
+- more `25-30 deg` transition trials than exp081
+- fewer excessive `30+` stress cases than exp080
+- timeout should recover toward `90%+`
