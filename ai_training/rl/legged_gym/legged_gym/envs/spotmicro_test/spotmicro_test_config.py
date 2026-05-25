@@ -207,10 +207,10 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         push_ang_vel_xy_clip = 1.20
         push_ang_vel_z_clip = 0.35
         transition_tilt_push = True
-        transition_tilt_push_prob = 0.35
+        transition_tilt_push_prob = 0.20
         transition_tilt_push_min_deg = 18.0
-        transition_tilt_push_max_deg = 28.0
-        transition_tilt_push_ang_vel_xy = 0.60
+        transition_tilt_push_max_deg = 27.0
+        transition_tilt_push_ang_vel_xy = 0.40
         transition_tilt_cmd_x_range = [0.05, 0.10]
         transition_tilt_zero_yaw_cmd = True
         action_delay = True
@@ -229,10 +229,10 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         learning_rate = 1e-4
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v6_3_prefall_transition_tilt_sampler'
+        run_name = 'spotmicro_v6_3_1_prefall_transition_tilt_sampler_soft'
         experiment_name = 'spotmicro_test'
-        max_iterations = 600
+        max_iterations = 400
         save_interval = 100
         resume = True
-        load_run = "May25_14-02-38_spotmicro_v6_2_4_prefall_tilt_recovery_30deg_continue"
-        checkpoint = 7100
+        load_run = "May25_16-21-04_spotmicro_v6_3_prefall_transition_tilt_sampler"
+        checkpoint = 7700

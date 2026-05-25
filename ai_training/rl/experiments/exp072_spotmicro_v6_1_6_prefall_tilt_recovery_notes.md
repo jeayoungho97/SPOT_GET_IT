@@ -299,3 +299,38 @@ Abort/revise if:
 - normal timeout falls below `90%`
 - action rate or torque saturation rises materially
 - transition `25-30 deg` stays below `55-60%`
+
+## Assessment After exp080
+
+exp080 shows that the transition tilt sampler is useful but too strong:
+
+- target transition band improved clearly:
+  - transition `25-30 deg`: exp077 `54.2%` over 48 trials, exp079 `48.7%` over 39 trials, exp080 `63.7%` over 201 trials
+  - transition `18+ overall`: exp077 `65.2%`, exp080 `71.7%`
+- reset recovery also improved:
+  - reset `25-30 deg`: exp077 `69.0%`, exp080 `80.0%`
+- normal/stability regressed too much:
+  - timeout `94.8% -> 76.3%`
+  - action rate `0.0066 -> 0.0081`
+  - torque saturation `4.4% -> 5.1%`
+  - mean power `3.24W -> 3.66W`
+
+The poor `30+ deg` transition result is expected because this project still targets pre-fall recovery up to about 30 deg, not get-up or post-body-contact recovery. Exp080's `30+ deg` transition band averaged about `45.7 deg`, which is outside the current target and was likely caused by transition tilt plus angular push accumulation.
+
+Applied next config/code:
+
+- run: `spotmicro_v6_3_1_prefall_transition_tilt_sampler_soft`
+- resume from exp080: `May25_16-21-04_spotmicro_v6_3_prefall_transition_tilt_sampler`, checkpoint `7700`
+- `max_iterations = 400`
+- soften transition tilt sampler:
+  - `transition_tilt_push_prob = 0.20`
+  - `transition_tilt_push_max_deg = 27.0`
+  - `transition_tilt_push_ang_vel_xy = 0.40`
+- keep `transition_tilt_push_min_deg = 18.0`
+- selected transition-tilt envs now overwrite roll/pitch angular velocity instead of adding on top of the normal push angular velocity
+
+Expected effect:
+
+- keep the improved `25-30 deg` transition exposure
+- reduce excessive `30+ deg` / `40+ deg` stress cases
+- recover normal timeout and action/torque margin

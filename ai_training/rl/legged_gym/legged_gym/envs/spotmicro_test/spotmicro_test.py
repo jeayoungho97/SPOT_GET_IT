@@ -592,8 +592,9 @@ class SpotmicroTest(LeggedRobot):
         ang_vel_xy = float(getattr(cfg, "transition_tilt_push_ang_vel_xy", 0.0))
         if ang_vel_xy > 0.0:
             ang = torch_rand_float(0.0, ang_vel_xy, (num, 1), device=self.device).squeeze(1)
-            self.root_states[env_ids, 10] += torch.sign(roll) * ang
-            self.root_states[env_ids, 11] += torch.sign(pitch) * ang
+            self.root_states[env_ids, 10:12] = 0.0
+            self.root_states[env_ids, 10] = torch.sign(roll) * ang
+            self.root_states[env_ids, 11] = torch.sign(pitch) * ang
 
         cmd_range = getattr(cfg, "transition_tilt_cmd_x_range", None)
         if cmd_range is not None:
