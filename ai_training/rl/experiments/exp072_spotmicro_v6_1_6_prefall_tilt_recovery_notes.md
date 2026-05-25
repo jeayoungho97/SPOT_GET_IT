@@ -112,3 +112,58 @@ Continue the 25 deg stage instead of reverting or moving to 30 deg:
 - `max_iterations = 500`
 
 Still do not expand DR, command range, action scale, reward relief, or push strength in this run.
+
+## Next Stage After exp075
+
+exp075 improved the continued 25 deg run enough to start 30 deg exposure:
+
+- reset `18-25 deg`: `86.8%`
+- transition `18-25 deg`: `63.4%`
+- transition `18+ overall`: `65.0%`
+- transition `25-30 deg`: `80.0%`, but only 5 trials
+- normal gait remained stable: timeout `98.8%`, early death `0.19%`, torque saturation `4.0%`
+
+Move to 30 deg reset exposure while keeping other settings fixed:
+
+- run: `spotmicro_v6_2_3_prefall_tilt_recovery_30deg`
+- resume: `May25_11-58-44_spotmicro_v6_2_2_prefall_tilt_recovery_25deg_continue`, checkpoint `6000`
+- `recovery_roll_pitch_range_deg = 30.0`
+- `max_iterations = 600`
+
+Next pass criteria:
+
+- normal gait: timeout `95%+`, early death `<2-3%`, torque saturation `<6-8%`
+- reset `25-30 deg`: `75%+`
+- transition `18+ overall`: `70%+`
+- transition `25-30 deg`: enough trials and `60%+`
+
+## Assessment After exp076
+
+exp076 exposed the policy to the full 30 deg reset range, but it is not ready to expand beyond 30 deg yet:
+
+- normal gait remained usable but regressed: timeout `92.3%`, early death `6.1%`, torque saturation `4.0%`
+- reset recovery:
+  - `18-25 deg`: `91.1%`
+  - `25-30 deg`: `67.1%`, horizon-end tilt `9.0 deg`
+- transition recovery:
+  - `18-25 deg`: `73.0%`
+  - `25-30 deg`: `52.5%` over 40 trials
+  - `30+ deg`: `25.0%` over 32 stress trials, with high early failure
+  - `18+ overall`: `60.8%`
+
+The report contains the right banded data, but the automatic PASS/FAIL criterion is too loose for the current 30 deg pre-fall objective because warnings do not fail the overall result and the `25-30 deg` transition band is not a hard target.
+
+Recommended next step:
+
+- do not train beyond 30 deg yet
+- keep `recovery_roll_pitch_range_deg = 30.0`
+- either continue from exp076 or make one small recovery-only adjustment, not a broad expansion
+- treat `30+ deg` as diagnostic stress only until `25-30 deg` transition recovery is reliable
+
+Suggested readiness criteria before real testing or 30+ expansion:
+
+- normal gait timeout `95%+` and early death `<3-5%`
+- reset `25-30 deg` recovery `75-80%+`
+- transition `25-30 deg` recovery `65-70%+`
+- transition `18+ overall` `70-75%+`
+- no rise in torque saturation/action rate

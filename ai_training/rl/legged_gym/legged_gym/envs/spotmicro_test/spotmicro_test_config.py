@@ -208,7 +208,7 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         push_ang_vel_z_clip = 0.35
         action_delay = True
         action_delay_range = [1, 2]
-        recovery_roll_pitch_range_deg = 25.0
+        recovery_roll_pitch_range_deg = 30.0
         recovery_lin_vel_xy_range = 0.14
         recovery_lin_vel_z_range = 0.04
         recovery_ang_vel_xy_range = 0.90
@@ -222,10 +222,10 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         learning_rate = 1e-4
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v6_2_2_prefall_tilt_recovery_25deg_continue'
+        run_name = 'spotmicro_v6_2_3_prefall_tilt_recovery_30deg'
         experiment_name = 'spotmicro_test'
-        max_iterations = 500
+        max_iterations = 600
         save_interval = 100
         resume = True
-        load_run = "May25_11-31-19_spotmicro_v6_2_1_prefall_tilt_recovery_25deg"
-        checkpoint = 5500
+        load_run = "May25_11-58-44_spotmicro_v6_2_2_prefall_tilt_recovery_25deg_continue"
+        checkpoint = 6000
