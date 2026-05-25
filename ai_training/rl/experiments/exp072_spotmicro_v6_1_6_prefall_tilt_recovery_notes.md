@@ -94,3 +94,21 @@ exp073 preserved normal gait and learned the `12-18 deg` band well, but `18+ deg
 - `max_iterations = 600`
 
 Do not expand DR, command range, yaw range, action scale, or relief settings in this stage. Those should wait until `18-25 deg` recovery is reliable and normal gait still passes.
+
+## Next Stage After exp074
+
+exp074 improved reset recovery in the `18-25 deg` band but transition/pre-fall recovery is not reliable enough for 30 deg:
+
+- reset `18-25 deg`: `84.1%`
+- transition `18-25 deg`: `56.3%`
+- transition `25-30 deg`: `40.0%`
+- normal gait still acceptable: timeout `97.0%`, early death `0.95%`, torque saturation `4.1%`
+
+Continue the 25 deg stage instead of reverting or moving to 30 deg:
+
+- run: `spotmicro_v6_2_2_prefall_tilt_recovery_25deg_continue`
+- resume: `May25_11-31-19_spotmicro_v6_2_1_prefall_tilt_recovery_25deg`, checkpoint `5500`
+- keep `recovery_roll_pitch_range_deg = 25.0`
+- `max_iterations = 500`
+
+Still do not expand DR, command range, action scale, reward relief, or push strength in this run.

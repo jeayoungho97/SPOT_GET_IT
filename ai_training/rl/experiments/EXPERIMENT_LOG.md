@@ -75,3 +75,4 @@
 | 071 | 05/23 | spotmicro_v6_1_5_slippery_rear_com_motor_dr | v6.1.5: 랜덤화 추가 및 마찰 감소 | 100.0% | 0.030 | 2.1% | ✅ |
 | 073 | 05/25 | spotmicro_v6_2_prefall_tilt_recovery | v6.2 : tilt 회복 | 99.4% | 0.024 | 3.6% | ❌ |
 | 074 | 05/25 | spotmicro_v6_2_1_prefall_tilt_recovery_25deg | v6.2.1 : tilt 회복 각도 확장 | 97.0% | 0.022 | 4.1% | ❌ |
+| 075 | 05/25 | spotmicro_v6_2_2_prefall_tilt_recovery_25deg_continue | v6.2.2 : 6.2.1 추가학습 | 98.8% | 0.020 | 4.0% | ✅ |
