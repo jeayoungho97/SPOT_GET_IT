@@ -80,3 +80,4 @@
 | 077 | 05/25 | spotmicro_v6_2_4_prefall_tilt_recovery_30deg_continue | v6.2.4 : recovery 각도 확장 추가 학습 | 94.8% | 0.023 | 4.4% | ❌ |
 | 078 | 05/25 | spotmicro_v6_2_5_prefall_tilt_recovery_30deg_authority | v6.2.5 : 25~30 recovery 강화 | 94.1% | 0.022 | 4.2% | ❌ |
 | 079 | 05/25 | spotmicro_v6_2_6_prefall_tilt_recovery_30deg_rollback | v6.2.6 : 설정 롤백 후 추가학습 | 90.8% | 0.021 | 4.4% | ❌ |
+| 080 | 05/25 | spotmicro_v6_3_prefall_transition_tilt_sampler | v6.3 : transition tilt sampler 추가 | 76.3% | 0.024 | 5.1% | ❌ |

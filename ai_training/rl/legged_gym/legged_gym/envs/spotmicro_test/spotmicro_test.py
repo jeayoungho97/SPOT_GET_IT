@@ -536,6 +536,8 @@ class SpotmicroTest(LeggedRobot):
                 max=ang_z_clip,
             )
 
+        transition_tilt_count = self._apply_transition_tilt_push()
+
         self.last_transition_push_step = int(self.common_step_counter)
         self.last_transition_push_lin = float(max_lin)
         self.last_transition_push_ang_xy = float(max_ang_xy)
@@ -548,7 +550,64 @@ class SpotmicroTest(LeggedRobot):
         if self._push_count <= 3:
             print(
                 f"[DR] Push #{self._push_count} at step {self.common_step_counter}, "
-                f"lin={max_lin}, ang_xy={max_ang_xy}, ang_z={max_ang_z}")
+                f"lin={max_lin}, ang_xy={max_ang_xy}, ang_z={max_ang_z}, "
+                f"transition_tilt_envs={transition_tilt_count}")
+
+    def _apply_transition_tilt_push(self):
+        """일부 주행 환경을 pre-fall tilt 상태로 직접 보내 transition recovery 샘플을 만든다."""
+        cfg = self.cfg.domain_rand
+        if not getattr(cfg, "transition_tilt_push", False):
+            return 0
+
+        prob = float(getattr(cfg, "transition_tilt_push_prob", 0.0))
+        if prob <= 0.0:
+            return 0
+
+        mask = torch.rand(self.num_envs, device=self.device) < prob
+        env_ids = torch.nonzero(mask, as_tuple=False).flatten()
+        num = len(env_ids)
+        if num == 0:
+            return 0
+
+        min_deg = float(getattr(cfg, "transition_tilt_push_min_deg", 18.0))
+        max_deg = float(getattr(cfg, "transition_tilt_push_max_deg", 28.0))
+        min_rad = math.radians(min_deg)
+        max_rad = math.radians(max_deg)
+
+        tilt = torch_rand_float(min_rad, max_rad, (num, 1), device=self.device).squeeze(1)
+        sign = torch.where(
+            torch.rand(num, device=self.device) < 0.5,
+            -torch.ones(num, device=self.device),
+            torch.ones(num, device=self.device),
+        )
+        use_roll = torch.rand(num, device=self.device) < 0.5
+        roll = torch.zeros(num, device=self.device)
+        pitch = torch.zeros(num, device=self.device)
+        roll[use_roll] = tilt[use_roll] * sign[use_roll]
+        pitch[~use_roll] = tilt[~use_roll] * sign[~use_roll]
+        yaw = torch.zeros(num, device=self.device)
+
+        self.root_states[env_ids, 3:7] = quat_from_euler_xyz(roll, pitch, yaw)
+
+        ang_vel_xy = float(getattr(cfg, "transition_tilt_push_ang_vel_xy", 0.0))
+        if ang_vel_xy > 0.0:
+            ang = torch_rand_float(0.0, ang_vel_xy, (num, 1), device=self.device).squeeze(1)
+            self.root_states[env_ids, 10] += torch.sign(roll) * ang
+            self.root_states[env_ids, 11] += torch.sign(pitch) * ang
+
+        cmd_range = getattr(cfg, "transition_tilt_cmd_x_range", None)
+        if cmd_range is not None:
+            self.commands[env_ids, 0] = torch_rand_float(
+                float(cmd_range[0]),
+                float(cmd_range[1]),
+                (num, 1),
+                device=self.device,
+            ).squeeze(1)
+            self.commands[env_ids, 1] = 0.0
+            if getattr(cfg, "transition_tilt_zero_yaw_cmd", True):
+                self.commands[env_ids, 2] = 0.0
+
+        return int(num)
 
     def _process_rigid_shape_props(self, props, env_id):
         props = super()._process_rigid_shape_props(props, env_id)

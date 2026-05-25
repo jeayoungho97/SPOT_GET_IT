@@ -251,3 +251,51 @@ python legged_gym/legged_gym/scripts/play_prefall_visual.py --task=spotmicro_tes
 ```
 
 This runs a single robot, walks at slow `vx`, injects a 28 deg pre-fall tilt, and prints the recovery blend and effective command scaling. Use this to visually confirm whether recovery mode looks like bracing/settling or just continuing gait. Add `--record-frames` to save viewer frames under `logs/spotmicro_test/exported/prefall_visual_frames`.
+
+## Assessment After exp079
+
+exp079 confirms that simply continuing the exp077 rollback settings is not enough:
+
+- normal gait worsened relative to exp077:
+  - timeout `94.8% -> 90.8%`
+  - early death `3.3% -> 6.7%`
+  - action rate `0.0066 -> 0.0074`
+- reset recovery also worsened:
+  - reset `25-30 deg`: `69.0% -> 68.0%`
+  - reset `18+ overall`: `80.3% -> 77.4%`
+- transition recovery worsened:
+  - transition `18-25 deg`: `78.2% -> 73.2%`
+  - transition `25-30 deg`: `54.2% -> 48.7%`
+  - transition `18+ overall`: `65.2% -> 58.5%`
+
+Decision: stop doing same-setting continuation. The limiting problem is that walking-transition `25-30 deg` samples are too sparse/indirect, while static reset tilt is already learnable. Add targeted transition pre-fall sampling during push events instead of increasing residual authority or continuing indefinitely.
+
+Applied next config/code:
+
+- run: `spotmicro_v6_2_7_prefall_transition_tilt_sampler`
+- resume from exp077: `May25_14-02-38_spotmicro_v6_2_4_prefall_tilt_recovery_30deg_continue`, checkpoint `7100`
+- keep v6.2.4 recovery mode:
+  - `recovery_action_scale = 0.35`
+  - `recovery_gait_relief_scale = 0.65`
+  - `recovery_ik_relief_scale = 0.65`
+  - `command_scale = 0.15`
+  - `phase_scale = 0.1`
+- add transition tilt push sampler:
+  - enabled during normal push events
+  - `35%` of envs get direct pre-fall roll or pitch tilt
+  - tilt range `18-28 deg`
+  - extra roll/pitch angular velocity up to `0.60 rad/s`
+  - selected env command is constrained to `vx=0.05-0.10`, yaw `0`
+- `max_iterations = 600`
+
+Expected effect:
+
+- more direct learning signal for walking `25-30 deg` recovery
+- visible pre-fall bracing/settling should become more likely because the policy sees that state during locomotion rather than only from reset
+- do not expand beyond 30 deg yet
+
+Abort/revise if:
+
+- normal timeout falls below `90%`
+- action rate or torque saturation rises materially
+- transition `25-30 deg` stays below `55-60%`
