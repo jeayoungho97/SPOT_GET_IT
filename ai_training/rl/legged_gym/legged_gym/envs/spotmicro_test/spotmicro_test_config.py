@@ -250,10 +250,10 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         learning_rate = 1e-4
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v7_0_slope_terrain_curriculum'
+        run_name = 'spotmicro_v7_0_1_slope_terrain_continue'
         experiment_name = 'spotmicro_test'
-        max_iterations = 800
+        max_iterations = 500
         save_interval = 100
         resume = True
-        load_run = "May25_16-41-52_spotmicro_v6_3_1_prefall_transition_tilt_sampler_soft"
-        checkpoint = 8100
+        load_run = "May26_12-31-57_spotmicro_v7_0_slope_terrain_curriculum"
+        checkpoint = 8900

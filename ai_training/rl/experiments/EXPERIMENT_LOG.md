@@ -87,3 +87,4 @@
 | 084 | 05/25 | spotmicro_v6_4_prefall_brace_mode | v6.4 : brace mode | 82.1% | 0.021 | 4.4% | ❌ |
 | 085 | 05/26 | spotmicro_v7_0_slope_terrain_curriculum | v7.0: 지형 학습 시작 | 61.6% | 0.028 | 5.4% | ❌ |
 | 086 | 05/26 | spotmicro_v7_0_slope_terrain_curriculum | v7.0: 지형 학습 시작 | 58.6% | 0.028 | 14.2% | ❌ |
+| 087 | 05/26 | spotmicro_v7_0_1_slope_terrain_continue | v7.0.1: 지형 학습 추가 학습 | 56.8% | 0.029 | 15.2% | ❌ |
