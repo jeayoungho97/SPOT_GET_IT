@@ -59,6 +59,7 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         num_cols = 12
         terrain_length = 6.0
         terrain_width = 6.0
+        curriculum_use_full_range = True
         curriculum_move_up_distance = 1.10
         curriculum_move_down_command_scale = 0.25
         terrain_proportions = [0.50, 0.25, 0.25]
@@ -133,10 +134,10 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             lin_vel_z = -2.0
             ang_vel_xy = -1.0
             orientation = -10.0
-            torques = -0.0015
+            torques = -0.001
             dof_vel = -0.0005
             dof_acc = -2.5e-7
-            action_rate = -0.06
+            action_rate = -0.05
             base_height = -2.0
             feet_air_time = 0.04
             dof_pos_limits = 0.0
@@ -250,10 +251,10 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         learning_rate = 1e-4
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v7_1_1_slope_terrain_walk_refine'
+        run_name = 'spotmicro_v7_1_2_slope_terrain_walk_margin'
         experiment_name = 'spotmicro_test'
         max_iterations = 500
         save_interval = 100
         resume = True
-        load_run = "May26_13-42-58_spotmicro_v7_1_slope_terrain_gentle_restart"
-        checkpoint = 8900
+        load_run = "May26_14-34-40_spotmicro_v7_1_1_slope_terrain_walk_refine"
+        checkpoint = 9400
