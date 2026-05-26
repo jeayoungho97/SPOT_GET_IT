@@ -859,6 +859,9 @@ class SpotmicroTest(LeggedRobot):
             self._get_effective_commands(), dim=1) > self.blend_cmd_norm).float()
         return reward
 
+    def _reward_survival(self):
+        return (~self.reset_buf.bool()).float()
+
     def _reward_feet_clearance(self):
         contact = self.contact_forces[:, self.feet_indices, 2] > 1.
         contact_filt = torch.logical_or(contact, self.last_contacts)

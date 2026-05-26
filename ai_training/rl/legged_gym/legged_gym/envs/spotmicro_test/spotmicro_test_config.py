@@ -128,9 +128,10 @@ class SpotmicroTestCfg(LeggedRobotCfg):
 
     class rewards(LeggedRobotCfg.rewards):
         class scales:
-            tracking_lin_vel = 1.0
+            tracking_lin_vel = 0.9
             tracking_ang_vel = 0.6
-            termination = -20.0
+            termination = -60.0
+            survival = 0.15
             lin_vel_z = -2.0
             ang_vel_xy = -1.0
             orientation = -10.0
@@ -147,7 +148,7 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             symmetric_gait = 0.0
             feet_clearance = 0.03
             swing_contact = -0.45
-            trot_contact = 0.35
+            trot_contact = 0.30
             tracking_ik = 0.6
             stand_still = -0.4
             tilt_recovery = 4.0
@@ -251,10 +252,10 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         learning_rate = 1e-4
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v7_1_2_slope_terrain_walk_margin'
+        run_name = 'spotmicro_v7_1_3_slope_terrain_survival_margin'
         experiment_name = 'spotmicro_test'
         max_iterations = 500
         save_interval = 100
         resume = True
-        load_run = "May26_14-34-40_spotmicro_v7_1_1_slope_terrain_walk_refine"
-        checkpoint = 9400
+        load_run = "May26_13-42-58_spotmicro_v7_1_slope_terrain_gentle_restart"
+        checkpoint = 8900
