@@ -1,5 +1,6 @@
 #include "dashboardwidgets.h"
 
+#include <QApplication>
 #include <QGridLayout>
 #include <QCoreApplication>
 #include <QDateTime>
@@ -8,6 +9,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHBoxLayout>
+#include <QLineF>
 #include <QMatrix4x4>
 #include <QMouseEvent>
 #include <QOpenGLBuffer>
@@ -16,6 +18,7 @@
 #include <QOpenGLWidget>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPolygonF>
 #include <QPixmap>
 #include <QProgressBar>
 #include <QRandomGenerator>
@@ -34,6 +37,8 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <ctime>
+#include <functional>
 #include <limits>
 #include <tuple>
 #include <vector>
@@ -49,7 +54,7 @@ static int displayBatteryPercent(int robotId, float snapshotBattery)
         return 90;
     }
     if (robotId == 1) {
-        return 77;
+        return 70;
     }
     if (robotId == 2) {
         return 89;
@@ -57,28 +62,45 @@ static int displayBatteryPercent(int robotId, float snapshotBattery)
     if (robotId == 3) {
         return 91;
     }
+    if (robotId == 4) {
+        return 77;
+    }
     return qBound(0, qRound(snapshotBattery), 100);
 }
 
 static QString robotMapLabel(int index)
 {
-    return QString("A%1").arg(index + 1, 2, 10, QLatin1Char('0'));
+    return QString("S%1").arg(index + 1, 2, 10, QLatin1Char('0'));
 }
 
 static bool isMapRobotId(int id)
 {
-    return id >= 0 && id < 4;
+    return id >= 0 && id < kMaxRobots;
 }
 
 static int markerStartRobotId(int robotId)
 {
-    if (robotId == 0) {
-        return 1;
-    }
-    if (robotId == 1) {
+    if (robotId == 4) {
         return 0;
     }
     return robotId;
+}
+
+static float startThetaForRobot(const MapConfig &config, int robotId)
+{
+    if (robotId == 4) {
+        return 0.0f;
+    }
+
+    const QVector<MapPoint> starts = config.starts();
+    if (starts.isEmpty()) {
+        return 0.0f;
+    }
+    const int startId = markerStartRobotId(robotId);
+    if (startId >= 0 && startId < starts.size()) {
+        return starts[startId].theta;
+    }
+    return starts.first().theta;
 }
 
 static bool isForcedFaultRobot(int id)
@@ -87,15 +109,58 @@ static bool isForcedFaultRobot(int id)
     return false;
 }
 
+static quint64 monotonicNowUs()
+{
+    timespec ts {};
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+    return static_cast<quint64>(ts.tv_sec) * 1000000ULL
+        + static_cast<quint64>(ts.tv_nsec / 1000ULL);
+}
+
+static bool robotRecentlyActive(const RobotSnapshot &snapshot)
+{
+    constexpr quint64 kRobotActiveWindowUs = 5000000ULL;
+    if (!snapshot.shmOpen || !snapshot.connected || snapshot.lastRxUs == 0) {
+        return false;
+    }
+    const quint64 nowUs = monotonicNowUs();
+    return nowUs >= snapshot.lastRxUs && nowUs - snapshot.lastRxUs <= kRobotActiveWindowUs;
+}
+
+static bool robotPoseAvailable(const RobotSnapshot &snapshot)
+{
+    return snapshot.shmOpen && (snapshot.odomTimestampUs != 0 || snapshot.odomSeq != 0);
+}
+
+static bool robotEverConnected(const RobotSnapshot &snapshot)
+{
+    return snapshot.lastRxUs != 0 || snapshot.rxPackets > 0 || snapshot.odomSeq != 0;
+}
+
+static bool robotConnectionLost(const RobotSnapshot &snapshot)
+{
+    return snapshot.shmOpen && !snapshot.connected && robotEverConnected(snapshot);
+}
+
+static bool globalPathRenderable(const RobotSnapshot &snapshot)
+{
+    return snapshot.shmOpen && snapshot.connected
+        && snapshot.faultLevel < 3 && snapshot.globalPath.size() >= 2;
+}
+
 static bool hasHardcodedNormalParts(int id)
 {
-    return id == 1 || id == 2 || id == 3;
+    return id == 0 || id == 1 || id == 2 || id == 3;
 }
 
 static bool hasHardcodedNormalPart(int id, int partIndex)
 {
-    return (id == 0 && (partIndex == 1 || partIndex == 2))
-        || (hasHardcodedNormalParts(id) && partIndex >= 0 && partIndex <= 2);
+    if (id == 4 && partIndex == 2) {
+        return true;
+    }
+    return hasHardcodedNormalParts(id) && partIndex >= 0 && partIndex <= 2;
 }
 
 static bool partStreamInactive(const RobotSnapshot &snapshot, int partIndex)
@@ -135,15 +200,25 @@ static int displayedOfflinePartCount(const RobotSnapshot &snapshot, int robotId)
 static constexpr float kElevatedMapHeight = 0.20f;
 static constexpr float kRobotMarkerRadiusMeters = 0.23f;
 static constexpr float kSelectedRobotMarkerRadiusMeters = 0.32f;
-static constexpr float kPathDeviationWarnMeters = 0.75f;
-static constexpr float kHeadingErrorWarnRad = 0.80f;
+static constexpr float kRobotMarker2DRadiusMeters = 0.35f;
+static constexpr float kSelectedRobotMarker2DRadiusMeters = 0.47f;
+static constexpr float kPathDeviationWarnMeters = 2.00f;
+static constexpr float kHeadingErrorWarnRad = 1.75f;
 static constexpr float kLidarRenderZOffsetMeters = 0.18f;
 static constexpr float kLidarMountForwardMeters = kSelectedRobotMarkerRadiusMeters;
 static constexpr float kHeightColorRampMeters = 0.5f;
+static constexpr float kMapHeightColorRampMeters = 1.40f;
 static constexpr float kMapColorZMin = 0.0f;
-static constexpr float kMapColorZMax = kMapColorZMin + kHeightColorRampMeters;
+static constexpr float kMapColorZMax = kMapColorZMin + kMapHeightColorRampMeters;
 static constexpr qint64 kFakeSpeedHoldMs = 1000;
 static constexpr qint64 kLidarFrameStaleMs = 1000;
+static constexpr qint64 kRobotMarkerPulseMs = 1300;
+static constexpr qint64 kRobotMarkerPulseEchoDelayMs = 220;
+static constexpr qint64 kRobotMarkerHighlightTailMs = 180;
+static constexpr qint64 kRobotWarningBlinkMs = 4200;
+static constexpr qint64 kRobotWarningBlinkIntervalMs = 550;
+static constexpr qint64 kRobotMoveCommandVisibleMs = 1000;
+static constexpr qint64 kRobotMoveCommandFadeMs = 420;
 static constexpr float kLidarVoxelMeters = 0.20f;
 static constexpr float kLidar2DVoxelMeters = 0.10f;
 
@@ -167,11 +242,11 @@ static LidarRobotPoint lidarToRobotFrame(const LidarPoint &p)
 static QColor robotPathColor(int id)
 {
     static const QColor colors[] = {
-        QColor(90, 240, 125),
+        QColor(255, 105, 105),
         QColor(70, 190, 255),
         QColor(255, 195, 70),
         QColor(235, 105, 255),
-        QColor(255, 105, 105),
+        QColor(90, 240, 125),
     };
     return colors[qBound(0, id, 1024) % (sizeof(colors) / sizeof(colors[0]))];
 }
@@ -188,6 +263,17 @@ static bool missionComplete(const RobotSnapshot &snapshot)
     return snapshot.goalReached || qRound(missionProgressPercent(snapshot)) >= 100;
 }
 
+static bool robotMissionStarted(const RobotSnapshot &snapshot)
+{
+    if (!robotPoseAvailable(snapshot)) {
+        return false;
+    }
+    const float linearSpeed = std::hypot(snapshot.vx, snapshot.vy);
+    return snapshot.commandMoving
+        || linearSpeed > 0.02f
+        || std::fabs(snapshot.omega) > 0.02f;
+}
+
 static bool hasPathProgressData(const RobotSnapshot &snapshot)
 {
     return snapshot.pathOk || snapshot.poseOk || snapshot.goalReached
@@ -200,11 +286,31 @@ static bool pathTrackingAlert(const RobotSnapshot &snapshot)
     if (!snapshot.shmOpen || !snapshot.connected || !hasPathProgressData(snapshot)) {
         return false;
     }
-    if (!snapshot.pathOk || !snapshot.poseOk) {
-        return true;
-    }
     return snapshot.distanceToNearestM > kPathDeviationWarnMeters
         || std::fabs(snapshot.headingError) > kHeadingErrorWarnRad;
+}
+
+static QString robotOperationText(const RobotSnapshot &snapshot)
+{
+    if (!snapshot.shmOpen) {
+        return QStringLiteral("미연결");
+    }
+    if (robotConnectionLost(snapshot)) {
+        return QStringLiteral("연결 끊김");
+    }
+    if (!snapshot.connected) {
+        return QStringLiteral("연결 안됨");
+    }
+    if (missionComplete(snapshot)) {
+        return QStringLiteral("도착");
+    }
+    if (robotMissionStarted(snapshot)) {
+        if (pathTrackingAlert(snapshot)) {
+            return QStringLiteral("경로 점검");
+        }
+        return QStringLiteral("탐색 중");
+    }
+    return QStringLiteral("대기");
 }
 
 static QString targetPositionText(const RobotSnapshot &snapshot)
@@ -511,6 +617,7 @@ VideoTile::VideoTile(int robotId, QWidget *parent)
 {
     setObjectName("videoTile");
     setCursor(Qt::PointingHandCursor);
+    setMouseTracking(true);
     setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     QVBoxLayout *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -519,8 +626,9 @@ VideoTile::VideoTile(int robotId, QWidget *parent)
     m_image = new QLabel("NO SIGNAL");
     m_image->setAlignment(Qt::AlignCenter);
     m_image->setObjectName("videoImage");
-    m_image->setMinimumSize(220, 145);
+    m_image->setMinimumSize(110, 72);
     m_image->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    m_image->setAttribute(Qt::WA_TransparentForMouseEvents);
 
     m_title = new QLabel(robotName(robotId));
     m_title->setObjectName("videoTitle");
@@ -543,7 +651,7 @@ QSize VideoTile::sizeHint() const
 
 QSize VideoTile::minimumSizeHint() const
 {
-    return QSize(220, 145);
+    return QSize(110, 72);
 }
 
 void VideoTile::setRobotId(int robotId)
@@ -555,26 +663,126 @@ void VideoTile::setRobotId(int robotId)
 
 void VideoTile::setSnapshot(const RobotSnapshot &snapshot)
 {
+    constexpr qint64 kInitialVideoWaitMs = 4000;
+
     m_title->setText(robotName(m_robotId));
-    m_badge->setText(snapshot.connected ? "LIVE" : (snapshot.shmOpen ? "WAIT" : "OFFLINE"));
+    const bool hasFrame = !snapshot.image.isNull();
+    if (hasFrame || !m_noFrameTimer.isValid()) {
+        m_noFrameTimer.restart();
+    }
+
+    const bool waiting = !hasFrame && m_noFrameTimer.elapsed() < kInitialVideoWaitMs;
+    const bool noSignal = !hasFrame && !waiting;
+    m_badge->setText(hasFrame ? "LIVE" : (waiting ? "WAIT" : "NO SIGNAL"));
+    m_badge->setProperty("state", noSignal ? "nosignal" : (waiting ? "wait" : QString()));
+    m_badge->style()->unpolish(m_badge);
+    m_badge->style()->polish(m_badge);
     m_badge->adjustSize();
 
-    if (!snapshot.image.isNull()) {
+    if (hasFrame) {
         m_image->setPixmap(QPixmap::fromImage(snapshot.image).scaled(m_image->size(),
                                                                       Qt::KeepAspectRatioByExpanding,
                                                                       Qt::SmoothTransformation));
         m_image->setText(QString());
     } else {
         m_image->setPixmap(QPixmap());
-        m_image->setText(snapshot.shmOpen ? "VIDEO WAITING" : "SHM NOT OPEN");
+        m_image->setText(waiting ? "VIDEO WAITING" : "NO SIGNAL");
     }
+}
+
+int VideoTile::resizeEdgeAt(const QPoint &pos) const
+{
+    constexpr int edgeMargin = 14;
+    int edgeMask = NoEdge;
+    if (pos.x() <= edgeMargin) {
+        edgeMask |= LeftEdge;
+    }
+    if (pos.x() >= width() - edgeMargin) {
+        edgeMask |= RightEdge;
+    }
+    if (pos.y() <= edgeMargin) {
+        edgeMask |= TopEdge;
+    }
+    if (pos.y() >= height() - edgeMargin) {
+        edgeMask |= BottomEdge;
+    }
+    return edgeMask;
+}
+
+void VideoTile::mouseDoubleClickEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton) {
+        const int edgeMask = resizeEdgeAt(event->pos());
+        if (edgeMask != NoEdge) {
+            emit shrinkRequested(m_robotId, edgeMask);
+            event->accept();
+            return;
+        }
+    }
+    QFrame::mouseDoubleClickEvent(event);
+}
+
+void VideoTile::mouseMoveEvent(QMouseEvent *event)
+{
+    if (event->buttons() & Qt::LeftButton) {
+        if ((event->pos() - m_pressPos).manhattanLength() >= QApplication::startDragDistance()) {
+            m_dragging = true;
+            setCursor(m_pressEdgeMask == NoEdge ? Qt::ClosedHandCursor : Qt::SizeAllCursor);
+        }
+        if (m_dragging) {
+            const QPoint globalPos = event->globalPosition().toPoint();
+            if (!m_hasLastDragPreview
+                || (globalPos - m_lastDragPreviewGlobalPos).manhattanLength() >= 1) {
+                if (m_pressEdgeMask != NoEdge) {
+                    emit resizeRequested(m_robotId, m_pressEdgeMask, globalPos);
+                } else {
+                    emit moveRequested(m_robotId, globalPos);
+                }
+                m_lastDragPreviewGlobalPos = globalPos;
+                m_hasLastDragPreview = true;
+            }
+        }
+    } else {
+        const int edgeMask = resizeEdgeAt(event->pos());
+        if ((edgeMask & (LeftEdge | RightEdge)) && (edgeMask & (TopEdge | BottomEdge))) {
+            setCursor(Qt::SizeFDiagCursor);
+        } else if (edgeMask & (LeftEdge | RightEdge)) {
+            setCursor(Qt::SizeHorCursor);
+        } else if (edgeMask & (TopEdge | BottomEdge)) {
+            setCursor(Qt::SizeVerCursor);
+        } else {
+            setCursor(Qt::PointingHandCursor);
+        }
+    }
+    QFrame::mouseMoveEvent(event);
+}
+
+void VideoTile::mousePressEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton) {
+        m_pressPos = event->pos();
+        m_pressEdgeMask = resizeEdgeAt(event->pos());
+        m_dragging = false;
+        m_hasLastDragPreview = false;
+    }
+    QFrame::mousePressEvent(event);
 }
 
 void VideoTile::mouseReleaseEvent(QMouseEvent *event)
 {
-    if (event->button() == Qt::LeftButton && rect().contains(event->pos())) {
-        emit clicked(m_robotId);
+    if (event->button() == Qt::LeftButton) {
+        if (m_dragging && m_pressEdgeMask != NoEdge) {
+            emit resizeRequested(m_robotId, m_pressEdgeMask, event->globalPosition().toPoint());
+        } else if (m_dragging) {
+            emit moveRequested(m_robotId, event->globalPosition().toPoint());
+        } else if (rect().contains(event->pos())) {
+            emit clicked(m_robotId);
+        }
     }
+    m_dragging = false;
+    m_pressEdgeMask = NoEdge;
+    m_hasLastDragPreview = false;
+    setCursor(Qt::PointingHandCursor);
     QFrame::mouseReleaseEvent(event);
 }
 
@@ -617,57 +825,56 @@ static QString statusRowMissionText(const RobotSnapshot &snapshot, bool forcedFa
     if (!snapshot.shmOpen) {
         return QStringLiteral("미연결");
     }
+    if (robotConnectionLost(snapshot)) {
+        return QStringLiteral("연결 끊김");
+    }
     if (!snapshot.connected) {
-        return QStringLiteral("대기 중");
+        return QStringLiteral("연결 안됨");
     }
-    if (missionComplete(snapshot)) {
-        return QStringLiteral("임무 완료");
-    }
-    if (pathTrackingAlert(snapshot)) {
-        return QStringLiteral("경로 점검");
-    }
-    switch (snapshot.mode) {
-    case 1:
-        return QStringLiteral("이동 중");
-    case 2:
-        return QStringLiteral("조사 중");
-    case 3:
-        return QStringLiteral("복귀 중");
-    default:
-        return QStringLiteral("탐색 중");
-    }
+    return robotOperationText(snapshot);
 }
 
 StatusRow::StatusRow(int robotId, QWidget *parent)
     : QFrame(parent), m_robotId(robotId)
 {
     setObjectName("statusRow");
-    setMinimumHeight(44);
+    setMinimumHeight(30);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     QGridLayout *layout = new QGridLayout(this);
-    layout->setContentsMargins(12, 6, 12, 6);
-    layout->setHorizontalSpacing(12);
+    layout->setContentsMargins(10, 3, 10, 3);
+    layout->setHorizontalSpacing(8);
     layout->setVerticalSpacing(0);
+    layout->setColumnMinimumWidth(0, 82);
+    layout->setColumnMinimumWidth(1, 206);
+    layout->setColumnMinimumWidth(2, 106);
+    layout->setColumnMinimumWidth(3, 48);
     layout->setColumnStretch(0, 5);
     layout->setColumnStretch(1, 9);
-    layout->setColumnStretch(2, 4);
-    layout->setColumnStretch(3, 2);
+    layout->setColumnStretch(2, 5);
+    layout->setColumnStretch(3, 4);
 
     m_name = new QLabel(robotName(robotId));
     m_name->setObjectName("statusRobotName");
+    m_name->setMinimumWidth(82);
+    m_name->setAlignment(Qt::AlignCenter);
+    m_name->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
 
     QWidget *batteryCell = new QWidget;
     batteryCell->setObjectName("statusBatteryCell");
+    batteryCell->setFixedWidth(206);
+    batteryCell->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
     QHBoxLayout *batteryLayout = new QHBoxLayout(batteryCell);
     batteryLayout->setContentsMargins(0, 0, 0, 0);
-    batteryLayout->setSpacing(3);
+    batteryLayout->setSpacing(8);
     m_batteryText = new QLabel("--");
     m_batteryText->setObjectName("statusBatteryText");
-    m_batteryText->setFixedWidth(32);
+    m_batteryText->setFixedWidth(28);
+    m_batteryText->setAlignment(Qt::AlignCenter);
     m_batteryBar = new QProgressBar;
     m_batteryBar->setObjectName("statusBatteryBar");
     m_batteryBar->setRange(0, 100);
     m_batteryBar->setTextVisible(false);
-    m_batteryBar->setMinimumWidth(104);
+    m_batteryBar->setFixedWidth(170);
     m_batteryBar->setMaximumHeight(10);
     batteryLayout->addWidget(m_batteryText);
     batteryLayout->addWidget(m_batteryBar, 1);
@@ -675,14 +882,14 @@ StatusRow::StatusRow(int robotId, QWidget *parent)
     m_mission = new QLabel("대기 중");
     m_mission->setObjectName("statusMissionChip");
     m_mission->setAlignment(Qt::AlignCenter);
-    m_mission->setMinimumWidth(70);
-    m_mission->setFixedHeight(26);
+    m_mission->setFixedSize(86, 22);
+    m_mission->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
 
     m_signal = new SignalBarsWidget;
 
-    layout->addWidget(m_name, 0, 0);
-    layout->addWidget(batteryCell, 0, 1);
-    layout->addWidget(m_mission, 0, 2);
+    layout->addWidget(m_name, 0, 0, Qt::AlignCenter);
+    layout->addWidget(batteryCell, 0, 1, Qt::AlignCenter);
+    layout->addWidget(m_mission, 0, 2, Qt::AlignRight | Qt::AlignVCenter);
     layout->addWidget(m_signal, 0, 3, Qt::AlignRight | Qt::AlignVCenter);
 }
 
@@ -691,16 +898,23 @@ void StatusRow::setSnapshot(const RobotSnapshot &snapshot)
     const bool forcedFault = isForcedFaultRobot(m_robotId);
     const int offlinePartCount = displayedOfflinePartCount(snapshot, m_robotId);
     const bool offline = !snapshot.shmOpen || !snapshot.connected || offlinePartCount >= 3;
+    if (snapshot.shmOpen && (snapshot.connected || robotEverConnected(snapshot))) {
+        m_everConnected = true;
+    }
+    const bool connectionLost = snapshot.shmOpen && !snapshot.connected && m_everConnected;
     const int battery = displayBatteryPercent(m_robotId, snapshot.battery);
-    const bool pathAlert = !offline && pathTrackingAlert(snapshot);
+    const bool started = !offline && robotMissionStarted(snapshot);
+    const bool complete = !offline && missionComplete(snapshot);
+    const bool pathAlert = started && !complete && pathTrackingAlert(snapshot);
     const bool danger = !offline
         && (offlinePartCount >= 2 || forcedFault || snapshot.faultLevel >= 3 || battery < 20);
     const bool warning = !offline && !danger && (offlinePartCount == 1 || pathAlert);
-    const bool moving = !offline && !danger && !warning && snapshot.mode > 0;
-    const QString stateName = offline ? QStringLiteral("offline")
+    const bool moving = started && !complete && !danger && !warning;
+    const QString stateName = connectionLost ? QStringLiteral("danger")
+                                      : (offline ? QStringLiteral("offline")
                                       : (danger ? QStringLiteral("danger")
                                                 : (warning ? QStringLiteral("warning")
-                                                             : (moving ? QStringLiteral("moving") : QStringLiteral("normal"))));
+                                                             : (moving ? QStringLiteral("moving") : QStringLiteral("normal")))));
     int signalLevel = 0;
     if (!offline) {
         signalLevel = 4;
@@ -728,10 +942,11 @@ void StatusRow::setSnapshot(const RobotSnapshot &snapshot)
     m_batteryBar->style()->unpolish(m_batteryBar);
     m_batteryBar->style()->polish(m_batteryBar);
 
-    const QString missionStateText = offlinePartCount >= 3 ? QStringLiteral("연결 안됨")
+    const QString missionStateText = connectionLost ? QStringLiteral("연결 끊김")
+        : (offlinePartCount >= 3 ? QStringLiteral("연결 안됨")
         : (danger ? QStringLiteral("위험")
                   : (offlinePartCount == 1 ? QStringLiteral("경고")
-                                            : statusRowMissionText(snapshot, forcedFault)));
+                                            : statusRowMissionText(snapshot, forcedFault))));
     m_mission->setText(missionStateText);
     m_mission->setProperty("state", stateName);
     m_mission->style()->unpolish(m_mission);
@@ -1786,14 +2001,14 @@ RobotStatusCard::RobotStatusCard(int robotId, QWidget *parent)
         if (!m_snapshot.shmOpen || !m_snapshot.connected) {
             m_fakeTelemetryValid = false;
             m_fakeSpeedMps = 0.0f;
-            updateFakeTelemetryLabels(QStringLiteral("#747f89"));
+            updateFakeTelemetryLabels(m_telemetryTextColor);
             return;
         }
         randomizeFakeTelemetry();
         if (!m_lastPoseChangeTimer.isValid() || m_lastPoseChangeTimer.elapsed() > kFakeSpeedHoldMs) {
             m_fakeSpeedMps = 0.0f;
         }
-        updateFakeTelemetryLabels(QStringLiteral("#dce7f3"));
+        updateFakeTelemetryLabels(m_telemetryTextColor);
     });
     fakeTelemetryTimer->start(500);
 
@@ -1802,14 +2017,17 @@ RobotStatusCard::RobotStatusCard(int robotId, QWidget *parent)
     initial.shmOpen = true;
     initial.connected = true;
     initial.mode = robotId == 1 ? 1 : 0;
-    initial.battery = robotId == 3 ? 91.0f : (robotId == 2 ? 89.0f : (robotId == 1 ? 77.0f : 86.0f));
+    initial.battery = robotId == 4 ? 77.0f
+        : (robotId == 3 ? 91.0f
+        : (robotId == 2 ? 89.0f
+        : (robotId == 1 ? 70.0f : 86.0f)));
     initial.x = robotId == 0 ? 12.45f : (robotId == 1 ? 25.87f : (robotId == 2 ? -8.32f : 3.14f));
     initial.y = robotId == 0 ? -3.21f : (robotId == 1 ? 8.12f : (robotId == 2 ? 15.67f : -12.78f));
     initial.vx = robotId == 0 ? 1.2f : (robotId == 1 ? 1.8f : (robotId == 2 ? 1.1f : 0.2f));
     initial.linkRttMs = robotId == 3 ? 21.0f : (robotId == 2 ? 20.0f : (robotId == 1 ? 22.0f : 18.0f));
     initial.dropRate = 0.0f;
     initial.imageFps = 24.0f;
-    initial.lidarFps = robotId == 0 ? 0.0f : 12.0f;
+    initial.lidarFps = 12.0f;
     initial.missionProgress = robotId == 1 ? 43.0f : (robotId == 2 ? 88.0f : 0.0f);
     initial.faultLevel = 0;
     setSnapshot(initial);
@@ -1871,11 +2089,11 @@ QString RobotStatusCard::missionText(int mode) const
 {
     switch (mode) {
     case 1:
-        return "이동 중";
+        return "탐색 중";
     case 2:
-        return "조사 중";
+        return "탐색 중";
     case 3:
-        return "복귀 중";
+        return "탐색 중";
     default:
         return "대기";
     }
@@ -1890,11 +2108,14 @@ QString RobotStatusCard::statusText(const RobotSnapshot &snapshot) const
     if (snapshot.faultLevel >= 3 || snapshot.battery < 15.0f) {
         return "저배터리";
     }
+    if (robotConnectionLost(snapshot)) {
+        return "연결 끊김";
+    }
     if (!snapshot.connected) {
-        return "대기 상태";
+        return "연결 안됨";
     }
     if (missionComplete(snapshot)) {
-        return "임무 완료";
+        return "도착";
     }
     if (offlinePartCount >= 2) {
         return "위험";
@@ -1905,7 +2126,7 @@ QString RobotStatusCard::statusText(const RobotSnapshot &snapshot) const
     if (pathTrackingAlert(snapshot)) {
         return "경로 점검";
     }
-    return snapshot.mode == 0 ? "대기 상태" : missionText(snapshot.mode);
+    return robotOperationText(snapshot);
 }
 
 void RobotStatusCard::restyleState(const QString &stateName)
@@ -1952,9 +2173,6 @@ void RobotStatusCard::updateFakeTelemetryLabels(const QString &textColor)
 
 bool RobotStatusCard::partStreamInactiveForCard(const RobotSnapshot &snapshot, int partIndex) const
 {
-    if (m_robotId == 0 && partIndex == 1 && m_lidarEverSeen) {
-        return false;
-    }
     return partStreamInactive(snapshot, partIndex);
 }
 
@@ -1994,25 +2212,29 @@ void RobotStatusCard::setSnapshot(const RobotSnapshot &snapshot)
     m_lastPoseTheta = snapshot.theta;
 
     m_snapshot = snapshot;
-    if (m_robotId == 0 && (!snapshot.lidarPoints.isEmpty() || snapshot.lidarFps > 0.0f)) {
-        m_lidarEverSeen = true;
-    }
     const bool forcedFault = isForcedFaultRobot(m_robotId);
     const int offlinePartCount = displayedOfflinePartCountForCard(snapshot);
     const bool offline = !snapshot.shmOpen || !snapshot.connected || offlinePartCount >= 3;
+    if (snapshot.shmOpen && (snapshot.connected || robotEverConnected(snapshot))) {
+        m_everConnected = true;
+    }
+    const bool connectionLost = snapshot.shmOpen && !snapshot.connected && m_everConnected;
     const bool complete = !offline && missionComplete(snapshot);
-    const bool pathAlert = !offline && !complete && pathTrackingAlert(snapshot);
+    const bool started = !offline && robotMissionStarted(snapshot);
+    const bool pathAlert = started && !complete && pathTrackingAlert(snapshot);
     const int battery = displayBatteryPercent(m_robotId, snapshot.battery);
     const bool danger = !offline
         && (offlinePartCount >= 2 || forcedFault || snapshot.faultLevel >= 3 || battery < 20);
     const bool warning = !offline && !danger && (offlinePartCount == 1 || pathAlert);
-    const bool moving = !complete && !danger && !warning && (snapshot.mode > 0 || m_robotId == 1);
-    const QString stateName = offline ? "offline"
+    const bool moving = started && !complete && !danger && !warning;
+    const QString stateName = connectionLost ? "danger"
+                                      : (offline ? "offline"
                                       : (danger ? "danger"
                                                 : (warning ? "warning"
-                                                             : (moving ? "moving" : "normal")));
-    const QString textColor = offline ? "#747f89" : "#dce7f3";
-    const QString mutedColor = offline ? "#5f6972" : "#aeb8c8";
+                                                             : (moving ? "moving" : "normal"))));
+    const QString textColor = connectionLost ? "#ff5b57" : (offline ? "#747f89" : "#dce7f3");
+    const QString mutedColor = connectionLost ? "#ff9a9a" : (offline ? "#5f6972" : "#aeb8c8");
+    m_telemetryTextColor = textColor;
     const float packetLoss = qMax(snapshot.dropRate, forcedFault ? 2.1f : 0.0f);
     if (offline) {
         m_fakeSpeedMps = 0.0f;
@@ -2025,11 +2247,12 @@ void RobotStatusCard::setSnapshot(const RobotSnapshot &snapshot)
 
     m_name->setText(robotName(m_robotId));
     m_name->setStyleSheet(QString("color:%1").arg(textColor));
-    m_statusBadge->setText(offline ? "연결 안됨"
-                                   : (complete ? "임무 완료"
+    m_statusBadge->setText(connectionLost ? "연결 끊김"
+                                   : (offline ? "연결 안됨"
+                                   : (complete ? "도착"
                                                : (danger ? "위험"
                                                          : (warning ? (offlinePartCount == 1 ? "경고" : "경로 점검")
-                                                                      : (moving ? "이동 중" : "정상")))));
+                                                                      : (moving ? "탐색 중" : "정상"))))));
     if (m_batteryBar) {
         m_batteryBar->setValue(offline ? 0 : battery);
     }
@@ -2045,13 +2268,14 @@ void RobotStatusCard::setSnapshot(const RobotSnapshot &snapshot)
     m_rtt->setStyleSheet(QString("color:%1").arg(textColor));
     m_packetLoss->setText(offline ? "패킷 손실       --" : QString("패킷 손실       %1%").arg(packetLoss, 0, 'f', 1));
     m_packetLoss->setStyleSheet(QString("color:%1").arg(textColor));
-    m_linkQuality->setText(offline ? "오프라인"
+    m_linkQuality->setText(connectionLost ? "연결 끊김"
+                                   : (offline ? "오프라인"
                                    : QString("%1 / %2 ms")
                                          .arg(danger || warning || packetLoss > 1.0f ? "점검" : "정상")
-                                         .arg(qRound(snapshot.linkRttMs)));
+                                         .arg(qRound(snapshot.linkRttMs))));
     m_linkQuality->setStyleSheet(QString("color:%1").arg(mutedColor));
     updateFakeTelemetryLabels(textColor);
-    m_camera->setText(offline ? "비활성" : (danger ? "점검 필요" : "정상"));
+    m_camera->setText(offline ? "연결 안됨" : (danger ? "점검 필요" : "정상"));
     m_camera->setStyleSheet(QString("color:%1").arg(textColor));
     if (auto *stlView = dynamic_cast<SpotStl3DView *>(m_robotView)) {
         RobotSnapshot renderSnapshot = snapshot;
@@ -2060,11 +2284,13 @@ void RobotStatusCard::setSnapshot(const RobotSnapshot &snapshot)
         stlView->setSnapshot(renderSnapshot, stateName);
     }
     for (int i = 0; i < m_sensorChips.size(); ++i) {
-        const bool hardcodedNormal = (m_robotId == 0 && i == 1)
-            || (!offline && hasHardcodedNormalPart(m_robotId, i));
+        const bool faultedSensor = !offline && snapshot.faultLevel >= 3 && (i == 0 || i == 1);
+        const bool hardcodedNormal = !faultedSensor
+            && !offline
+            && hasHardcodedNormalPart(m_robotId, i);
         const bool streamInactive = partStreamInactiveForCard(snapshot, i);
-        const bool partOffline = !hardcodedNormal && (offline || streamInactive);
-        const bool partError = !hardcodedNormal && !partOffline && danger && i == 2;
+        const bool partOffline = !faultedSensor && !hardcodedNormal && (offline || streamInactive);
+        const bool partError = faultedSensor || (!hardcodedNormal && !partOffline && danger && i == 2);
         const QString partState = partOffline ? QStringLiteral("offline")
                                               : (partError ? QStringLiteral("danger") : QStringLiteral("normal"));
         if (i < m_sensorCards.size()) {
@@ -2078,9 +2304,9 @@ void RobotStatusCard::setSnapshot(const RobotSnapshot &snapshot)
         if (hardcodedNormal) {
             m_sensorChips[i]->setText("정상");
         } else if (offline) {
-            m_sensorChips[i]->setText("연결안됨");
+            m_sensorChips[i]->setText("연결 안됨");
         } else if (streamInactive) {
-            m_sensorChips[i]->setText("연결안됨");
+            m_sensorChips[i]->setText("연결 안됨");
         } else if (partError) {
             m_sensorChips[i]->setText("비정상");
         } else {
@@ -2110,9 +2336,12 @@ public:
         update();
     }
 
-    void fitToCurrentSize()
+    void fitToCurrentSize(float targetScale = 0.0f)
     {
         resetViewToMap(true);
+        if (targetScale > 0.0f) {
+            m_scale = qBound(0.1f, targetScale, 50.0f);
+        }
         update();
     }
 
@@ -2129,37 +2358,165 @@ public:
         update();
     }
 
+    void showMoveCommandIndicators(const QVector<int> &robotIds)
+    {
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+        for (int robotId : robotIds) {
+            if (!isMapRobotId(robotId)) {
+                continue;
+            }
+            auto it = std::find_if(m_snapshots.cbegin(), m_snapshots.cend(), [robotId](const RobotSnapshot &snapshot) {
+                return snapshot.id == robotId;
+            });
+            if (it == m_snapshots.cend() || !it->shmOpen || !it->connected || it->faultLevel >= 3) {
+                continue;
+            }
+            m_moveCommandStartMs.insert(robotId, nowMs);
+        }
+        update();
+    }
+
+    void setRouteSelectionChangedCallback(std::function<void()> callback)
+    {
+        m_routeSelectionChanged = std::move(callback);
+    }
+
+    void setRouteSelectionEnabled(bool enabled)
+    {
+        if (m_routeSelectionEnabled == enabled) {
+            return;
+        }
+        m_routeSelectionEnabled = enabled;
+        setCursor(enabled ? Qt::CrossCursor : Qt::ArrowCursor);
+        if (!enabled) {
+            clearRouteSelection();
+        }
+        notifyRouteSelectionChanged();
+        update();
+    }
+
+    void clearRouteSelection()
+    {
+        const bool changed = m_hasRouteEnd;
+        m_hasRouteEnd = false;
+        m_routeEnd = QPointF();
+        if (changed) {
+            notifyRouteSelectionChanged();
+            update();
+        }
+    }
+
+    bool isRouteSelectionEnabled() const
+    {
+        return m_routeSelectionEnabled;
+    }
+
+    bool routeSelectionComplete() const
+    {
+        return m_hasRouteEnd;
+    }
+
+    QPointF routeEnd() const
+    {
+        return m_routeEnd;
+    }
+
+    void setGlobalPathsVisible(bool visible)
+    {
+        if (m_globalPathsVisible == visible) {
+            return;
+        }
+        m_globalPathsVisible = visible;
+        update();
+    }
+
+    void setGlobalPathRobotIds(const QSet<int> &robotIds)
+    {
+        m_globalPathRobotIds = robotIds;
+        update();
+    }
+
     void setSnapshots(const QVector<RobotSnapshot> &snapshots)
     {
         m_snapshots = snapshots;
         m_robotPoses.clear();
+        QSet<int> presentRobotIds;
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
         for (const RobotSnapshot &robot : snapshots) {
             if (!isMapRobotId(robot.id)) {
                 continue;
             }
-            if (robot.shmOpen && !m_odomAnchors.contains(robot.id)) {
+            const bool poseAvailable = robotPoseAvailable(robot);
+            if (poseAvailable && !m_odomAnchors.contains(robot.id)) {
                 m_odomAnchors.insert(robot.id, QPointF(robot.x, robot.y));
             }
 
             const MapPoint start = startPointForRobot(robot.id);
-            const QPointF displayPos = robot.shmOpen
+            const QPointF displayPos = poseAvailable
                 ? displayRobotPoint(robot.id, robot.x, robot.y)
                 : QPointF(start.x, start.y);
             RobotPose2D pose;
             pose.id = robot.id;
             pose.x = static_cast<float>(displayPos.x());
             pose.y = static_cast<float>(displayPos.y());
-            pose.theta = robot.shmOpen ? robot.theta : 0.0f;
+            pose.theta = poseAvailable ? robot.theta : startThetaForRobot(m_mapConfig, robot.id);
             pose.selected = robot.id == m_selectedRobot;
+            pose.faulted = !robot.shmOpen || !robot.connected || robot.faultLevel >= 3;
+            pose.connectionLost = robotConnectionLost(robot);
+            pose.neverConnected = !robotConnectionLost(robot) && (!robot.shmOpen || !robot.connected);
             if (!m_mapConfig.isValid() || isRobotInsideMap(pose.x, pose.y)) {
                 m_robotPoses.append(pose);
+                presentRobotIds.insert(robot.id);
+                const bool firstSeen = !m_seenRobotPoseIds.contains(robot.id);
+                if (firstSeen) {
+                    m_seenRobotPoseIds.insert(robot.id);
+                    m_addedPulseStartMs.insert(robot.id, nowMs);
+                }
+                const bool warningFault = pose.faulted;
+                const bool wasFaulted = m_lastFaultState.value(robot.id, false);
+                if (!firstSeen && pose.faulted && !wasFaulted) {
+                    m_faultPulseStartMs.insert(robot.id, nowMs);
+                    m_warningBlinkStartMs.insert(robot.id, nowMs);
+                } else if (firstSeen && warningFault) {
+                    m_warningBlinkStartMs.insert(robot.id, nowMs);
+                }
+                m_lastFaultState.insert(robot.id, pose.faulted);
+            }
+        }
+        for (auto it = m_seenRobotPoseIds.begin(); it != m_seenRobotPoseIds.end();) {
+            if (!presentRobotIds.contains(*it)) {
+                m_lastFaultState.remove(*it);
+                m_warningBlinkStartMs.remove(*it);
+                it = m_seenRobotPoseIds.erase(it);
+            } else {
+                ++it;
             }
         }
 
-        auto it = std::find_if(snapshots.cbegin(), snapshots.cend(), [this](const RobotSnapshot &snapshot) {
+        auto selectedIt = std::find_if(snapshots.cbegin(), snapshots.cend(), [this](const RobotSnapshot &snapshot) {
             return snapshot.id == m_selectedRobot;
         });
-        if (it == snapshots.cend()) {
+        if (selectedIt != snapshots.cend()) {
+            const RobotSnapshot &selected = *selectedIt;
+            const bool poseAvailable = robotPoseAvailable(selected);
+            const MapPoint start = startPointForRobot(selected.id);
+            const QPointF displayPos = poseAvailable
+                ? displayRobotPoint(selected.id, selected.x, selected.y)
+                : QPointF(start.x, start.y);
+            m_robotX = static_cast<float>(displayPos.x());
+            m_robotY = static_cast<float>(displayPos.y());
+            m_robotTheta = poseAvailable ? selected.theta : startThetaForRobot(m_mapConfig, selected.id);
+        } else if (isMapRobotId(m_selectedRobot)) {
+            const MapPoint start = startPointForRobot(m_selectedRobot);
+            m_robotX = start.x;
+            m_robotY = start.y;
+            m_robotTheta = startThetaForRobot(m_mapConfig, m_selectedRobot);
+        }
+
+        auto activeIt = std::find_if(snapshots.cbegin(), snapshots.cend(), [this](const RobotSnapshot &snapshot) {
+            return snapshot.id == m_selectedRobot && robotRecentlyActive(snapshot);
+        });
+        if (activeIt == snapshots.cend()) {
             if (!m_currentScan.isEmpty()) {
                 m_currentScan.clear();
                 m_haveCurrentScan = false;
@@ -2168,10 +2525,7 @@ public:
             return;
         }
 
-        const RobotSnapshot &snapshot = *it;
-        m_robotX = snapshot.x;
-        m_robotY = snapshot.y;
-        m_robotTheta = snapshot.theta;
+        const RobotSnapshot &snapshot = *activeIt;
 
         if (!snapshot.shmOpen || !snapshot.connected) {
             if (!m_currentScan.isEmpty()) {
@@ -2250,19 +2604,18 @@ protected:
         drawLidarScan(p);
 
         drawRobotPoses(p);
+        drawRouteSelection(p);
 
         p.setPen(Qt::white);
         p.setFont(QFont("monospace", 10));
-        p.drawText(10, 20, QString("points: %1  scale: %2x")
-                   .arg(m_currentScan.size()).arg(m_scale, 0, 'f', 1));
-        p.drawText(10, 36, QString("robot: (%1, %2)  theta: %3 deg")
-                   .arg(m_robotX, 0, 'f', 2)
-                   .arg(m_robotY, 0, 'f', 2)
-                   .arg(qRadiansToDegrees(m_robotTheta), 0, 'f', 1));
-        p.drawText(10, 52, QString("lidar forward(%1): %2 ~ %3 m")
-                   .arg(m_lidarForwardAxis)
-                   .arg(m_lidarForwardMin, 0, 'f', 2)
-                   .arg(m_lidarForwardMax, 0, 'f', 2));
+        p.drawText(10, 20, QString("scale: %1x").arg(m_scale, 0, 'f', 1));
+        if (isMapRobotId(m_selectedRobot)) {
+            p.drawText(10, 36, QString("robot: (%1, %2)")
+                       .arg(m_robotX, 0, 'f', 2)
+                       .arg(m_robotY, 0, 'f', 2));
+            p.drawText(10, 52, QString("theta: %1 deg")
+                       .arg(qRadiansToDegrees(m_robotTheta), 0, 'f', 1));
+        }
     }
 
     void timerEvent(QTimerEvent *event) override
@@ -2284,6 +2637,7 @@ protected:
     void mousePressEvent(QMouseEvent *event) override
     {
         m_lastMouse = event->pos();
+        m_pressMouse = event->pos();
     }
 
     void mouseMoveEvent(QMouseEvent *event) override
@@ -2293,6 +2647,17 @@ protected:
             m_lastMouse = event->pos();
             update();
         }
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (m_routeSelectionEnabled && event->button() == Qt::LeftButton
+            && (event->pos() - m_pressMouse).manhattanLength() <= 4) {
+            handleRouteSelectionClick(event->pos());
+            event->accept();
+            return;
+        }
+        QWidget::mouseReleaseEvent(event);
     }
 
 private:
@@ -2309,6 +2674,9 @@ private:
         float y = 0.0f;
         float theta = 0.0f;
         bool selected = false;
+        bool faulted = false;
+        bool connectionLost = false;
+        bool neverConnected = false;
     };
 
     void mergeNearbyLidarScanPoints(QVector<Pt2D> *points) const
@@ -2359,6 +2727,14 @@ private:
                        -py * m_scale + height() / 2.0f + m_panOffset.y());
     }
 
+    QPointF widgetToWorld(const QPointF &pos) const
+    {
+        const float px = static_cast<float>((pos.x() - width() / 2.0f - m_panOffset.x()) / m_scale);
+        const float py = static_cast<float>(-(pos.y() - height() / 2.0f - m_panOffset.y()) / m_scale);
+        return QPointF(m_originX + px * m_mPerPixel,
+                       m_originY + py * m_mPerPixel);
+    }
+
     QRectF worldRectToWidget(const MapRect &rect) const
     {
         return QRectF(worldToWidget(rect.xMin, rect.yMax),
@@ -2375,6 +2751,60 @@ private:
         return false;
     }
 
+    bool isSelectableRoutePoint(const QPointF &world) const
+    {
+        if (!m_mapConfig.isValid() || !isRobotInsideMap(static_cast<float>(world.x()),
+                                                        static_cast<float>(world.y()))) {
+            return false;
+        }
+        for (const MapRect &obs : m_mapConfig.obstacles()) {
+            if (world.x() >= obs.xMin && world.x() <= obs.xMax
+                && world.y() >= obs.yMin && world.y() <= obs.yMax) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    int routePointHitAt(const QPoint &pos) const
+    {
+        constexpr qreal hitRadius = 14.0;
+        if (m_hasRouteEnd
+            && QLineF(pos, worldToWidget(static_cast<float>(m_routeEnd.x()),
+                                         static_cast<float>(m_routeEnd.y()))).length() <= hitRadius) {
+            return 0;
+        }
+        return -1;
+    }
+
+    void handleRouteSelectionClick(const QPoint &pos)
+    {
+        const int hit = routePointHitAt(pos);
+        if (hit == 0) {
+            m_hasRouteEnd = false;
+            m_routeEnd = QPointF();
+            notifyRouteSelectionChanged();
+            update();
+            return;
+        }
+
+        const QPointF world = widgetToWorld(pos);
+        if (!isSelectableRoutePoint(world)) {
+            return;
+        }
+        m_routeEnd = world;
+        m_hasRouteEnd = true;
+        notifyRouteSelectionChanged();
+        update();
+    }
+
+    void notifyRouteSelectionChanged()
+    {
+        if (m_routeSelectionChanged) {
+            m_routeSelectionChanged();
+        }
+    }
+
     MapPoint startPointForRobot(int robotId) const
     {
         const QVector<MapPoint> starts = m_mapConfig.starts();
@@ -2385,7 +2815,14 @@ private:
         if (startId >= 0 && startId < starts.size()) {
             return starts[startId];
         }
-        return starts.first();
+        MapPoint fallback = starts.first();
+        if (robotId == 4) {
+            return fallback;
+        }
+        const int overflow = qMax(0, startId - starts.size());
+        fallback.x += static_cast<float>((overflow % 3) - 1) * 0.45f;
+        fallback.y += static_cast<float>((overflow / 3) + 1) * 0.45f;
+        return fallback;
     }
 
     QPointF displayRobotPoint(int robotId, float rawX, float rawY) const
@@ -2401,26 +2838,168 @@ private:
 
     void drawRobotPoses(QPainter &p)
     {
-        auto drawOne = [&p, this](const RobotPose2D &pose) {
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+        auto drawOne = [&p, this, nowMs](const RobotPose2D &pose) {
             const QPointF rp = worldToWidget(pose.x, pose.y);
-            const float robotSizeMeters = pose.selected ? kSelectedRobotMarkerRadiusMeters
-                                                        : kRobotMarkerRadiusMeters;
+            const float robotSizeMeters = pose.selected ? kSelectedRobotMarker2DRadiusMeters
+                                                        : kRobotMarker2DRadiusMeters;
             const float robotSize = robotSizeMeters / m_mPerPixel * m_scale;
             const QColor base = robotPathColor(pose.id);
-            const QColor fill(base.red(), base.green(), base.blue(), pose.selected ? 120 : 54);
-            const QColor outline(base.lighter(pose.selected ? 125 : 112).red(),
-                                 base.lighter(pose.selected ? 125 : 112).green(),
-                                 base.lighter(pose.selected ? 125 : 112).blue(),
-                                 pose.selected ? 245 : 205);
+            const QColor danger("#ff2d2d");
+            const QColor disconnectedGray("#8a96a3");
+            const QColor markerBase = pose.faulted
+                ? (pose.neverConnected ? disconnectedGray : danger)
+                : base;
+            auto highlightForPulse = [nowMs](qint64 startMs) {
+                qreal highlight = 0.0;
+                const qint64 elapsedMs = nowMs - startMs;
+                const qint64 highlightMs = kRobotMarkerPulseMs + kRobotMarkerHighlightTailMs;
+                if (elapsedMs >= 0 && elapsedMs < highlightMs) {
+                    const qreal t = static_cast<qreal>(elapsedMs) /
+                        static_cast<qreal>(highlightMs);
+                    highlight = 1.0 - t;
+                }
+                return highlight;
+            };
+            qreal markerHighlight = 0.0;
+            if (m_addedPulseStartMs.contains(pose.id)) {
+                markerHighlight = qMax(markerHighlight, highlightForPulse(m_addedPulseStartMs.value(pose.id)));
+            }
+            if (m_faultPulseStartMs.contains(pose.id)) {
+                markerHighlight = qMax(markerHighlight, highlightForPulse(m_faultPulseStartMs.value(pose.id)));
+            }
+            const QColor rawFill(markerBase.red(), markerBase.green(), markerBase.blue(),
+                                 pose.faulted ? 138 : (pose.selected ? 120 : 54));
+            const QColor rawOutline(markerBase.lighter(pose.selected ? 130 : 116).red(),
+                                    markerBase.lighter(pose.selected ? 130 : 116).green(),
+                                    markerBase.lighter(pose.selected ? 130 : 116).blue(),
+                                    pose.faulted ? 255 : (pose.selected ? 245 : 205));
+            QColor fill = rawFill;
+            QColor outline = rawOutline;
+            if (markerHighlight > 0.0) {
+                fill = QColor(qRound(rawFill.red() + (255 - rawFill.red()) * markerHighlight),
+                              qRound(rawFill.green() + (255 - rawFill.green()) * markerHighlight),
+                              qRound(rawFill.blue() + (255 - rawFill.blue()) * markerHighlight),
+                              qRound(rawFill.alpha() + (210 - rawFill.alpha()) * markerHighlight));
+                outline = QColor(255, 255, 255, qRound(rawOutline.alpha() + (255 - rawOutline.alpha()) * markerHighlight));
+            }
             const qreal penWidth = pose.selected ? 2.2 : 1.4;
+
+            auto drawPulseRing = [&p, rp, robotSize](qint64 startMs, qint64 now, const QColor &color) {
+                if (now < startMs) {
+                    return;
+                }
+                const qreal progress = qBound<qreal>(
+                    0.0,
+                    static_cast<qreal>(now - startMs) / static_cast<qreal>(kRobotMarkerPulseMs),
+                    1.0);
+                if (progress >= 1.0) {
+                    return;
+                }
+                const qreal fade = progress < 0.78 ? 1.0 : qBound<qreal>(0.0, (1.0 - progress) / 0.22, 1.0);
+                const qreal radius = robotSize * (2.0 + (1.0 - progress) * 12.5);
+                QColor ringColor(color);
+                ringColor.setAlpha(qRound(215.0 * fade));
+                p.setBrush(Qt::NoBrush);
+                p.setPen(QPen(ringColor,
+                              1.6 + (1.0 - progress) * 1.2,
+                              Qt::SolidLine,
+                              Qt::RoundCap));
+                p.drawEllipse(rp, radius, radius);
+            };
+            auto drawPulse = [&drawPulseRing](qint64 startMs, qint64 now, const QColor &color) {
+                drawPulseRing(startMs, now, color);
+                drawPulseRing(startMs + kRobotMarkerPulseEchoDelayMs, now, color);
+            };
+
+            if (m_addedPulseStartMs.contains(pose.id)) {
+                drawPulse(m_addedPulseStartMs.value(pose.id), nowMs, QColor("#26d97c"));
+            }
+            if (m_faultPulseStartMs.contains(pose.id)) {
+                drawPulse(m_faultPulseStartMs.value(pose.id), nowMs, QColor("#ff2d2d"));
+            }
 
             p.setPen(QPen(outline, penWidth));
             p.setBrush(fill);
             p.drawEllipse(rp, robotSize, robotSize);
 
-            const QColor thetaColor(base.lighter(150).red(),
-                                    base.lighter(150).green(),
-                                    base.lighter(150).blue(),
+            const qint64 moveStart = m_moveCommandStartMs.value(pose.id, -1);
+            const qint64 moveElapsed = moveStart >= 0 ? nowMs - moveStart : kRobotMoveCommandVisibleMs;
+            const bool showMoveCommand = moveElapsed >= 0 && moveElapsed < kRobotMoveCommandVisibleMs;
+            auto drawMoveCommandMarker = [&p, rp, robotSize, moveElapsed]() {
+                const qint64 fadeStartMs = qMax<qint64>(0, kRobotMoveCommandVisibleMs - kRobotMoveCommandFadeMs);
+                const qint64 fadeElapsedMs = qMax<qint64>(0, moveElapsed - fadeStartMs);
+                const qreal fade = qBound<qreal>(
+                    0.0,
+                    1.0 - static_cast<qreal>(fadeElapsedMs) / static_cast<qreal>(kRobotMoveCommandFadeMs),
+                    1.0);
+                const qreal chevronSize = qMax<qreal>(12.0, robotSize * 0.72);
+                const qreal y = rp.y() - robotSize - chevronSize * 0.68 - 7.0;
+                const qreal x = rp.x() - chevronSize * 0.42;
+                QColor glow("#12ff7a");
+                glow.setAlpha(qRound(92.0 * fade));
+                QColor stroke("#26ff8a");
+                stroke.setAlpha(qRound(245.0 * fade));
+                p.setPen(QPen(glow, qMax<qreal>(5.5, chevronSize * 0.20), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                for (int i = 0; i < 2; ++i) {
+                    const qreal cx = x + i * chevronSize * 0.54;
+                    p.drawLine(QPointF(cx - chevronSize * 0.22, y - chevronSize * 0.34),
+                               QPointF(cx + chevronSize * 0.22, y));
+                    p.drawLine(QPointF(cx + chevronSize * 0.22, y),
+                               QPointF(cx - chevronSize * 0.22, y + chevronSize * 0.34));
+                }
+                p.setPen(QPen(stroke, qMax<qreal>(2.8, chevronSize * 0.105), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                for (int i = 0; i < 2; ++i) {
+                    const qreal cx = x + i * chevronSize * 0.54;
+                    p.drawLine(QPointF(cx - chevronSize * 0.22, y - chevronSize * 0.34),
+                               QPointF(cx + chevronSize * 0.22, y));
+                    p.drawLine(QPointF(cx + chevronSize * 0.22, y),
+                               QPointF(cx - chevronSize * 0.22, y + chevronSize * 0.34));
+                }
+            };
+
+            if (pose.faulted) {
+                p.setPen(QPen(QColor("#ffffff"), qMax<qreal>(2.0, penWidth + 0.8),
+                              Qt::SolidLine, Qt::RoundCap));
+                const qreal xSize = robotSize * 0.72;
+                p.drawLine(QPointF(rp.x() - xSize, rp.y() - xSize),
+                           QPointF(rp.x() + xSize, rp.y() + xSize));
+                p.drawLine(QPointF(rp.x() + xSize, rp.y() - xSize),
+                           QPointF(rp.x() - xSize, rp.y() + xSize));
+
+                const qint64 warningStart = m_warningBlinkStartMs.value(pose.id, -1);
+                const qint64 warningElapsed = warningStart >= 0 ? nowMs - warningStart : kRobotWarningBlinkMs;
+                const bool showWarning = warningElapsed >= 0
+                    && warningElapsed < kRobotWarningBlinkMs
+                    && !showMoveCommand
+                    && ((warningElapsed / kRobotWarningBlinkIntervalMs) % 2 == 0);
+                if (showWarning) {
+                    const qreal triSize = qMax<qreal>(17.0, robotSize * 1.15);
+                    const qreal triHeight = triSize * 0.88;
+                    const QPointF triTop(rp.x(), rp.y() - robotSize - triHeight - 7.0);
+                    QPolygonF warning;
+                    warning << triTop
+                            << QPointF(triTop.x() - triSize * 0.5, triTop.y() + triHeight)
+                            << QPointF(triTop.x() + triSize * 0.5, triTop.y() + triHeight);
+                    p.setPen(QPen(QColor("#ffd7d7"), 1.2));
+                    p.setBrush(QColor(255, 45, 45, 235));
+                    p.drawPolygon(warning);
+                    p.setPen(QPen(QColor("#ffffff"), qMax<qreal>(1.6, triSize * 0.10),
+                                  Qt::SolidLine, Qt::RoundCap));
+                    p.drawLine(QPointF(triTop.x(), triTop.y() + triHeight * 0.30),
+                               QPointF(triTop.x(), triTop.y() + triHeight * 0.62));
+                    p.setPen(QPen(QColor("#ffffff"), qMax<qreal>(2.0, triSize * 0.13),
+                                  Qt::SolidLine, Qt::RoundCap));
+                    p.drawPoint(QPointF(triTop.x(), triTop.y() + triHeight * 0.78));
+                }
+            }
+            if (showMoveCommand) {
+                drawMoveCommandMarker();
+            }
+
+            const QColor thetaColor(markerBase.lighter(150).red(),
+                                    markerBase.lighter(150).green(),
+                                    markerBase.lighter(150).blue(),
                                     pose.selected ? 245 : 215);
             p.setPen(QPen(thetaColor, penWidth));
             const float dx = std::cos(pose.theta) * robotSize * 1.45f;
@@ -2429,10 +3008,11 @@ private:
 
             const QString label = robotMapLabel(pose.id);
             if (!label.isEmpty()) {
-                p.setPen(QColor(base.lighter(145).red(),
-                                base.lighter(145).green(),
-                                base.lighter(145).blue(),
-                                pose.selected ? 245 : 205));
+                p.setPen(pose.faulted ? QColor("#ff4d4d")
+                                       : QColor(base.lighter(145).red(),
+                                                base.lighter(145).green(),
+                                                base.lighter(145).blue(),
+                                                pose.selected ? 245 : 205));
                 const float viewScale = qBound(0.72f, qMin(width() / 920.0f, height() / 560.0f), 1.0f);
                 const int labelSize = qRound((pose.selected ? 11.0f : 10.0f) * viewScale);
                 p.setFont(QFont("monospace", qMax(8, labelSize), QFont::Bold));
@@ -2456,33 +3036,108 @@ private:
 
     void drawGlobalPaths(QPainter &p)
     {
+        if (!m_globalPathsVisible) {
+            return;
+        }
         p.setRenderHint(QPainter::Antialiasing, true);
         const float pulse = pathPulseProgress();
         for (const RobotSnapshot &snapshot : m_snapshots) {
-            if (!isMapRobotId(snapshot.id)) {
+            if (!isMapRobotId(snapshot.id) || !globalPathRenderable(snapshot)) {
+                continue;
+            }
+            if (!m_globalPathRobotIds.contains(snapshot.id)) {
                 continue;
             }
 
             QColor base = robotPathColor(snapshot.id);
-            const bool selected = snapshot.id == m_selectedRobot;
-            if (snapshot.globalPath.size() >= 2) {
-                base.setAlpha(selected ? 205 : 130);
-                p.setPen(QPen(base, selected ? 3.0 : 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-
-                QVector<QPointF> pts;
-                pts.reserve(snapshot.globalPath.size());
-                for (const GlobalPathPoint &wp : snapshot.globalPath) {
-                    pts.append(worldToWidget(wp.x, wp.y));
-                }
-                for (int i = 0; i < pts.size() - 1; ++i) {
-                    p.drawLine(pts[i], pts[i + 1]);
-                }
-
-                drawPathGradientHighlight(p, pts, robotPathColor(snapshot.id), selected, pulse);
+            const bool showAll = m_selectedRobot < 0;
+            const bool selected = showAll || snapshot.id == m_selectedRobot;
+            if (!selected) {
+                continue;
             }
+            base.setAlpha(showAll ? 145 : 205);
+            p.setPen(QPen(base, showAll ? 2.0 : 3.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+
+            QVector<QPointF> pts;
+            pts.reserve(snapshot.globalPath.size());
+            for (const GlobalPathPoint &wp : snapshot.globalPath) {
+                pts.append(worldToWidget(wp.x, wp.y));
+            }
+            for (int i = 0; i < pts.size() - 1; ++i) {
+                p.drawLine(pts[i], pts[i + 1]);
+            }
+
+            drawPathGradientHighlight(p, pts, robotPathColor(snapshot.id), !showAll, pulse);
 
         }
         p.setRenderHint(QPainter::Antialiasing, false);
+    }
+
+    void drawRouteSelection(QPainter &p)
+    {
+        if (!m_routeSelectionEnabled && !m_hasRouteEnd) {
+            return;
+        }
+
+        p.save();
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        const auto drawMarker = [&p, this](const QPointF &world, const QString &label,
+                                           const QColor &color) {
+            const QPointF screen = worldToWidget(static_cast<float>(world.x()),
+                                                 static_cast<float>(world.y()));
+            QColor glow(color);
+            glow.setAlpha(55);
+            p.setPen(QPen(glow, 9.0, Qt::SolidLine, Qt::RoundCap));
+            p.drawPoint(screen);
+
+            p.setPen(QPen(color.lighter(120), 2.0));
+            p.setBrush(QColor(color.red(), color.green(), color.blue(), 190));
+            p.drawEllipse(screen, 6.0, 6.0);
+
+            p.setPen(QColor("#ffffff"));
+            p.setFont(QFont("monospace", 9, QFont::Bold));
+            p.drawText(screen + QPointF(10.0, -8.0), label);
+        };
+
+        if (m_hasRouteEnd) {
+            const QPointF end = worldToWidget(static_cast<float>(m_routeEnd.x()),
+                                              static_cast<float>(m_routeEnd.y()));
+            for (const RobotPose2D &pose : m_robotPoses) {
+                if (pose.faulted) {
+                    continue;
+                }
+                if (m_selectedRobot >= 0 && pose.id != m_selectedRobot) {
+                    continue;
+                }
+                const QPointF start = worldToWidget(pose.x, pose.y);
+                const QPointF delta = end - start;
+                const qreal length = std::hypot(delta.x(), delta.y());
+                if (length > 1.0) {
+                    const QPointF dir(delta.x() / length, delta.y() / length);
+                    p.setPen(QPen(QColor(255, 210, 26, 62), 1.1, Qt::SolidLine, Qt::RoundCap));
+                    p.drawLine(start, end);
+
+                    const qreal dashLength = 9.0;
+                    const qreal period = 22.0;
+                    const qreal offset = std::fmod(QDateTime::currentMSecsSinceEpoch() / 28.0, period);
+                    p.setPen(QPen(QColor(255, 210, 26, 230), 2.6, Qt::SolidLine, Qt::RoundCap));
+                    for (qreal cursor = offset - period; cursor < length; cursor += period) {
+                        const qreal segmentStart = qMax<qreal>(0.0, cursor);
+                        const qreal segmentEnd = qMin<qreal>(length, cursor + dashLength);
+                        if (segmentEnd <= segmentStart) {
+                            continue;
+                        }
+                        p.drawLine(start + dir * segmentStart, start + dir * segmentEnd);
+                    }
+                }
+            }
+        }
+        if (m_hasRouteEnd) {
+            drawMarker(m_routeEnd, QStringLiteral("GOAL"), QColor("#ffd21a"));
+        }
+
+        p.restore();
     }
 
     void drawLidarScan(QPainter &p)
@@ -2601,7 +3256,7 @@ private:
             const float mapPixelsY = qMax(m_mapConfig.heightMeters() / m_mPerPixel, 1.0f);
             m_scale = qBound(0.1f, qMin(fitPixelsX / mapPixelsX, fitPixelsY / mapPixelsY), 50.0f);
         } else {
-            m_scale = 1.5f;
+            m_scale = 1.0f;
         }
         m_panOffset = QPoint(0, 0);
     }
@@ -2640,6 +3295,12 @@ private:
     float m_robotTheta = 0.0f;
     QHash<int, QPointF> m_odomAnchors;
     QVector<RobotPose2D> m_robotPoses;
+    QSet<int> m_seenRobotPoseIds;
+    QHash<int, bool> m_lastFaultState;
+    QHash<int, qint64> m_addedPulseStartMs;
+    QHash<int, qint64> m_faultPulseStartMs;
+    QHash<int, qint64> m_warningBlinkStartMs;
+    QHash<int, qint64> m_moveCommandStartMs;
     MapConfig m_mapConfig;
     float m_mPerPixel = 0.05f;
     float m_originX = 0.0f;
@@ -2647,12 +3308,19 @@ private:
     float m_scale = 1.0f;
     QPoint m_panOffset;
     QPoint m_lastMouse;
+    QPoint m_pressMouse;
     float m_zFloor = 0.1f;
     float m_zCeil = 2.5f;
     float m_lidarForwardMin = 0.0f;
     float m_lidarForwardMax = 0.0f;
     QString m_lidarForwardAxis = QStringLiteral("x");
     int m_pulseTimerId = 0;
+    bool m_routeSelectionEnabled = false;
+    bool m_hasRouteEnd = false;
+    bool m_globalPathsVisible = false;
+    QSet<int> m_globalPathRobotIds;
+    QPointF m_routeEnd;
+    std::function<void()> m_routeSelectionChanged;
 };
 
 class PointCloud3DView : public QOpenGLWidget, protected QOpenGLFunctions
@@ -2705,10 +3373,26 @@ public:
         m_hasLastFrame = false;
         m_lidarFrameTimer.invalidate();
         m_haveOdomAnchor = false;
+        m_haveSelectedDisplayPose = false;
         m_currentRobotFillPoints.clear();
         m_currentRobotFillPointCount = 0;
         m_currentRobotLinePoints.clear();
         m_currentRobotLinePointCount = 0;
+    }
+
+    void setGlobalPathsVisible(bool visible)
+    {
+        if (m_globalPathsVisible == visible) {
+            return;
+        }
+        m_globalPathsVisible = visible;
+        update();
+    }
+
+    void setGlobalPathRobotIds(const QSet<int> &robotIds)
+    {
+        m_globalPathRobotIds = robotIds;
+        update();
     }
 
     void setSnapshots(const QVector<RobotSnapshot> &snapshots)
@@ -2728,6 +3412,9 @@ public:
             return snapshot.id == m_selectedRobot;
         });
         if (it == snapshots.cend()) {
+            setSelectedDisplayPoseToStart();
+            buildCurrentRobotMarker();
+            uploadCurrentRobotMarkerToGpu();
             clearLidarCloud();
             update();
             return;
@@ -2736,16 +3423,19 @@ public:
         const RobotSnapshot &snapshot = *it;
         m_robotX = snapshot.x;
         m_robotY = snapshot.y;
-        m_robotTheta = snapshot.theta;
-        if (!m_haveOdomAnchor) {
+        const bool poseAvailable = robotPoseAvailable(snapshot);
+        const bool liveScan = robotRecentlyActive(snapshot);
+        m_robotTheta = poseAvailable ? snapshot.theta : startThetaForRobot(m_mapConfig, snapshot.id);
+        if (poseAvailable && !m_haveOdomAnchor) {
             m_odomAnchorX = snapshot.x;
             m_odomAnchorY = snapshot.y;
             m_haveOdomAnchor = true;
         }
+        updateSelectedDisplayPose(snapshot, poseAvailable);
         buildCurrentRobotMarker();
         uploadCurrentRobotMarkerToGpu();
 
-        if (!snapshot.shmOpen) {
+        if (!liveScan) {
             clearLidarCloud();
             update();
             return;
@@ -2930,18 +3620,36 @@ void main() {
         QMatrix4x4 view;
         QMatrix4x4 model;
         const float aspect = height() > 0 ? width() / static_cast<float>(height()) : 1.0f;
-        proj.perspective(45.0f, aspect, 0.1f, 500.0f);
+        if (m_selectedRobot < 0 && m_mapConfig.isValid()) {
+            const float padding = 1.16f;
+            const float mapHalfW = qMax(m_mapConfig.widthMeters() * 0.5f * padding, 1.0f);
+            const float mapHalfH = qMax(m_mapConfig.heightMeters() * 0.5f * padding, 1.0f);
+            float halfW = mapHalfW;
+            float halfH = mapHalfH;
+            if (aspect > 1.0f) {
+                halfW = qMax(halfW, halfH * aspect);
+            } else if (aspect > 0.0f) {
+                halfH = qMax(halfH, halfW / aspect);
+            }
 
-        const float rx = displayRobotX();
-        const float ry = displayRobotY();
-        const float eyeZ = qBound(0.20f, m_firstPersonEyeZ, 2.0f);
-        const float pitchR = qDegreesToRadians(qBound(-30.0f, m_firstPersonPitch, 20.0f));
-        const float yaw = m_robotTheta + m_firstPersonYawOffset;
-        const QVector3D eye(rx, ry, eyeZ);
-        const QVector3D forward(std::cos(yaw) * std::cos(pitchR),
-                                std::sin(yaw) * std::cos(pitchR),
-                                std::sin(pitchR));
-        view.lookAt(eye, eye + forward, {0, 0, 1});
+            proj.ortho(-halfW, halfW, -halfH, halfH, 0.1f, 500.0f);
+            const QVector3D center(m_mapConfig.centerX(), m_mapConfig.centerY(), 0.0f);
+            const float eyeZ = qMax(qMax(m_mapConfig.widthMeters(), m_mapConfig.heightMeters()) * 2.0f, 20.0f);
+            view.lookAt(center + QVector3D(0.0f, 0.0f, eyeZ), center, QVector3D(0.0f, 1.0f, 0.0f));
+        } else {
+            proj.perspective(45.0f, aspect, 0.1f, 500.0f);
+
+            const float rx = displayRobotX();
+            const float ry = displayRobotY();
+            const float eyeZ = qBound(0.20f, m_firstPersonEyeZ, 2.0f);
+            const float pitchR = qDegreesToRadians(qBound(-30.0f, m_firstPersonPitch, 20.0f));
+            const float yaw = m_robotTheta + m_firstPersonYawOffset;
+            const QVector3D eye(rx, ry, eyeZ);
+            const QVector3D forward(std::cos(yaw) * std::cos(pitchR),
+                                    std::sin(yaw) * std::cos(pitchR),
+                                    std::sin(pitchR));
+            view.lookAt(eye, eye + forward, {0, 0, 1});
+        }
         const QMatrix4x4 mvp = proj * view * model;
 
         m_prog.bind();
@@ -3025,6 +3733,7 @@ void main() {
 
         drawGlobalPaths(mvp);
         drawRobotLabels(mvp);
+        drawStatusOverlay();
     }
 
     void mousePressEvent(QMouseEvent *event) override
@@ -3192,13 +3901,13 @@ private:
         addAreaOutlineLines(areas, 0.0f);
 
         for (const MapRect &obs : m_mapConfig.obstacles()) {
-            const bool elevated = obs.clearance > 0.0f;
-            const float z = elevated ? kElevatedMapHeight : 0.25f;
+            const float z = obstacleRenderHeight(obs);
+            const bool elevated = z > 0.0f;
             if (elevated) {
                 addFloorSurfaceWire(obs, z, false);
                 addRectWallSurfaceWire(obs, z);
             }
-            addMapRectLines(obs, z, true);
+            addMapRectLines(obs, z, elevated);
         }
 
         m_viewCenter = QVector3D(m_mapConfig.centerX(), m_mapConfig.centerY(), 0.0f);
@@ -3295,7 +4004,7 @@ private:
         }
 
         for (const MapRect &occ : occluders) {
-            const float z = kElevatedMapHeight;
+            const float z = obstacleRenderHeight(occ);
             appendQuad(&m_stageFillPoints, occ, z);
             appendWallQuad(&m_stageFillPoints, occ.xMin, occ.yMin, occ.xMax, occ.yMin, z);
             appendWallQuad(&m_stageFillPoints, occ.xMax, occ.yMin, occ.xMax, occ.yMax, z);
@@ -3361,11 +4070,12 @@ private:
             if (!isMapRobotId(robot.id) || robot.id == m_selectedRobot) {
                 continue;
             }
-            if (robot.shmOpen && !m_robotOdomAnchors.contains(robot.id)) {
+            const bool poseAvailable = robotPoseAvailable(robot);
+            if (poseAvailable && !m_robotOdomAnchors.contains(robot.id)) {
                 m_robotOdomAnchors.insert(robot.id, QPointF(robot.x, robot.y));
             }
             const MapPoint start = startPointForRobot(robot.id);
-            const QPointF pos = robot.shmOpen
+            const QPointF pos = poseAvailable
                 ? displayRobotPoint(robot.id, robot.x, robot.y)
                 : QPointF(start.x, start.y);
             if (m_mapConfig.isValid() && !isRobotInsideMap(static_cast<float>(pos.x()), static_cast<float>(pos.y()))) {
@@ -3374,7 +4084,7 @@ private:
             addRobotMarkerLines(robot.id,
                                 static_cast<float>(pos.x()),
                                 static_cast<float>(pos.y()),
-                                robot.shmOpen ? robot.theta : 0.0f);
+                                poseAvailable ? robot.theta : startThetaForRobot(m_mapConfig, robot.id));
         }
         uploadRobotMarkersToGpu();
     }
@@ -3409,7 +4119,14 @@ private:
         if (startId >= 0 && startId < starts.size()) {
             return starts[startId];
         }
-        return starts.first();
+        MapPoint fallback = starts.first();
+        if (robotId == 4) {
+            return fallback;
+        }
+        const int overflow = qMax(0, startId - starts.size());
+        fallback.x += static_cast<float>((overflow % 3) - 1) * 0.45f;
+        fallback.y += static_cast<float>((overflow / 3) + 1) * 0.45f;
+        return fallback;
     }
 
     QPointF displayRobotPoint(int robotId, float rawX, float rawY) const
@@ -3423,8 +4140,47 @@ private:
                        start.y + (rawY - static_cast<float>(anchor.y())));
     }
 
+    void setSelectedDisplayPoseToStart()
+    {
+        const MapPoint start = selectedStartPoint();
+        m_selectedDisplayX = start.x;
+        m_selectedDisplayY = start.y;
+        m_haveSelectedDisplayPose = m_mapConfig.isValid();
+        m_robotTheta = startThetaForRobot(m_mapConfig, m_selectedRobot);
+    }
+
+    void updateSelectedDisplayPose(const RobotSnapshot &snapshot, bool livePose)
+    {
+        if (!m_mapConfig.isValid()) {
+            m_selectedDisplayX = snapshot.x;
+            m_selectedDisplayY = snapshot.y;
+            m_haveSelectedDisplayPose = true;
+            return;
+        }
+
+        if (!livePose) {
+            setSelectedDisplayPoseToStart();
+            return;
+        }
+
+        if (isRobotInsideMap(snapshot.x, snapshot.y)) {
+            m_selectedDisplayX = snapshot.x;
+            m_selectedDisplayY = snapshot.y;
+            m_haveSelectedDisplayPose = true;
+            return;
+        }
+
+        const MapPoint start = selectedStartPoint();
+        m_selectedDisplayX = start.x + (snapshot.x - m_odomAnchorX);
+        m_selectedDisplayY = start.y + (snapshot.y - m_odomAnchorY);
+        m_haveSelectedDisplayPose = true;
+    }
+
     float displayRobotX() const
     {
+        if (m_haveSelectedDisplayPose) {
+            return m_selectedDisplayX;
+        }
         if (!m_mapConfig.isValid() || isRobotInsideMap()) {
             return m_robotX;
         }
@@ -3434,6 +4190,9 @@ private:
 
     float displayRobotY() const
     {
+        if (m_haveSelectedDisplayPose) {
+            return m_selectedDisplayY;
+        }
         if (!m_mapConfig.isValid() || isRobotInsideMap()) {
             return m_robotY;
         }
@@ -3522,11 +4281,19 @@ private:
         m_currentRobotLinePoints.append({static_cast<float>(outlineRight.x()), static_cast<float>(outlineRight.y()), outlineZ, colorId});
     }
 
+    float obstacleRenderHeight(const MapRect &obs) const
+    {
+        if (obs.z > 0.0f) {
+            return obs.z;
+        }
+        return obs.clearance > 0.0f ? kElevatedMapHeight : 0.0f;
+    }
+
     QVector<MapRect> elevatedOccluders() const
     {
         QVector<MapRect> occluders;
         for (const MapRect &obs : m_mapConfig.obstacles()) {
-            if (obs.clearance > 0.0f) {
+            if (obstacleRenderHeight(obs) > 0.0f) {
                 occluders.append(obs);
             }
         }
@@ -3595,8 +4362,8 @@ private:
 
     void addWallSurfaceWire(float x1, float y1, float x2, float y2, float zTop)
     {
-        constexpr float step = 0.75f;
-        constexpr float zStep = 0.10f;
+        constexpr float step = 2.40f;
+        constexpr float zStep = 0.50f;
         constexpr float eps = 0.001f;
 
         if (std::abs(y1 - y2) <= eps) {
@@ -3743,12 +4510,23 @@ private:
 
     void drawGlobalPaths(const QMatrix4x4 &mvp)
     {
+        if (!m_globalPathsVisible) {
+            return;
+        }
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing, true);
         const float pulse = pathPulseProgress();
 
         for (const RobotSnapshot &snapshot : m_snapshots) {
-            if (!isMapRobotId(snapshot.id) || snapshot.globalPath.size() < 2) {
+            if (!isMapRobotId(snapshot.id) || !globalPathRenderable(snapshot)) {
+                continue;
+            }
+            if (!m_globalPathRobotIds.contains(snapshot.id)) {
+                continue;
+            }
+            const bool showAll = m_selectedRobot < 0;
+            const bool selected = showAll || snapshot.id == m_selectedRobot;
+            if (!selected) {
                 continue;
             }
 
@@ -3766,9 +4544,8 @@ private:
             }
 
             QColor color = robotPathColor(snapshot.id);
-            const bool selected = snapshot.id == m_selectedRobot;
-            color.setAlpha(selected ? 220 : 145);
-            painter.setPen(QPen(color, selected ? 3.0 : 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            color.setAlpha(showAll ? 145 : 220);
+            painter.setPen(QPen(color, showAll ? 2.0 : 3.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
             for (int i = 0; i < pts.size() - 1; ++i) {
                 if (std::isnan(pts[i].x()) || std::isnan(pts[i + 1].x())) {
                     continue;
@@ -3776,7 +4553,7 @@ private:
                 painter.drawLine(pts[i], pts[i + 1]);
             }
 
-            drawPathGradientHighlight(painter, pts, robotPathColor(snapshot.id), selected, pulse);
+            drawPathGradientHighlight(painter, pts, robotPathColor(snapshot.id), !showAll, pulse);
         }
     }
 
@@ -3784,15 +4561,18 @@ private:
     {
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing, true);
-        painter.setPen(QColor(190, 245, 205));
-        painter.setFont(QFont("monospace", 15, QFont::Bold));
+        const bool overviewMode = m_selectedRobot < 0;
 
         for (const RobotSnapshot &robot : m_snapshots) {
             if (!isMapRobotId(robot.id)) {
                 continue;
             }
+            const bool faulted = !robot.shmOpen || !robot.connected || robot.faultLevel >= 3;
+            painter.setPen(faulted ? QColor("#ff4d4d") : QColor(190, 245, 205));
+            painter.setFont(QFont("monospace", faulted ? 17 : 15, QFont::Bold));
+            const bool poseAvailable = robotPoseAvailable(robot);
             const MapPoint start = startPointForRobot(robot.id);
-            const QPointF pos = robot.shmOpen
+            const QPointF pos = poseAvailable
                 ? displayRobotPoint(robot.id, robot.x, robot.y)
                 : QPointF(start.x, start.y);
             if (m_mapConfig.isValid() && !isRobotInsideMap(static_cast<float>(pos.x()), static_cast<float>(pos.y()))) {
@@ -3816,7 +4596,9 @@ private:
 
             const QPointF screen((ndcX * 0.5f + 0.5f) * width(),
                                  (0.5f - ndcY * 0.5f) * height());
-            const QString label = robotMapLabel(robot.id);
+            const QString label = faulted && !overviewMode
+                ? QString("%1 X").arg(robotMapLabel(robot.id))
+                : robotMapLabel(robot.id);
             const QFontMetrics fm(painter.font());
             const QRect textRect = fm.boundingRect(label);
             const qreal labelLiftPx = robot.id == m_selectedRobot ? 22.0 : 20.0;
@@ -3825,7 +4607,38 @@ private:
                                       textRect.width(),
                                       textRect.height());
             painter.drawText(centeredRect, Qt::AlignCenter, label);
+
+            if (faulted) {
+                const qreal penWidth = overviewMode ? 1.8 : 2.6;
+                const qreal mark = overviewMode
+                    ? qMax<qreal>(4.5, textRect.height() * 0.28)
+                    : qMax<qreal>(12.0, textRect.height() * 0.62);
+                painter.setPen(QPen(QColor("#ffffff"), penWidth, Qt::SolidLine, Qt::RoundCap));
+                const QPointF c = overviewMode
+                    ? screen
+                    : QPointF(screen.x(), centeredRect.center().y() + 20.0);
+                painter.drawLine(QPointF(c.x() - mark, c.y() - mark),
+                                 QPointF(c.x() + mark, c.y() + mark));
+                painter.drawLine(QPointF(c.x() + mark, c.y() - mark),
+                                 QPointF(c.x() - mark, c.y() + mark));
+            }
         }
+    }
+
+    void drawStatusOverlay()
+    {
+        if (!isMapRobotId(m_selectedRobot)) {
+            return;
+        }
+
+        QPainter painter(this);
+        painter.setPen(Qt::white);
+        painter.setFont(QFont("monospace", 10));
+        painter.drawText(10, 20, QString("robot: (%1, %2)")
+                         .arg(displayRobotX(), 0, 'f', 2)
+                         .arg(displayRobotY(), 0, 'f', 2));
+        painter.drawText(10, 36, QString("theta: %1 deg")
+                         .arg(qRadiansToDegrees(m_robotTheta), 0, 'f', 1));
     }
 
     void addAreaOutlineLines(const QVector<MapRect> &rects, float z)
@@ -4084,6 +4897,9 @@ private:
     float m_robotX = 0.0f;
     float m_robotY = 0.0f;
     float m_robotTheta = 0.0f;
+    float m_selectedDisplayX = 0.0f;
+    float m_selectedDisplayY = 0.0f;
+    bool m_haveSelectedDisplayPose = false;
     float m_firstPersonEyeZ = 0.20f;
     float m_firstPersonPitch = -8.0f;
     float m_firstPersonYawOffset = 0.0f;
@@ -4096,6 +4912,8 @@ private:
     float m_zMax = 2.5f;
     float m_connThresh = 0.75f;
     bool m_glReady = false;
+    bool m_globalPathsVisible = false;
+    QSet<int> m_globalPathRobotIds;
     int m_locMvp = -1;
     int m_locZMin = -1;
     int m_locZMax = -1;
@@ -4113,13 +4931,68 @@ MapWidget::MapWidget(QWidget *parent)
     m_stack = new QStackedWidget(this);
     m_map2d = new LidarMap2DView;
     m_map3d = new PointCloud3DView;
+    m_map2d->setRouteSelectionChangedCallback([this]() {
+        updateRouteButtonState();
+    });
     m_stack->addWidget(m_map2d);
     m_stack->addWidget(m_map3d);
     layout->addWidget(m_stack, 0, 0);
 
+    m_routeButton = new QPushButton(QStringLiteral("경로 선택"), this);
+    m_routeButton->setCursor(Qt::PointingHandCursor);
+    m_routeButton->setMinimumSize(92, 22);
+    m_routeButton->setObjectName("routeButton");
+    m_routeButton->setStyleSheet(
+        "#routeButton {"
+        " background:#071017;"
+        " color:#dce7f3;"
+        " border:1px solid #2b4050;"
+        " border-radius:4px;"
+        " padding:1px 10px;"
+        " font-size:13px;"
+        " font-weight:800;"
+        "}"
+        "#routeButton:hover { border-color:#ffd21a; color:#ffd21a; }"
+        "#routeButton:pressed { background:#1b1805; color:#ffd21a; }"
+        "#routeButton[ready=\"true\"] {"
+        " background:#062115;"
+        " color:#26d97c;"
+        " border-color:#26d97c;"
+        "}"
+        "#routeButton[ready=\"true\"]:hover {"
+        " color:#5dffa8;"
+        " border-color:#5dffa8;"
+        "}");
+    layout->addWidget(m_routeButton, 0, 0, Qt::AlignRight | Qt::AlignBottom);
+    connect(m_routeButton, &QPushButton::clicked, this, [this]() {
+        if (m_routeGenerationPending) {
+            return;
+        }
+        if (!m_map2d->isRouteSelectionEnabled()) {
+            m_map2d->setRouteSelectionEnabled(true);
+            updateRouteButtonState();
+            return;
+        }
+        if (m_map2d->routeSelectionComplete()) {
+            const int selectedRobot = m_selectedRobot;
+            const QPointF routeEnd = m_map2d->routeEnd();
+            m_routeGenerationPending = true;
+            updateRouteButtonState();
+            QTimer::singleShot(500, this, [this, selectedRobot, routeEnd]() {
+                emit routeGenerationRequested(selectedRobot, routeEnd);
+                m_map2d->setRouteSelectionEnabled(false);
+                m_routeGenerationPending = false;
+                updateRouteButtonState();
+            });
+            return;
+        }
+        m_map2d->setRouteSelectionEnabled(false);
+        updateRouteButtonState();
+    });
+
     m_resetViewButton = new QPushButton("RESET VIEW", this);
     m_resetViewButton->setCursor(Qt::PointingHandCursor);
-    m_resetViewButton->setMinimumSize(82, 22);
+    m_resetViewButton->setFixedSize(m_routeButton->minimumSize());
     m_resetViewButton->setObjectName("resetViewButton");
     m_resetViewButton->setStyleSheet(
         "#resetViewButton {"
@@ -4172,18 +5045,91 @@ void MapWidget::setSelectedRobot(int robotId)
     }
 }
 
+void MapWidget::showMoveCommandIndicators(const QVector<int> &robotIds)
+{
+    m_map2d->showMoveCommandIndicators(robotIds);
+}
+
 void MapWidget::setViewMode3D(bool enabled)
 {
     m_view3d = enabled;
     m_stack->setCurrentWidget(enabled ? static_cast<QWidget *>(m_map3d) : static_cast<QWidget *>(m_map2d));
     m_resetViewButton->setVisible(enabled);
+    if (enabled && m_map2d->isRouteSelectionEnabled()) {
+        m_map2d->setRouteSelectionEnabled(false);
+    }
+    updateRouteButtonState();
 }
 
-void MapWidget::fitToAvailableSize()
+void MapWidget::setGlobalPathsVisible(bool visible)
 {
-    m_map2d->fitToCurrentSize();
+    m_map2d->setGlobalPathsVisible(visible);
+    m_map3d->setGlobalPathsVisible(visible);
+}
+
+void MapWidget::setGlobalPathRobotIds(const QVector<int> &robotIds)
+{
+    m_globalPathRobotIds = robotIds;
+    applyGlobalPathRobotIds();
+}
+
+void MapWidget::addGlobalPathRobotIds(const QVector<int> &robotIds)
+{
+    for (int id : robotIds) {
+        if (!m_globalPathRobotIds.contains(id)) {
+            m_globalPathRobotIds.append(id);
+        }
+    }
+    applyGlobalPathRobotIds();
+}
+
+void MapWidget::applyGlobalPathRobotIds()
+{
+    QSet<int> ids;
+    ids.reserve(m_globalPathRobotIds.size());
+    for (int id : m_globalPathRobotIds) {
+        ids.insert(id);
+    }
+    m_map2d->setGlobalPathRobotIds(ids);
+    m_map3d->setGlobalPathRobotIds(ids);
+}
+
+void MapWidget::fitToAvailableSize(float targetScale)
+{
+    m_map2d->fitToCurrentSize(targetScale);
 }
 
 void MapWidget::paintEvent(QPaintEvent *)
 {
+}
+
+void MapWidget::updateRouteButtonState()
+{
+    if (!m_routeButton) {
+        return;
+    }
+
+    const bool selectable = !m_view3d;
+    m_routeButton->setVisible(selectable);
+    if (!selectable) {
+        return;
+    }
+    if (m_routeGenerationPending) {
+        m_routeButton->setText(QStringLiteral("경로 생성중.."));
+        m_routeButton->setEnabled(false);
+        m_routeButton->setProperty("ready", true);
+        m_routeButton->style()->unpolish(m_routeButton);
+        m_routeButton->style()->polish(m_routeButton);
+        return;
+    }
+
+    const bool enabled = m_map2d->isRouteSelectionEnabled();
+    const bool ready = m_map2d->routeSelectionComplete();
+    m_routeButton->setEnabled(true);
+    m_routeButton->setText(!enabled ? QStringLiteral("경로 선택")
+                                    : (ready ? QStringLiteral("경로 생성")
+                                             : QStringLiteral("선택 취소")));
+    m_routeButton->setProperty("ready", ready);
+    m_routeButton->style()->unpolish(m_routeButton);
+    m_routeButton->style()->polish(m_routeButton);
 }

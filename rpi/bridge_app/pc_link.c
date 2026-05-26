@@ -80,6 +80,11 @@ void *pc_link_thread(void *arg) {
 
     int fd = create_pc_socket();
     if (fd < 0) return NULL;
+    if (ctx->pc_peer) {
+        pthread_mutex_lock(&ctx->pc_peer->mu);
+        ctx->pc_peer->fd = fd;
+        pthread_mutex_unlock(&ctx->pc_peer->mu);
+    }
 
     fprintf(stderr, "[pc_link] 포트 %d 대기\n", PC_LINK_PORT);
 
@@ -110,16 +115,23 @@ void *pc_link_thread(void *arg) {
             perror("[pc_link] recvfrom");
             continue;
         }
-        if (n != (ssize_t)sizeof(CmdPacket)) continue;
-
         /* PC 주소 학습 */
         if (!pc_addr_set) {
             pc_addr     = src;
             pc_addr_set = 1;
+            if (ctx->pc_peer) {
+                pthread_mutex_lock(&ctx->pc_peer->mu);
+                ctx->pc_peer->addr = src;
+                ctx->pc_peer->set = 1;
+                pthread_mutex_unlock(&ctx->pc_peer->mu);
+            }
             char ip[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &src.sin_addr, ip, sizeof(ip));
-            fprintf(stderr, "[pc_link] PC 주소 등록: %s\n", ip);
+            fprintf(stderr, "[pc_link] PC 주소 등록: %s:%u -> tx port %u\n",
+                    ip, ntohs(src.sin_port), PC_LINK_PORT);
         }
+
+        if (n != (ssize_t)sizeof(CmdPacket)) continue;
 
         CmdPacket *cmd = (CmdPacket *)buf;
         send_cmd_to_jetson(cmd, ctx->api, fd, CMD_PRIORITY_NORMAL,
@@ -128,6 +140,13 @@ void *pc_link_thread(void *arg) {
     }
 
     close(fd);
+    if (ctx->pc_peer) {
+        pthread_mutex_lock(&ctx->pc_peer->mu);
+        if (ctx->pc_peer->fd == fd) {
+            ctx->pc_peer->fd = -1;
+        }
+        pthread_mutex_unlock(&ctx->pc_peer->mu);
+    }
     fprintf(stderr, "[pc_link] 종료\n");
     return NULL;
 }

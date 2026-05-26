@@ -235,7 +235,11 @@ void RobotShmConnection::readState(RobotSnapshot &snapshot)
         return;
     }
 
+    bool metaConnectedRead = false;
+    bool metaConnected = false;
     if (pthread_rwlock_rdlock(&shm->meta_lock) == 0) {
+        metaConnectedRead = true;
+        metaConnected = shm->meta.jetson_connected.load(std::memory_order_acquire) != 0;
         snapshot.connected = shm->meta.jetson_connected.load(std::memory_order_acquire) != 0;
         snapshot.imgDropCount = shm->meta.img_drop_count;
         snapshot.lidarDropCount = shm->meta.lidar_drop_count;
@@ -246,7 +250,7 @@ void RobotShmConnection::readState(RobotSnapshot &snapshot)
     if (pthread_rwlock_rdlock(&shm->state_lock) == 0) {
         state = shm->state;
         pthread_rwlock_unlock(&shm->state_lock);
-        snapshot.connected = snapshot.connected || state.connected != 0;
+        snapshot.connected = metaConnectedRead ? metaConnected : state.connected != 0;
         snapshot.mode = state.mode;
         snapshot.faultLevel = state.fault_level;
         snapshot.x = state.x;
@@ -289,6 +293,12 @@ void RobotShmConnection::readState(RobotSnapshot &snapshot)
         snapshot.vy = shm->odom_vy;
         snapshot.omega = shm->odom_omega;
         snapshot.odomSeq = shm->odom_seq;
+        snapshot.odomTimestampUs = shm->odom_timestamp_us;
+        pthread_rwlock_unlock(&shm->odom_lock);
+    }
+
+    if (pthread_rwlock_rdlock(&shm->odom_lock) == 0) {
+        snapshot.odomTimestampUs = shm->odom_timestamp_us;
         pthread_rwlock_unlock(&shm->odom_lock);
     }
 
@@ -406,7 +416,7 @@ void RobotShmConnection::readEvents(const std::function<void(const UiEvent &)> &
 }
 
 bool RobotShmConnection::sendCommand(uint8_t commandType, float vx, float vy, float omega,
-                                     uint32_t seq, QString *errorMessage)
+                                     uint32_t seq, QString *errorMessage, uint8_t flags)
 {
     if (m_robotId < 0 || m_robotId >= kMaxRobots) {
         if (errorMessage) {
@@ -433,7 +443,10 @@ bool RobotShmConnection::sendCommand(uint8_t commandType, float vx, float vy, fl
     entry.cmd.seq = seq;
     entry.priority = (commandType == CMD_TYPE_ESTOP)
         ? CMD_PRIORITY_CRITICAL : CMD_PRIORITY_NORMAL;
-    entry.flags = (entry.priority >= CMD_PRIORITY_HIGH) ? CMD_FLAG_REQUIRES_ACK : 0;
+    entry.flags = flags;
+    if (entry.priority >= CMD_PRIORITY_HIGH) {
+        entry.flags |= CMD_FLAG_REQUIRES_ACK;
+    }
 
     if (!pushCommandToShm(shm, entry)) {
         if (errorMessage) {

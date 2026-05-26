@@ -19,6 +19,13 @@ typedef struct {
 } JetsonAddrTable;
 
 typedef struct {
+    pthread_mutex_t    mu;
+    struct sockaddr_in addr;
+    int                set;
+    int                fd;
+} PcCommandPeer;
+
+typedef struct {
     uint8_t  in_use;
     uint8_t  requires_ack;
     CmdPacket cmd;
@@ -46,6 +53,7 @@ typedef struct {
     FragIndexQueue  *fq_arr[MAX_ROBOTS];
     RxPacketPool    *rx_pool;
     JetsonAddrTable *addr_table;
+    PcCommandPeer   *pc_peer;
     int              num_robots;
     atomic_bool     *stop;
     BridgeApi       *api;
@@ -54,6 +62,7 @@ typedef struct {
 /* ─── jetson_tx ─────────────────────────────────────────────── */
 typedef struct {
     JetsonAddrTable *addr_table;
+    PcCommandPeer   *pc_peer;
     SharedData      *shm_arr[MAX_ROBOTS];
     int              num_robots;
     atomic_bool     *stop;
@@ -71,6 +80,7 @@ typedef struct {
 /* ─── pc_link ───────────────────────────────────────────────── */
 typedef struct {
     JetsonAddrTable *addr_table;
+    PcCommandPeer   *pc_peer;
     SharedData      *shm_arr[MAX_ROBOTS];
     int              num_robots;
     atomic_bool     *stop;

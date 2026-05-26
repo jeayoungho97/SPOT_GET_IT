@@ -24,7 +24,8 @@ public:
     void start(int maxRobots = kMaxRobots);
     QVector<RobotSnapshot> snapshots() const { return m_snapshots; }
     bool sendCommand(int robotId, uint8_t commandType,
-                     float vx, float vy, float omega, QString *errorMessage);
+                     float vx, float vy, float omega, QString *errorMessage,
+                     uint8_t flags = 0);
 
 signals:
     void snapshotsUpdated(const QVector<RobotSnapshot> &snapshots);

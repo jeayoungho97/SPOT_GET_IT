@@ -25,7 +25,7 @@ public:
     bool waitForImage(int timeoutMs);
     RobotSnapshot poll(const std::function<void(const UiEvent &)> &eventSink);
     bool sendCommand(uint8_t commandType, float vx, float vy, float omega,
-                     uint32_t seq, QString *errorMessage);
+                     uint32_t seq, QString *errorMessage, uint8_t flags = 0);
     void close();
 
 private:

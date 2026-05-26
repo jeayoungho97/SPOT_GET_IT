@@ -9,6 +9,7 @@
 #include <cstdint>
 
 constexpr int kMaxRobots = 10;
+constexpr int kEventTypeCmdAck = 4;
 constexpr int kEventTypeVictimDetected = 8;
 
 struct UiEvent {
@@ -52,6 +53,7 @@ struct RobotSnapshot {
     float lidarFps = 0.0f;
     float dropRate = 0.0f;
     uint32_t odomSeq = 0;
+    quint64 odomTimestampUs = 0;
     uint32_t missionId = 0;
     uint32_t waypointIdx = 0;
     uint32_t totalWaypoints = 0;
@@ -59,6 +61,7 @@ struct RobotSnapshot {
     bool pathOk = false;
     bool poseOk = false;
     bool goalReached = false;
+    bool commandMoving = false;
     uint32_t nearestPathIdx = 0;
     float distanceToNearestM = 0.0f;
     float nearestX = 0.0f;

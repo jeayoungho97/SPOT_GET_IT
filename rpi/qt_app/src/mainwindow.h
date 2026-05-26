@@ -10,13 +10,16 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QMainWindow>
+#include <QPoint>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSet>
 #include <QStackedWidget>
 #include <QVector>
 
 class QDateEdit;
 class QLineEdit;
+class QScrollArea;
 class QTableWidget;
 
 class MainWindow : public QMainWindow
@@ -36,6 +39,7 @@ private slots:
     void sendStandby();
     void sendStop();
     void sendEstop();
+    void handleRouteGenerationRequested(int robotId, const QPointF &end);
     void showPage(int index);
     void showMap2D();
     void showMap3D();
@@ -58,6 +62,25 @@ private:
     QString formatMissionTime() const;
     void updateMissionSummary();
     void updatePacketLogPanel();
+    void startDemoMode(int count);
+    QVector<RobotSnapshot> makeDemoSnapshots(int count) const;
+    void setRobotCount(int count);
+    void syncRobotUi(int count);
+    void syncVideoTiles(int count);
+    void syncStatusRows(int count);
+    void syncRobotStatusCards(int count);
+    void resetVideoLayout(int count);
+    bool setVideoPlacementIfFree(int robotId, int row, int column, int rowSpan, int columnSpan);
+    bool autoArrangeVideoLayout(int fixedRobotId, int row, int column, int rowSpan, int columnSpan);
+    bool videoPlacementAvailable(int robotId, int row, int column, int rowSpan, int columnSpan) const;
+    void updateVideoLayoutBodySize();
+    QPoint videoGridCellAt(const QPoint &globalPos) const;
+    void moveVideoTile(int robotId, const QPoint &globalPos);
+    void resizeVideoTile(int robotId, int edgeMask, const QPoint &globalPos);
+    void shrinkVideoTile(int robotId, int edgeMask);
+    void relayoutVideoTiles();
+    void relayoutRobotStatusCards();
+    void clampSelectedRobot();
     void refreshRobotSelector();
     void refreshRobotList();
     void sendCommand(uint8_t commandType, float vx = 0.0f, float vy = 0.0f, float omega = 0.0f);
@@ -79,7 +102,11 @@ private:
 
     ShmMonitor m_monitor;
     QVector<RobotSnapshot> m_snapshots;
-    int m_selectedRobot = 0;
+    QSet<int> m_commandMovingRobotIds;
+    int m_robotCount = 4;
+    int m_selectedRobot = -1;
+    bool m_demoMode = false;
+    QTimer *m_demoTimer = nullptr;
 
     QLabel *m_system = nullptr;
     QLabel *m_clock = nullptr;
@@ -120,8 +147,19 @@ private:
     int m_logRowsPerPage = 25;
     QStackedWidget *m_contentStack = nullptr;
     QGridLayout *m_videoGrid = nullptr;
-    QVBoxLayout *m_robotStatusLayout = nullptr;
+    QGridLayout *m_robotStatusGrid = nullptr;
+    QGridLayout *m_robotCardGrid = nullptr;
+    QScrollArea *m_videoScroll = nullptr;
+    QScrollArea *m_robotStatusScroll = nullptr;
+    QScrollArea *m_robotCardScroll = nullptr;
     QVector<VideoTile *> m_videoTiles;
+    struct VideoPlacement {
+        int row = 0;
+        int column = 0;
+        int rowSpan = 1;
+        int columnSpan = 1;
+    };
+    QVector<VideoPlacement> m_videoPlacements;
     VideoTile *m_expandedVideoTile = nullptr;
     QWidget *m_cameraPage = nullptr;
     QLabel *m_cameraTitle = nullptr;
@@ -139,6 +177,7 @@ private:
     QVector<RobotStatusCard *> m_robotStatusCards;
     QVector<QPushButton *> m_navButtons;
     QComboBox *m_robotSelector = nullptr;
+    QLabel *m_robotTotalLabel = nullptr;
     QVector<int> m_availableRobotIds;
     QDateTime m_missionStartedAt;
     bool m_missionTimerActive = false;

@@ -1,8 +1,10 @@
 #include "mapdata.h"
 
 #include <QFile>
+#include <QHash>
 #include <QRegularExpression>
 #include <QTextStream>
+#include <QtMath>
 
 static int indentOf(const QString &line)
 {
@@ -56,6 +58,50 @@ static bool parsePointArray(const QString &text, float *x, float *y)
     *x = px;
     *y = py;
     return true;
+}
+
+static bool parseListFloat(const QString &line, float *out)
+{
+    QString text = line.trimmed();
+    if (!text.startsWith("-")) {
+        return false;
+    }
+    text = text.mid(1).trimmed();
+
+    bool ok = false;
+    const float value = text.toFloat(&ok);
+    if (ok) {
+        *out = value;
+    }
+    return ok;
+}
+
+static bool parsePointListBlock(const QVector<QString> &lines, int *index, int itemIndent, float *x, float *y)
+{
+    QVector<float> values;
+    for (int j = *index + 1; j < lines.size(); ++j) {
+        const QString raw = lines[j];
+        const QString line = stripComment(raw);
+        if (line.isEmpty()) {
+            continue;
+        }
+        if (indentOf(raw) < itemIndent || !line.startsWith("-")) {
+            break;
+        }
+
+        float value = 0.0f;
+        if (!parseListFloat(line, &value)) {
+            return false;
+        }
+        values.append(value);
+        if (values.size() == 2) {
+            *x = values[0];
+            *y = values[1];
+            *index = j;
+            return true;
+        }
+    }
+    return false;
 }
 
 void MapConfig::clear()
@@ -112,6 +158,7 @@ bool MapConfig::loadFromYaml(const QString &path, QString *error)
         lines.append(in.readLine());
     }
 
+    QHash<QString, float> startThetaById;
     for (int i = 0; i < lines.size(); ++i) {
         const QString raw = lines[i];
         const QString line = stripComment(raw);
@@ -139,7 +186,10 @@ bool MapConfig::loadFromYaml(const QString &path, QString *error)
 
                 MapPoint pt;
                 pt.id = child.left(colon).trimmed();
-                if (parsePointArray(child.mid(colon + 1), &pt.x, &pt.y)) {
+                const QString inlinePoint = child.mid(colon + 1);
+                if (parsePointArray(inlinePoint, &pt.x, &pt.y)
+                    || parsePointListBlock(lines, &i, indentOf(childRaw), &pt.x, &pt.y)) {
+                    pt.theta = startThetaById.value(pt.id, 0.0f);
                     m_starts.append(pt);
                     includePoint(pt.x, pt.y);
                 }
@@ -147,8 +197,45 @@ bool MapConfig::loadFromYaml(const QString &path, QString *error)
             continue;
         }
 
+        if (line == "start_thetas_deg:" || line == "start_headings_deg:") {
+            const int baseIndent = indentOf(raw);
+            for (++i; i < lines.size(); ++i) {
+                const QString childRaw = lines[i];
+                const QString child = stripComment(childRaw);
+                if (child.isEmpty()) {
+                    continue;
+                }
+                if (indentOf(childRaw) <= baseIndent) {
+                    --i;
+                    break;
+                }
+
+                const int colon = child.indexOf(':');
+                if (colon <= 0) {
+                    continue;
+                }
+
+                bool ok = false;
+                const QString id = child.left(colon).trimmed();
+                const float thetaRad = qDegreesToRadians(child.mid(colon + 1).trimmed().toFloat(&ok));
+                if (!ok) {
+                    continue;
+                }
+
+                startThetaById.insert(id, thetaRad);
+                for (MapPoint &start : m_starts) {
+                    if (start.id == id) {
+                        start.theta = thetaRad;
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+
         if (line.startsWith("end:")) {
-            if (parsePointArray(line.mid(QString("end:").size()), &m_end.x, &m_end.y)) {
+            if (parsePointArray(line.mid(QString("end:").size()), &m_end.x, &m_end.y)
+                || parsePointListBlock(lines, &i, indentOf(raw), &m_end.x, &m_end.y)) {
                 m_end.id = "end";
                 m_hasEnd = true;
                 includePoint(m_end.x, m_end.y);
@@ -164,7 +251,8 @@ bool MapConfig::loadFromYaml(const QString &path, QString *error)
                 if (item.isEmpty()) {
                     continue;
                 }
-                if (indentOf(itemRaw) <= baseIndent) {
+                const int itemIndent = indentOf(itemRaw);
+                if (itemIndent < baseIndent || (itemIndent == baseIndent && !item.startsWith("-"))) {
                     --i;
                     break;
                 }
@@ -178,7 +266,6 @@ bool MapConfig::loadFromYaml(const QString &path, QString *error)
                     rect.id = item.mid(3).trimmed();
                 }
 
-                const int itemIndent = indentOf(itemRaw);
                 for (++i; i < lines.size(); ++i) {
                     const QString propRaw = lines[i];
                     const QString prop = stripComment(propRaw);

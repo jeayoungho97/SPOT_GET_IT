@@ -46,6 +46,7 @@
 
 #define CMD_FLAG_REQUIRES_ACK   0x01
 #define CMD_FLAG_BROADCAST      0x02
+#define CMD_FLAG_TARGET_PC      0x80
 
 #define CMD_PRIORITY_LOW        1
 #define CMD_PRIORITY_NORMAL     3
@@ -97,8 +98,8 @@ typedef struct __attribute__((packed)) {
 
 /* ─── 인입 커맨드 패킷 (Qt Unix Socket / PC UDP:9002 공용) ───── */
 typedef struct __attribute__((packed)) {
-    uint8_t  robot_id;
-    uint8_t  cmd_type;
+    uint8_t  robot_id; // 
+    uint8_t  cmd_type; // 0은 - 
     float    vx;
     float    vy;
     float    omega;

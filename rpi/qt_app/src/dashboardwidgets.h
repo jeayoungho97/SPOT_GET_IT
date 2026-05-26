@@ -5,10 +5,12 @@
 #include "shmmonitor.h"
 
 #include <QFrame>
+#include <QElapsedTimer>
 #include <QLabel>
 #include <QListWidget>
+#include <QPoint>
+#include <QPointF>
 #include <QPushButton>
-#include <QElapsedTimer>
 #include <QWidget>
 
 class LidarMap2DView;
@@ -24,6 +26,14 @@ class VideoTile : public QFrame
     Q_OBJECT
 
 public:
+    enum ResizeEdge {
+        NoEdge = 0x0,
+        LeftEdge = 0x1,
+        TopEdge = 0x2,
+        RightEdge = 0x4,
+        BottomEdge = 0x8
+    };
+
     explicit VideoTile(int robotId, QWidget *parent = nullptr);
     QSize sizeHint() const override;
     QSize minimumSizeHint() const override;
@@ -32,15 +42,29 @@ public:
 
 signals:
     void clicked(int robotId);
+    void moveRequested(int robotId, const QPoint &globalPos);
+    void resizeRequested(int robotId, int edgeMask, const QPoint &globalPos);
+    void shrinkRequested(int robotId, int edgeMask);
 
 protected:
+    void mouseDoubleClickEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
 
 private:
+    int resizeEdgeAt(const QPoint &pos) const;
+
     int m_robotId = 0;
     QLabel *m_title = nullptr;
     QLabel *m_image = nullptr;
     QLabel *m_badge = nullptr;
+    QElapsedTimer m_noFrameTimer;
+    QPoint m_pressPos;
+    QPoint m_lastDragPreviewGlobalPos;
+    int m_pressEdgeMask = NoEdge;
+    bool m_dragging = false;
+    bool m_hasLastDragPreview = false;
 };
 
 class StatusRow : public QFrame
@@ -58,6 +82,7 @@ private:
     QProgressBar *m_batteryBar = nullptr;
     QLabel *m_mission = nullptr;
     QWidget *m_signal = nullptr;
+    bool m_everConnected = false;
 };
 
 class RobotStatusCard : public QFrame
@@ -104,6 +129,8 @@ private:
     float m_fakeTempC = 0.0f;
     bool m_fakeTelemetryValid = false;
     bool m_lidarEverSeen = false;
+    bool m_everConnected = false;
+    QString m_telemetryTextColor = QStringLiteral("#dce7f3");
     float m_lastPoseX = 0.0f;
     float m_lastPoseY = 0.0f;
     float m_lastPoseTheta = 0.0f;
@@ -120,13 +147,23 @@ public:
     bool loadMapConfig(const QString &path);
     void setSnapshots(const QVector<RobotSnapshot> &snapshots);
     void setSelectedRobot(int robotId);
+    void showMoveCommandIndicators(const QVector<int> &robotIds);
     void setViewMode3D(bool enabled);
-    void fitToAvailableSize();
+    void setGlobalPathsVisible(bool visible);
+    void setGlobalPathRobotIds(const QVector<int> &robotIds);
+    void addGlobalPathRobotIds(const QVector<int> &robotIds);
+    void fitToAvailableSize(float targetScale = 0.0f);
+
+signals:
+    void routeGenerationRequested(int robotId, const QPointF &end);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
 
 private:
+    void updateRouteButtonState();
+    void applyGlobalPathRobotIds();
+
     QVector<RobotSnapshot> m_snapshots;
     int m_selectedRobot = 0;
     bool m_view3d = false;
@@ -134,6 +171,9 @@ private:
     LidarMap2DView *m_map2d = nullptr;
     PointCloud3DView *m_map3d = nullptr;
     QPushButton *m_resetViewButton = nullptr;
+    QPushButton *m_routeButton = nullptr;
+    QVector<int> m_globalPathRobotIds;
+    bool m_routeGenerationPending = false;
 };
 
 QFrame *makePanel(const QString &title, QWidget *body);

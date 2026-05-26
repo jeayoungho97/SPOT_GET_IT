@@ -73,7 +73,8 @@ void ShmMonitor::flushSnapshots()
 }
 
 bool ShmMonitor::sendCommand(int robotId, uint8_t commandType,
-                             float vx, float vy, float omega, QString *errorMessage)
+                             float vx, float vy, float omega, QString *errorMessage,
+                             uint8_t flags)
 {
     if (robotId < 0 || robotId >= m_maxRobots) {
         if (errorMessage) {
@@ -83,5 +84,5 @@ bool ShmMonitor::sendCommand(int robotId, uint8_t commandType,
     }
 
     RobotShmConnection connection(robotId);
-    return connection.sendCommand(commandType, vx, vy, omega, m_commandSeq++, errorMessage);
+    return connection.sendCommand(commandType, vx, vy, omega, m_commandSeq++, errorMessage, flags);
 }
