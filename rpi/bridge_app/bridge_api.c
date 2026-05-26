@@ -12,6 +12,10 @@
 
 #define COMMAND_ACK_TIMEOUT_US 250000ULL
 
+static int packet_type_updates_robot_health(uint8_t pkt_type) {
+    return pkt_type == PKT_TYPE_ODOM || pkt_type == PKT_TYPE_PATH_PROGRESS;
+}
+
 static void format_spot_robot_id(char *dst, size_t dst_size, int robot_id) {
     if (!dst || dst_size == 0) return;
     const int robot_num = robot_id + 1;
@@ -104,15 +108,18 @@ void bridge_api_publish_event(BridgeApi *api, uint8_t robot_id,
 
 void bridge_api_note_rx(BridgeApi *api, uint8_t robot_id, uint8_t pkt_type,
                         uint64_t timestamp_us) {
-    (void)pkt_type;
     (void)timestamp_us;
     if (!api || robot_id >= (uint8_t)api->num_robots) return;
     SharedData *shm = api->shm_arr[robot_id];
+    const int health_packet = packet_type_updates_robot_health(pkt_type);
     uint8_t was_connected = atomic_load(&shm->meta.jetson_connected);
-    atomic_store(&shm->meta.jetson_connected, 1);
-    atomic_fetch_add(&shm->meta.pkt_count, 1);
     atomic_fetch_add(&shm->metrics.rx_packets, 1);
     shm->metrics.last_rx_us = now_us();
+
+    if (!health_packet) return;
+
+    atomic_store(&shm->meta.jetson_connected, 1);
+    atomic_fetch_add(&shm->meta.pkt_count, 1);
 
     pthread_rwlock_wrlock(&shm->state_lock);
     shm->state.seq++;

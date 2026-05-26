@@ -51,6 +51,7 @@ typedef struct {
     atomic_bool      stop;
 
     JetsonAddrTable  addr_table;
+    PcCommandPeer    pc_peer;
     BridgeApi        api;
     JetsonRxCtx      rx_ctx;
     JetsonTxCtx      tx_ctx;
@@ -186,6 +187,7 @@ static void cleanup_all(int num_robots) {
     }
     rx_packet_pool_destroy(&g_ctx.rx_pool);
     pthread_mutex_destroy(&g_ctx.addr_table.mu);
+    pthread_mutex_destroy(&g_ctx.pc_peer.mu);
     bridge_api_destroy(&g_ctx.api);
 }
 
@@ -240,8 +242,8 @@ static void request_stop_all(void) {
 
 /* ─── watchdog ──────────────────────────────────────────────── */
 static void watchdog_loop(void) {
-    int prev_pkt_count[MAX_ROBOTS] = {0};
-    int no_pkt_sec[MAX_ROBOTS]     = {0};
+    int prev_health_pkt_count[MAX_ROBOTS] = {0};
+    int no_health_pkt_sec[MAX_ROBOTS]     = {0};
 
     while (!atomic_load_explicit(&g_ctx.stop, memory_order_acquire)) {
         sleep(1);
@@ -257,15 +259,15 @@ static void watchdog_loop(void) {
 
             uint8_t connected = atomic_load(&shm->meta.jetson_connected);
 
-            /* odom뿐 아니라 모든 패킷 수신 여부로 연결 판단 */
-            int cur_pkt = atomic_load(&shm->meta.pkt_count);
-            if (cur_pkt == prev_pkt_count[i]) {
-                if (++no_pkt_sec[i] >= 3)
+            /* ODOM 또는 PATH_PROGRESS 수신 여부로 연결 판단 */
+            int cur_health_pkt = atomic_load(&shm->meta.pkt_count);
+            if (cur_health_pkt == prev_health_pkt_count[i]) {
+                if (++no_health_pkt_sec[i] >= 2)
                     atomic_store(&shm->meta.jetson_connected, 0);
             } else {
-                no_pkt_sec[i] = 0;
+                no_health_pkt_sec[i] = 0;
             }
-            prev_pkt_count[i] = cur_pkt;
+            prev_health_pkt_count[i] = cur_health_pkt;
             if (!atomic_load(&shm->meta.jetson_connected) && connected) {
                 pthread_rwlock_wrlock(&shm->state_lock);
                 shm->state.seq++;
@@ -301,6 +303,9 @@ int main(int argc, char *argv[]) {
     /* addr_table 초기화 */
     memset(&g_ctx.addr_table, 0, sizeof(g_ctx.addr_table));
     pthread_mutex_init(&g_ctx.addr_table.mu, NULL);
+    memset(&g_ctx.pc_peer, 0, sizeof(g_ctx.pc_peer));
+    g_ctx.pc_peer.fd = -1;
+    pthread_mutex_init(&g_ctx.pc_peer.mu, NULL);
     rx_packet_pool_init(&g_ctx.rx_pool);
 
     /* SHM + FragQueue 초기화 */
@@ -313,6 +318,7 @@ int main(int argc, char *argv[]) {
             }
             rx_packet_pool_destroy(&g_ctx.rx_pool);
             pthread_mutex_destroy(&g_ctx.addr_table.mu);
+            pthread_mutex_destroy(&g_ctx.pc_peer.mu);
             return 1;
         }
         frag_index_queue_init(&g_ctx.fq[i]);
@@ -324,6 +330,7 @@ int main(int argc, char *argv[]) {
     g_ctx.rx_ctx.num_robots = num_robots;
     g_ctx.rx_ctx.stop       = &g_ctx.stop;
     g_ctx.rx_ctx.addr_table = &g_ctx.addr_table;
+    g_ctx.rx_ctx.pc_peer    = &g_ctx.pc_peer;
     g_ctx.rx_ctx.api        = &g_ctx.api;
     g_ctx.rx_ctx.rx_pool    = &g_ctx.rx_pool;
     for (int i = 0; i < num_robots; i++) {
@@ -332,6 +339,7 @@ int main(int argc, char *argv[]) {
     }
 
     g_ctx.tx_ctx.addr_table = &g_ctx.addr_table;
+    g_ctx.tx_ctx.pc_peer    = &g_ctx.pc_peer;
     g_ctx.tx_ctx.num_robots = num_robots;
     g_ctx.tx_ctx.stop       = &g_ctx.stop;
     g_ctx.tx_ctx.api        = &g_ctx.api;
@@ -344,6 +352,7 @@ int main(int argc, char *argv[]) {
     g_ctx.timer_ctx.api        = &g_ctx.api;
 
     g_ctx.pc_ctx.addr_table = &g_ctx.addr_table;
+    g_ctx.pc_ctx.pc_peer    = &g_ctx.pc_peer;
     g_ctx.pc_ctx.num_robots = num_robots;
     g_ctx.pc_ctx.stop       = &g_ctx.stop;
     g_ctx.pc_ctx.api        = &g_ctx.api;

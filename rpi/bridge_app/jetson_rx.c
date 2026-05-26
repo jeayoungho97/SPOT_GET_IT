@@ -106,8 +106,65 @@ static int packet_type_supported(uint8_t type) {
 }
 
 static int packet_type_updates_command_addr(uint8_t type) {
-    return type == PKT_TYPE_IMAGE || type == PKT_TYPE_LIDAR ||
+    return type == PKT_TYPE_ODOM ||
+           type == PKT_TYPE_IMAGE || type == PKT_TYPE_LIDAR ||
            type == PKT_TYPE_CMD_ACK;
+}
+
+static int packet_type_learns_pc_peer(uint8_t type) {
+    return type == PKT_TYPE_ODOM || type == PKT_TYPE_PATH_PROGRESS ||
+           type == PKT_TYPE_EVENT || type == PKT_TYPE_IMAGE ||
+           type == PKT_TYPE_LIDAR;
+}
+
+static int packet_robot_is_pc_peer_candidate(const JetsonRxCtx *ctx, uint8_t rid) {
+    if (ctx->num_robots >= 5) {
+        return rid != 0;  /* robot_id=0 is the real S05 Jetson in the 5-robot setup. */
+    }
+    return rid < 4;
+}
+
+static void learn_pc_peer_from_robot_packet(JetsonRxCtx *ctx, uint8_t rid,
+                                            const struct sockaddr_in *src,
+                                            uint8_t packet_type) {
+    if (!ctx->pc_peer ||
+        !packet_type_learns_pc_peer(packet_type) ||
+        !packet_robot_is_pc_peer_candidate(ctx, rid)) {
+        return;
+    }
+
+    int learned = 0;
+    int updated = 0;
+    struct in_addr old_addr;
+    memset(&old_addr, 0, sizeof(old_addr));
+
+    pthread_mutex_lock(&ctx->pc_peer->mu);
+    if (!ctx->pc_peer->set) {
+        ctx->pc_peer->addr = *src;
+        ctx->pc_peer->addr.sin_port = htons(JETSON_CMD_PORT);
+        ctx->pc_peer->set = 1;
+        learned = 1;
+    } else if (ctx->pc_peer->addr.sin_addr.s_addr != src->sin_addr.s_addr) {
+        old_addr = ctx->pc_peer->addr.sin_addr;
+        ctx->pc_peer->addr = *src;
+        ctx->pc_peer->addr.sin_port = htons(JETSON_CMD_PORT);
+        updated = 1;
+    }
+    pthread_mutex_unlock(&ctx->pc_peer->mu);
+
+    if (learned || updated) {
+        char ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &src->sin_addr, ip, sizeof(ip));
+        if (learned) {
+            fprintf(stderr, "[jetson_rx] PC peer learned from robot=%u data: %s -> tx port %u\n",
+                    rid, ip, JETSON_CMD_PORT);
+        } else {
+            char old_ip[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &old_addr, old_ip, sizeof(old_ip));
+            fprintf(stderr, "[jetson_rx] PC peer changed from robot=%u data: %s -> %s tx port %u\n",
+                    rid, old_ip, ip, JETSON_CMD_PORT);
+        }
+    }
 }
 
 /* ─── Jetson IP 학습/검증 ───────────────────────────────────── */
@@ -358,6 +415,8 @@ void *jetson_rx_thread(void *arg) {
             rx_packet_pool_release(ctx->rx_pool, slot_id);
             continue;
         }
+
+        learn_pc_peer_from_robot_packet(ctx, rid, &src_addr, hdr->type);
 
         /* ── Jetson IP 학습 (최초 1회) + 이후 source 검증 ───── */
         if (!learn_or_validate_addr(ctx->addr_table, rid, &src_addr, hdr->type)) {

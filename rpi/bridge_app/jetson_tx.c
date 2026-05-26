@@ -35,6 +35,40 @@ static int create_udp_sock(void) {
 
 static void send_shm_cmd_entry(JetsonTxCtx *ctx, int udp_fd,
                                const ShmCmdEntry *entry) {
+    if (entry->flags & CMD_FLAG_TARGET_PC) {
+        struct sockaddr_in pc_addr;
+        int pc_addr_set = 0;
+        int pc_fd = -1;
+        if (ctx->pc_peer) {
+            pthread_mutex_lock(&ctx->pc_peer->mu);
+            pc_addr_set = ctx->pc_peer->set;
+            if (pc_addr_set) {
+                pc_addr = ctx->pc_peer->addr;
+            }
+            pc_fd = ctx->pc_peer->fd;
+            pthread_mutex_unlock(&ctx->pc_peer->mu);
+        }
+        if (!pc_addr_set) {
+            fprintf(stderr, "[jetson_tx] PC address not learned yet for robot=%u cmd=%u\n",
+                    entry->cmd.robot_id, entry->cmd.cmd_type);
+            return;
+        }
+        pc_addr.sin_port = htons(JETSON_CMD_PORT);
+        const int send_fd = pc_fd >= 0 ? pc_fd : udp_fd;
+        if (sendto(send_fd, &entry->cmd, sizeof(entry->cmd), 0,
+                   (const struct sockaddr *)&pc_addr, sizeof(pc_addr)) < 0) {
+            perror("[jetson_tx] sendto pc");
+            return;
+        }
+        char ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &pc_addr.sin_addr, ip, sizeof(ip));
+        fprintf(stderr, "[jetson_tx] pc %s:%u robot=%u cmd=%u seq=%u src=%s\n",
+                ip, ntohs(pc_addr.sin_port), entry->cmd.robot_id,
+                entry->cmd.cmd_type, entry->cmd.seq,
+                send_fd == pc_fd ? "pc_link" : "jetson_tx");
+        return;
+    }
+
     uint8_t priority = shm_cmd_entry_effective_priority(entry);
     uint8_t flags = entry->flags;
     send_cmd_to_jetson(&entry->cmd, ctx->api, udp_fd,

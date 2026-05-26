@@ -1,15 +1,21 @@
 #include "mainwindow.h"
 
+#include <QAbstractItemView>
+#include <QByteArray>
 #include <QDateTime>
 #include <QCoreApplication>
 #include <QDateEdit>
 #include <QDebug>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QIcon>
+#include <QInputMethod>
 #include <QLineEdit>
 #include <QListView>
 #include <QMessageBox>
@@ -17,6 +23,8 @@
 #include <QPainterPath>
 #include <QPixmap>
 #include <QResizeEvent>
+#include <QScreen>
+#include <QScrollArea>
 #include <QShortcut>
 #include <QSizePolicy>
 #include <QSpinBox>
@@ -25,6 +33,7 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <cmath>
 
 extern "C" {
@@ -33,7 +42,109 @@ extern "C" {
 
 static QString robotName(int id)
 {
-    return QString("알파 %1").arg(id + 1, 2, 10, QLatin1Char('0'));
+    return QString("SPOT-%1").arg(id + 1, 2, 10, QLatin1Char('0'));
+}
+
+static constexpr int kAllRobotsSelection = -1;
+static constexpr int kDisplaySwapA = 0;
+static constexpr int kDisplaySwapB = 4;
+
+static int swappedRobotId(int robotId)
+{
+    if (robotId == kDisplaySwapA) {
+        return kDisplaySwapB;
+    }
+    if (robotId == kDisplaySwapB) {
+        return kDisplaySwapA;
+    }
+    return robotId;
+}
+
+static int displayToPhysicalRobotId(int displayRobotId)
+{
+    return swappedRobotId(displayRobotId);
+}
+
+static int physicalToDisplayRobotId(int physicalRobotId)
+{
+    return swappedRobotId(physicalRobotId);
+}
+
+static bool isHardcodedDisplayRobot(int displayRobotId)
+{
+    Q_UNUSED(displayRobotId);
+    return false;
+}
+
+static int featuredVideoRobotForSelection(int selectedRobot, int robotCount)
+{
+    const int clamped = qBound(1, robotCount, kMaxRobots);
+    if (selectedRobot == kAllRobotsSelection) {
+        return clamped == 5 ? 4 : 0;
+    }
+    return (selectedRobot >= 0 && selectedRobot < clamped) ? selectedRobot : 0;
+}
+
+static RobotSnapshot hardcodedDisplaySnapshot(int displayId)
+{
+    RobotSnapshot snapshot;
+    snapshot.id = displayId;
+    return snapshot;
+}
+
+static QVector<RobotSnapshot> remapSnapshotsForDisplay(const QVector<RobotSnapshot> &snapshots)
+{
+    int displaySize = snapshots.size();
+    for (const RobotSnapshot &snapshot : snapshots) {
+        displaySize = qMax(displaySize, snapshot.id + 1);
+    }
+    displaySize = qMax(displaySize, qMax(kDisplaySwapA, kDisplaySwapB) + 1);
+    QVector<RobotSnapshot> display(displaySize);
+    for (int i = 0; i < display.size(); ++i) {
+        display[i] = hardcodedDisplaySnapshot(i);
+    }
+
+    for (const RobotSnapshot &snapshot : snapshots) {
+        const int displayId = physicalToDisplayRobotId(snapshot.id);
+
+        if (displayId >= 0 && displayId < display.size()) {
+            RobotSnapshot remapped = snapshot;
+            remapped.id = displayId;
+            display[displayId] = remapped;
+        }
+    }
+    return display;
+}
+
+static QVector<RobotSnapshot> snapshotsForDeployedRobots(const QVector<RobotSnapshot> &snapshots, int robotCount)
+{
+    QVector<RobotSnapshot> deployed;
+    const int count = qBound(0, robotCount, snapshots.size());
+    deployed.reserve(count);
+    for (int i = 0; i < count; ++i) {
+        deployed.append(snapshots[i]);
+    }
+    return deployed;
+}
+
+static bool routeEligibleSnapshot(const RobotSnapshot &snapshot)
+{
+    return !isHardcodedDisplayRobot(snapshot.id)
+        && snapshot.shmOpen && snapshot.connected && snapshot.faultLevel < 3;
+}
+
+static QVector<int> deployedRobotIds(const QVector<RobotSnapshot> &snapshots, int robotCount)
+{
+    QVector<int> ids;
+    const QVector<RobotSnapshot> deployedSnapshots = snapshotsForDeployedRobots(snapshots, robotCount);
+    ids.reserve(deployedSnapshots.size());
+    for (const RobotSnapshot &snapshot : deployedSnapshots) {
+        if (snapshot.id >= 0 && snapshot.id < kMaxRobots
+            && !isHardcodedDisplayRobot(snapshot.id)) {
+            ids.append(snapshot.id);
+        }
+    }
+    return ids;
 }
 
 static int displayBatteryPercent(int robotId, float snapshotBattery)
@@ -42,7 +153,7 @@ static int displayBatteryPercent(int robotId, float snapshotBattery)
         return 90;
     }
     if (robotId == 1) {
-        return 77;
+        return 70;
     }
     if (robotId == 2) {
         return 89;
@@ -50,12 +161,356 @@ static int displayBatteryPercent(int robotId, float snapshotBattery)
     if (robotId == 3) {
         return 91;
     }
+    if (robotId == 4) {
+        return 77;
+    }
     return qBound(0, qRound(snapshotBattery), 100);
 }
 
 static constexpr int kDefaultRobotCount = 4;
-static constexpr int kSelectableRobotCount = 4;
-static constexpr int kControllableRobotCount = 3;
+static constexpr int kRobotCardGridColumns = 2;
+static constexpr int kVideoLayoutBaseRows = 4;
+static constexpr int kVideoLayoutBaseColumns = 4;
+static constexpr int kVideoLayoutScale = 4;
+static constexpr int kVideoLayoutRows = kVideoLayoutBaseRows * kVideoLayoutScale;
+static constexpr int kVideoLayoutColumns = kVideoLayoutBaseColumns * kVideoLayoutScale;
+
+struct GridSpec {
+    int columns = 1;
+    int rows = 1;
+};
+
+struct VideoLayoutSlot {
+    int row = 0;
+    int column = 0;
+    int rowSpan = 1;
+    int columnSpan = 1;
+};
+
+struct VideoLayoutSpec {
+    int rows = 1;
+    int columns = 1;
+    QVector<int> rowStretch;
+    QVector<int> columnStretch;
+    QVector<VideoLayoutSlot> placements;
+    bool hasFeaturedTile = false;
+};
+
+static GridSpec statusGridSpec(int count)
+{
+    const int clamped = qBound(1, count, kMaxRobots);
+    if (clamped <= 5) {
+        return {1, clamped};
+    }
+    return {clamped, 1};
+}
+
+static VideoLayoutSpec videoLayoutSpec(int count)
+{
+    const int clamped = qBound(1, count, kMaxRobots);
+    switch (clamped) {
+    case 1:
+        return {4, 4, {1, 1, 1, 1}, {1, 1, 1, 1}, {{0, 0, 4, 4}}, false};
+    case 2:
+        return {4, 4, {1, 1, 1, 1}, {1, 1, 1, 1},
+                {{0, 0, 4, 2}, {0, 2, 4, 2}}, false};
+    case 3:
+        return {4, 4, {1, 1, 1, 1}, {1, 1, 1, 1},
+                {{0, 0, 4, 2}, {0, 2, 2, 2}, {2, 2, 2, 2}}, true};
+    case 4:
+        return {4, 4, {1, 1, 1, 1}, {1, 1, 1, 1},
+                {{0, 0, 2, 2}, {0, 2, 2, 2}, {2, 0, 2, 2}, {2, 2, 2, 2}}, false};
+    case 5:
+        return {4, 4, {1, 1, 1, 1}, {1, 1, 1, 1},
+                {{0, 0, 4, 2}, {0, 2, 2, 1}, {0, 3, 2, 1},
+                 {2, 2, 2, 1}, {2, 3, 2, 1}}, true};
+    case 6:
+        return {4, 4, {1, 1, 1, 1}, {1, 1, 1, 1},
+                {{0, 0, 2, 2}, {0, 2, 1, 2}, {2, 0, 2, 1},
+                 {2, 1, 1, 1}, {1, 2, 2, 2}, {3, 1, 1, 3}}, true};
+    case 7:
+        return {4, 4, {1, 1, 1, 1}, {1, 1, 1, 1},
+                {{0, 0, 2, 2}, {0, 2, 1, 1}, {0, 3, 1, 1},
+                 {1, 2, 1, 1}, {1, 3, 1, 1}, {2, 0, 2, 2},
+                 {2, 2, 2, 2}}, true};
+    case 8:
+        return {4, 4, {1, 1, 1, 1}, {1, 1, 1, 1},
+                {{0, 0, 2, 2}, {0, 2, 1, 1}, {0, 3, 1, 1},
+                 {1, 2, 1, 1}, {1, 3, 1, 1}, {2, 0, 1, 1},
+                 {2, 1, 1, 1}, {2, 2, 2, 2}}, true};
+    case 9:
+        return {4, 4, {1, 1, 1, 1}, {1, 1, 1, 1},
+                {{0, 0, 1, 1}, {0, 1, 1, 1}, {0, 2, 1, 1},
+                 {1, 0, 1, 1}, {1, 1, 1, 1}, {1, 2, 1, 1},
+                 {2, 0, 1, 1}, {2, 1, 1, 1}, {2, 2, 2, 2}}, false};
+    default:
+        return {4, 4, {1, 1, 1, 1}, {1, 1, 1, 1},
+                {{0, 0, 1, 1}, {0, 1, 1, 1}, {0, 2, 1, 1},
+                 {0, 3, 1, 1}, {1, 0, 1, 1}, {1, 1, 1, 1},
+                 {1, 2, 1, 1}, {1, 3, 1, 1}, {2, 0, 2, 2},
+                 {2, 2, 2, 2}}, false};
+    }
+}
+
+static bool videoSlotInBounds(const VideoLayoutSlot &slot)
+{
+    return slot.row >= 0 && slot.column >= 0
+        && slot.rowSpan >= 1 && slot.columnSpan >= 1
+        && slot.row + slot.rowSpan <= kVideoLayoutRows
+        && slot.column + slot.columnSpan <= kVideoLayoutColumns;
+}
+
+static int videoSlotArea(const VideoLayoutSlot &slot)
+{
+    return slot.rowSpan * slot.columnSpan;
+}
+
+static VideoLayoutSlot scaledVideoSlot(const VideoLayoutSlot &slot)
+{
+    return {slot.row * kVideoLayoutScale,
+            slot.column * kVideoLayoutScale,
+            slot.rowSpan * kVideoLayoutScale,
+            slot.columnSpan * kVideoLayoutScale};
+}
+
+static void splitVideoRect(const VideoLayoutSlot &rect, int count,
+                           QVector<VideoLayoutSlot> *placements)
+{
+    if (count <= 0 || !videoSlotInBounds(rect) || videoSlotArea(rect) < count) {
+        return;
+    }
+    if (count == 1) {
+        placements->append(rect);
+        return;
+    }
+
+    const bool splitColumns = rect.columnSpan >= rect.rowSpan;
+    const int firstCount = count / 2;
+    const int secondCount = count - firstCount;
+
+    if (splitColumns && rect.columnSpan >= 2) {
+        int firstSpan = qRound(static_cast<double>(rect.columnSpan) * firstCount / count);
+        firstSpan = qBound(1, firstSpan, rect.columnSpan - 1);
+        while (firstSpan * rect.rowSpan < firstCount && firstSpan < rect.columnSpan - 1) {
+            ++firstSpan;
+        }
+        while ((rect.columnSpan - firstSpan) * rect.rowSpan < secondCount && firstSpan > 1) {
+            --firstSpan;
+        }
+        splitVideoRect({rect.row, rect.column, rect.rowSpan, firstSpan}, firstCount, placements);
+        splitVideoRect({rect.row, rect.column + firstSpan, rect.rowSpan,
+                        rect.columnSpan - firstSpan}, secondCount, placements);
+        return;
+    }
+
+    if (rect.rowSpan >= 2) {
+        int firstSpan = qRound(static_cast<double>(rect.rowSpan) * firstCount / count);
+        firstSpan = qBound(1, firstSpan, rect.rowSpan - 1);
+        while (firstSpan * rect.columnSpan < firstCount && firstSpan < rect.rowSpan - 1) {
+            ++firstSpan;
+        }
+        while ((rect.rowSpan - firstSpan) * rect.columnSpan < secondCount && firstSpan > 1) {
+            --firstSpan;
+        }
+        splitVideoRect({rect.row, rect.column, firstSpan, rect.columnSpan}, firstCount, placements);
+        splitVideoRect({rect.row + firstSpan, rect.column, rect.rowSpan - firstSpan,
+                        rect.columnSpan}, secondCount, placements);
+    }
+}
+
+static bool videoSlotCellsAvailable(const VideoLayoutSlot &slot,
+                                    const bool occupied[kVideoLayoutRows][kVideoLayoutColumns],
+                                    const bool covered[kVideoLayoutRows][kVideoLayoutColumns])
+{
+    if (!videoSlotInBounds(slot)) {
+        return false;
+    }
+
+    for (int row = slot.row; row < slot.row + slot.rowSpan; ++row) {
+        for (int col = slot.column; col < slot.column + slot.columnSpan; ++col) {
+            if (occupied[row][col] || covered[row][col]) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static int remainingFreeVideoCells(const bool occupied[kVideoLayoutRows][kVideoLayoutColumns],
+                                   const bool covered[kVideoLayoutRows][kVideoLayoutColumns])
+{
+    int count = 0;
+    for (int row = 0; row < kVideoLayoutRows; ++row) {
+        for (int col = 0; col < kVideoLayoutColumns; ++col) {
+            if (!occupied[row][col] && !covered[row][col]) {
+                ++count;
+            }
+        }
+    }
+    return count;
+}
+
+static bool partitionVideoCells(const bool occupied[kVideoLayoutRows][kVideoLayoutColumns],
+                                bool covered[kVideoLayoutRows][kVideoLayoutColumns],
+                                int slotsLeft,
+                                QVector<VideoLayoutSlot> *placements)
+{
+    int firstRow = -1;
+    int firstCol = -1;
+    for (int row = 0; row < kVideoLayoutRows && firstRow < 0; ++row) {
+        for (int col = 0; col < kVideoLayoutColumns; ++col) {
+            if (!occupied[row][col] && !covered[row][col]) {
+                firstRow = row;
+                firstCol = col;
+                break;
+            }
+        }
+    }
+
+    if (firstRow < 0) {
+        return slotsLeft == 0;
+    }
+    if (slotsLeft <= 0) {
+        return false;
+    }
+
+    const int freeCells = remainingFreeVideoCells(occupied, covered);
+    if (freeCells < slotsLeft) {
+        return false;
+    }
+
+    QVector<VideoLayoutSlot> candidates;
+    for (int rowSpan = 1; firstRow + rowSpan <= kVideoLayoutRows; ++rowSpan) {
+        for (int columnSpan = 1; firstCol + columnSpan <= kVideoLayoutColumns; ++columnSpan) {
+            VideoLayoutSlot slot{firstRow, firstCol, rowSpan, columnSpan};
+            if (!videoSlotCellsAvailable(slot, occupied, covered)) {
+                continue;
+            }
+            if (freeCells - videoSlotArea(slot) < slotsLeft - 1) {
+                continue;
+            }
+            candidates.append(slot);
+        }
+    }
+
+    std::sort(candidates.begin(), candidates.end(), [](const VideoLayoutSlot &a,
+                                                       const VideoLayoutSlot &b) {
+        const int areaA = videoSlotArea(a);
+        const int areaB = videoSlotArea(b);
+        if (areaA != areaB) {
+            return areaA > areaB;
+        }
+        const int balanceA = qAbs(a.rowSpan - a.columnSpan);
+        const int balanceB = qAbs(b.rowSpan - b.columnSpan);
+        if (balanceA != balanceB) {
+            return balanceA < balanceB;
+        }
+        return a.columnSpan > b.columnSpan;
+    });
+
+    for (const VideoLayoutSlot &slot : candidates) {
+        for (int row = slot.row; row < slot.row + slot.rowSpan; ++row) {
+            for (int col = slot.column; col < slot.column + slot.columnSpan; ++col) {
+                covered[row][col] = true;
+            }
+        }
+        placements->append(slot);
+        if (partitionVideoCells(occupied, covered, slotsLeft - 1, placements)) {
+            return true;
+        }
+        placements->removeLast();
+        for (int row = slot.row; row < slot.row + slot.rowSpan; ++row) {
+            for (int col = slot.column; col < slot.column + slot.columnSpan; ++col) {
+                covered[row][col] = false;
+            }
+        }
+    }
+
+    return false;
+}
+
+static bool arrangeRemainingVideoSlots(const VideoLayoutSlot &fixedSlot,
+                                       int remainingTileCount,
+                                       QVector<VideoLayoutSlot> *placements)
+{
+    if (!videoSlotInBounds(fixedSlot)) {
+        return false;
+    }
+
+    const int freeCells = kVideoLayoutRows * kVideoLayoutColumns - videoSlotArea(fixedSlot);
+    if (freeCells < remainingTileCount) {
+        return false;
+    }
+
+    placements->clear();
+
+    struct Region {
+        VideoLayoutSlot rect;
+        int count = 0;
+    };
+
+    QVector<Region> regions;
+    if (fixedSlot.row > 0) {
+        regions.append({{0, 0, fixedSlot.row, kVideoLayoutColumns}, 0});
+    }
+    const int fixedBottom = fixedSlot.row + fixedSlot.rowSpan;
+    if (fixedBottom < kVideoLayoutRows) {
+        regions.append({{fixedBottom, 0, kVideoLayoutRows - fixedBottom, kVideoLayoutColumns}, 0});
+    }
+    if (fixedSlot.column > 0) {
+        regions.append({{fixedSlot.row, 0, fixedSlot.rowSpan, fixedSlot.column}, 0});
+    }
+    const int fixedRight = fixedSlot.column + fixedSlot.columnSpan;
+    if (fixedRight < kVideoLayoutColumns) {
+        regions.append({{fixedSlot.row, fixedRight, fixedSlot.rowSpan,
+                         kVideoLayoutColumns - fixedRight}, 0});
+    }
+
+    if (remainingTileCount == 0) {
+        return true;
+    }
+    if (regions.isEmpty()) {
+        return false;
+    }
+
+    for (int i = 0; i < remainingTileCount; ++i) {
+        int bestIndex = -1;
+        double bestScore = -1.0;
+        for (int regionIndex = 0; regionIndex < regions.size(); ++regionIndex) {
+            const int area = videoSlotArea(regions[regionIndex].rect);
+            if (regions[regionIndex].count >= area) {
+                continue;
+            }
+            const double score = static_cast<double>(area) / (regions[regionIndex].count + 1);
+            if (score > bestScore) {
+                bestScore = score;
+                bestIndex = regionIndex;
+            }
+        }
+        if (bestIndex < 0) {
+            return false;
+        }
+        ++regions[bestIndex].count;
+    }
+
+    for (const Region &region : regions) {
+        splitVideoRect(region.rect, region.count, placements);
+    }
+
+    return placements->size() == remainingTileCount;
+}
+
+static int demoRobotCountFromEnvironment()
+{
+    const QByteArray value = qgetenv("DISASTER_QT_DEMO_ROBOTS");
+    if (value.isEmpty()) {
+        return 0;
+    }
+
+    bool ok = false;
+    const int count = value.toInt(&ok);
+    return ok ? qBound(1, count, kMaxRobots) : 0;
+}
 
 static int missionProgressPercent(const RobotSnapshot &snapshot)
 {
@@ -68,6 +523,52 @@ static int missionProgressPercent(const RobotSnapshot &snapshot)
 static bool missionComplete(const RobotSnapshot &snapshot)
 {
     return snapshot.goalReached || missionProgressPercent(snapshot) >= 100;
+}
+
+static bool robotPoseAvailable(const RobotSnapshot &snapshot)
+{
+    return snapshot.shmOpen && (snapshot.odomTimestampUs != 0 || snapshot.odomSeq != 0);
+}
+
+static bool robotEverConnected(const RobotSnapshot &snapshot)
+{
+    return snapshot.lastRxUs != 0 || snapshot.rxPackets > 0 || snapshot.odomSeq != 0;
+}
+
+static bool robotConnectionLost(const RobotSnapshot &snapshot)
+{
+    return snapshot.shmOpen && !snapshot.connected && robotEverConnected(snapshot);
+}
+
+static bool robotMissionStarted(const RobotSnapshot &snapshot)
+{
+    if (!robotPoseAvailable(snapshot)) {
+        return false;
+    }
+    const float linearSpeed = std::hypot(snapshot.vx, snapshot.vy);
+    return snapshot.commandMoving
+        || linearSpeed > 0.02f
+        || std::fabs(snapshot.omega) > 0.02f;
+}
+
+static QString robotMissionStateText(const RobotSnapshot &snapshot)
+{
+    if (!snapshot.shmOpen) {
+        return QStringLiteral("미연결");
+    }
+    if (robotConnectionLost(snapshot)) {
+        return QStringLiteral("연결 끊김");
+    }
+    if (!snapshot.connected) {
+        return QStringLiteral("연결 안됨");
+    }
+    if (missionComplete(snapshot)) {
+        return QStringLiteral("도착");
+    }
+    if (robotMissionStarted(snapshot)) {
+        return QStringLiteral("탐색 중");
+    }
+    return QStringLiteral("대기");
 }
 
 static bool hasPathProgressData(const RobotSnapshot &snapshot)
@@ -314,11 +815,134 @@ private:
     }
 };
 
+class BorderlessComboBox : public QComboBox
+{
+public:
+    explicit BorderlessComboBox(QWidget *parent = nullptr)
+        : QComboBox(parent)
+    {
+    }
+
+    void showPopup() override
+    {
+        ensurePopup();
+        rebuildPopupItems();
+
+        const int popupWidth = qMax(width(), 1);
+        const int visibleRows = qMin(count(), qMax(1, maxVisibleItems()));
+        m_popupList->setVerticalScrollBarPolicy(count() > visibleRows
+                                                    ? Qt::ScrollBarAsNeeded
+                                                    : Qt::ScrollBarAlwaysOff);
+        m_popup->setFixedSize(popupWidth, visibleRows * kPopupRowHeight);
+
+        const QPoint comboTopLeft = mapToGlobal(QPoint(0, 0));
+        QPoint popupPos(comboTopLeft.x(), comboTopLeft.y() + height() / 2 - m_popup->height() / 2);
+        constexpr int topMargin = 12;
+        constexpr int bottomMargin = 44;
+        if (QScreen *screen = QGuiApplication::screenAt(popupPos)) {
+            const QRect available = screen->availableGeometry();
+            const int minTop = available.top() + topMargin;
+            const int maxTop = available.bottom() - bottomMargin - m_popup->height();
+            popupPos.setY(qBound(minTop, popupPos.y(), qMax(minTop, maxTop)));
+        }
+        m_popup->move(popupPos);
+        m_popup->show();
+        m_popup->raise();
+        m_popupList->setFocus(Qt::PopupFocusReason);
+    }
+
+    void hidePopup() override
+    {
+        if (m_popup) {
+            m_popup->hide();
+        }
+        QComboBox::hidePopup();
+    }
+
+private:
+    static constexpr int kPopupRowHeight = 46;
+
+    void ensurePopup()
+    {
+        if (m_popup) {
+            return;
+        }
+
+        m_popup = new QFrame(this, Qt::Popup | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint);
+        m_popup->setObjectName("comboPopup");
+        m_popup->setFrameShape(QFrame::NoFrame);
+        m_popup->setFrameStyle(QFrame::NoFrame);
+        m_popup->setLineWidth(0);
+        m_popup->setMidLineWidth(0);
+        m_popup->setAttribute(Qt::WA_StyledBackground, true);
+        m_popup->setAutoFillBackground(true);
+        m_popup->setStyleSheet(
+            "QFrame#comboPopup { background:#071017; border:0; margin:0; padding:0; }"
+            "QListWidget { background:#071017; border:0; margin:0; padding:0; outline:0; }"
+            "QListWidget::viewport { background:#071017; border:0; margin:0; padding:0; }"
+            "QListWidget::item { background:#071017; color:#dce7f3; min-height:34px; padding:6px 10px; margin:0; border:0; }"
+            "QListWidget::item:selected { background:#1b1805; color:#ffd21a; }"
+            "QListWidget::item:focus { outline:0; }");
+
+        QVBoxLayout *popupLayout = new QVBoxLayout(m_popup);
+        popupLayout->setContentsMargins(0, 0, 0, 0);
+        popupLayout->setSpacing(0);
+
+        m_popupList = new QListWidget(m_popup);
+        m_popupList->setFrameShape(QFrame::NoFrame);
+        m_popupList->setFrameStyle(QFrame::NoFrame);
+        m_popupList->setLineWidth(0);
+        m_popupList->setMidLineWidth(0);
+        m_popupList->setContentsMargins(0, 0, 0, 0);
+        m_popupList->setSpacing(0);
+        m_popupList->setUniformItemSizes(true);
+        m_popupList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        m_popupList->setSelectionMode(QAbstractItemView::SingleSelection);
+        m_popupList->setAttribute(Qt::WA_StyledBackground, true);
+        m_popupList->viewport()->setAttribute(Qt::WA_StyledBackground, true);
+        popupLayout->addWidget(m_popupList);
+
+        connect(m_popupList, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
+            if (!item) {
+                return;
+            }
+            const int comboIndex = item->data(Qt::UserRole).toInt();
+            if (comboIndex >= 0 && comboIndex < count()) {
+                setCurrentIndex(comboIndex);
+            }
+            hidePopup();
+        });
+    }
+
+    void rebuildPopupItems()
+    {
+        m_popupList->clear();
+        for (int i = 0; i < count(); ++i) {
+            auto *item = new QListWidgetItem(itemText(i));
+            item->setData(Qt::UserRole, i);
+            item->setSizeHint(QSize(qMax(width(), 1), kPopupRowHeight));
+            m_popupList->addItem(item);
+            if (i == currentIndex()) {
+                m_popupList->setCurrentItem(item);
+            }
+        }
+    }
+
+    QFrame *m_popup = nullptr;
+    QListWidget *m_popupList = nullptr;
+};
+
 static QString findMapYaml()
 {
     const QString appDir = QCoreApplication::applicationDirPath();
     const QString cwd = QDir::currentPath();
     const QStringList candidates = {
+        QDir(appDir).absoluteFilePath("../map_data/new_map.yaml"),
+        QDir(appDir).absoluteFilePath("../../map_data/new_map.yaml"),
+        QDir(appDir).absoluteFilePath("../../../map_data/new_map.yaml"),
+        QDir(cwd).absoluteFilePath("map_data/new_map.yaml"),
+        QDir(cwd).absoluteFilePath("../map_data/new_map.yaml"),
+        QStringLiteral("/home/pi/robot_project/map_data/new_map.yaml"),
         QDir(appDir).absoluteFilePath("../map_data/map.yaml"),
         QDir(appDir).absoluteFilePath("../../map_data/map.yaml"),
         QDir(appDir).absoluteFilePath("../../../map_data/map.yaml"),
@@ -364,6 +988,10 @@ static QString commandTypeText(uint8_t commandType)
         return "임무 취소";
     case CMD_TYPE_RETURN_HOME:
         return "복귀";
+    case CMD_TYPE_SET_WAYPOINT:
+        return "경로 시작점";
+    case CMD_TYPE_SET_ROUTE:
+        return "경로 생성";
     default:
         return QString("알 수 없는 명령(%1)").arg(commandType);
     }
@@ -378,6 +1006,12 @@ static bool isReassemblyTimeoutEvent(const UiEvent &event)
 {
     return event.message.contains(QStringLiteral("reassembly timeout"), Qt::CaseInsensitive)
         || event.message.contains(QStringLiteral("reasm timeout"), Qt::CaseInsensitive);
+}
+
+static bool isCommandAckEvent(const UiEvent &event)
+{
+    return event.type == kEventTypeCmdAck
+        || event.message.compare(QStringLiteral("cmd ack"), Qt::CaseInsensitive) == 0;
 }
 
 class LogTrendWidget : public QWidget
@@ -465,12 +1099,29 @@ protected:
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
+    const int demoRobotCount = demoRobotCountFromEnvironment();
+    if (demoRobotCount > 0) {
+        m_demoMode = true;
+        m_robotCount = demoRobotCount;
+    } else {
+        m_robotCount = kDefaultRobotCount;
+    }
+
     buildUi();
     applyStyle();
 
-    connect(&m_monitor, &ShmMonitor::snapshotsUpdated, this, &MainWindow::updateSnapshots);
-    connect(&m_monitor, &ShmMonitor::eventReceived, this, &MainWindow::appendEvent);
-    m_monitor.start(kDefaultRobotCount);
+    if (m_demoMode) {
+        startDemoMode(m_robotCount);
+    } else {
+        connect(&m_monitor, &ShmMonitor::snapshotsUpdated, this, &MainWindow::updateSnapshots);
+        connect(&m_monitor, &ShmMonitor::eventReceived, this, [this](UiEvent event) {
+            if (event.robotId >= 0) {
+                event.robotId = physicalToDisplayRobotId(event.robotId);
+            }
+            appendEvent(event);
+        });
+        m_monitor.start(kMaxRobots);
+    }
 
     QTimer *clockTimer = new QTimer(this);
     connect(clockTimer, &QTimer::timeout, this, [this] {
@@ -619,15 +1270,15 @@ void MainWindow::buildUi()
     m_videoGrid->setSpacing(8);
     m_videoGrid->setColumnStretch(0, 1);
     m_videoGrid->setColumnStretch(1, 1);
-    m_videoGrid->setRowStretch(0, 1);
-    m_videoGrid->setRowStretch(1, 1);
-    for (int i = 0; i < kDefaultRobotCount; ++i) {
-        VideoTile *tile = new VideoTile(i);
-        m_videoTiles.append(tile);
-        connect(tile, &VideoTile::clicked, this, &MainWindow::showCameraFullscreen);
-        m_videoGrid->addWidget(tile, i / 2, i % 2);
-    }
-    upper->addWidget(makePanel("실시간 영상 스트리밍", videoBody), 5);
+    m_videoScroll = new QScrollArea;
+    m_videoScroll->setObjectName("panelScrollArea");
+    m_videoScroll->setWidgetResizable(true);
+    m_videoScroll->setFrameShape(QFrame::NoFrame);
+    m_videoScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_videoScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_videoScroll->setWidget(videoBody);
+    syncVideoTiles(m_robotCount);
+    upper->addWidget(makePanel("실시간 영상 스트리밍", m_videoScroll), 5);
 
     QWidget *mapBody = new QWidget;
     m_mapLayout = new QVBoxLayout(mapBody);
@@ -648,8 +1299,10 @@ void MainWindow::buildUi()
     if (!mapYaml.isEmpty()) {
         m_map->loadMapConfig(mapYaml);
     } else {
-        qWarning() << "map_data/map.yaml not found; map overlay disabled";
+        qWarning() << "map_data/new_map.yaml or map_data/map.yaml not found; map overlay disabled";
     }
+    connect(m_map, &MapWidget::routeGenerationRequested,
+            this, &MainWindow::handleRouteGenerationRequested);
     m_mapLayout->addLayout(mapToggle);
     m_mapLayout->addWidget(m_map, 1);
     upper->addWidget(makePanel("탐색 지도", mapBody), 5);
@@ -659,33 +1312,17 @@ void MainWindow::buildUi()
     lower->setSpacing(12);
 
     QWidget *robotBody = new QWidget;
-    m_robotStatusLayout = new QVBoxLayout(robotBody);
-    m_robotStatusLayout->setContentsMargins(0, 0, 0, 0);
-    m_robotStatusLayout->setSpacing(0);
-    QFrame *statusHeader = new QFrame;
-    statusHeader->setObjectName("statusHeader");
-    QGridLayout *statusHeaderLayout = new QGridLayout(statusHeader);
-    statusHeaderLayout->setContentsMargins(12, 5, 12, 5);
-    statusHeaderLayout->setHorizontalSpacing(12);
-    statusHeaderLayout->setColumnStretch(0, 5);
-    statusHeaderLayout->setColumnStretch(1, 9);
-    statusHeaderLayout->setColumnStretch(2, 4);
-    statusHeaderLayout->setColumnStretch(3, 2);
-    const QStringList statusHeaders = {"로봇 ID", "배터리", "임무 상태", "신호"};
-    for (int i = 0; i < statusHeaders.size(); ++i) {
-        QLabel *label = new QLabel(statusHeaders[i]);
-        label->setObjectName("statusHeaderLabel");
-        label->setAlignment(i == 3 ? Qt::AlignRight | Qt::AlignVCenter : Qt::AlignLeft | Qt::AlignVCenter);
-        statusHeaderLayout->addWidget(label, 0, i);
-    }
-    m_robotStatusLayout->addWidget(statusHeader);
-    for (int i = 0; i < kDefaultRobotCount; ++i) {
-        StatusRow *row = new StatusRow(i);
-        m_statusRows.append(row);
-        m_robotStatusLayout->addWidget(row);
-    }
-    m_robotStatusLayout->addStretch();
-    lower->addWidget(makePanel("로봇 상태", robotBody), 3);
+    m_robotStatusGrid = new QGridLayout(robotBody);
+    m_robotStatusGrid->setContentsMargins(0, 0, 0, 0);
+    m_robotStatusGrid->setSpacing(6);
+    m_robotStatusScroll = new QScrollArea;
+    m_robotStatusScroll->setObjectName("panelScrollArea");
+    m_robotStatusScroll->setWidgetResizable(true);
+    m_robotStatusScroll->setFrameShape(QFrame::NoFrame);
+    m_robotStatusScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_robotStatusScroll->setWidget(robotBody);
+    syncStatusRows(m_robotCount);
+    lower->addWidget(makePanel("로봇 상태", m_robotStatusScroll), 4);
 
     m_eventList = new QListWidget;
     m_eventList->setObjectName("eventList");
@@ -697,11 +1334,12 @@ void MainWindow::buildUi()
     QHBoxLayout *robots = new QHBoxLayout;
     QLabel *robotSelectLabel = new QLabel("제어 로봇");
     robotSelectLabel->setObjectName("infoLine");
-    m_robotSelector = new QComboBox;
+    m_robotSelector = new BorderlessComboBox;
     m_robotSelector->setMinimumHeight(44);
-    m_robotSelector->setMaxVisibleItems(kSelectableRobotCount);
+    m_robotSelector->setMaxVisibleItems(qMin(m_robotCount + 1, kMaxRobots + 1));
     QListView *selectorView = new QListView(m_robotSelector);
     selectorView->setFrameShape(QFrame::NoFrame);
+    selectorView->setFrameStyle(QFrame::NoFrame);
     selectorView->setLineWidth(0);
     selectorView->setMidLineWidth(0);
     selectorView->setContentsMargins(0, 0, 0, 0);
@@ -710,18 +1348,28 @@ void MainWindow::buildUi()
     selectorView->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     selectorView->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     selectorView->viewport()->setContentsMargins(0, 0, 0, 0);
+    selectorView->setAttribute(Qt::WA_StyledBackground, true);
+    selectorView->viewport()->setAttribute(Qt::WA_StyledBackground, true);
     m_robotSelector->setView(selectorView);
     if (m_robotSelector->view()) {
         m_robotSelector->view()->setAutoFillBackground(true);
         m_robotSelector->view()->viewport()->setAutoFillBackground(true);
         m_robotSelector->view()->setStyleSheet(
-            "QAbstractItemView { background:#071017; border:1px solid #2b4050; padding:0; margin:0; outline:0; }"
-            "QAbstractItemView::item { background:#071017; color:#dce7f3; min-height:34px; padding:6px 10px; margin:0; border:0; }"
-            "QAbstractItemView::item:selected { background:#1b1805; color:#ffd21a; }"
-            "QAbstractItemView::item:disabled { color:#64717d; background:#071017; }");
+            "QListView, QAbstractItemView { background:#071017; border:0; padding:0; margin:0; outline:0; }"
+            "QListView::viewport, QAbstractScrollArea::viewport { background:#071017; border:0; margin:0; padding:0; }"
+            "QListView::item, QAbstractItemView::item { background:#071017; color:#dce7f3; min-height:34px; padding:6px 10px; margin:0; border:0; }"
+            "QListView::item:selected, QAbstractItemView::item:selected { background:#1b1805; color:#ffd21a; }"
+            "QListView::item:disabled, QAbstractItemView::item:disabled { color:#64717d; background:#071017; }");
         QPalette popupPalette = m_robotSelector->view()->palette();
         popupPalette.setColor(QPalette::Base, QColor("#071017"));
         popupPalette.setColor(QPalette::Window, QColor("#071017"));
+        popupPalette.setColor(QPalette::AlternateBase, QColor("#071017"));
+        popupPalette.setColor(QPalette::Button, QColor("#071017"));
+        popupPalette.setColor(QPalette::Light, QColor("#071017"));
+        popupPalette.setColor(QPalette::Midlight, QColor("#071017"));
+        popupPalette.setColor(QPalette::Mid, QColor("#071017"));
+        popupPalette.setColor(QPalette::Dark, QColor("#071017"));
+        popupPalette.setColor(QPalette::Shadow, QColor("#071017"));
         m_robotSelector->view()->setPalette(popupPalette);
         m_robotSelector->view()->viewport()->setPalette(popupPalette);
     }
@@ -730,9 +1378,7 @@ void MainWindow::buildUi()
             return;
         }
         const int robotId = m_robotSelector->itemData(index).toInt();
-        if (robotId >= 0) {
-            selectRobot(robotId);
-        }
+        selectRobot(robotId);
     });
     robots->addWidget(robotSelectLabel);
     robots->addWidget(m_robotSelector, 1);
@@ -742,8 +1388,8 @@ void MainWindow::buildUi()
     commands->setContentsMargins(0, 0, 0, 0);
     commands->setSpacing(8);
     QPushButton *move = makeCommandButton("이동", "yellowCommand");
-    QPushButton *manual = makeCommandButton("수동 제어");
-    QPushButton *camera = makeCommandButton("카메라 스트리밍");
+    QPushButton *manual = makeCommandButton("수동 제어", "controlCommand");
+    QPushButton *addRobot = makeCommandButton("로봇 투입", "controlCommand");
     QPushButton *estop = makeCommandButton("긴급 정지", "redCommand");
     connect(move, &QPushButton::clicked, this, &MainWindow::sendMove);
     connect(manual, &QPushButton::clicked, this, [this]() {
@@ -753,11 +1399,157 @@ void MainWindow::buildUi()
                             static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000ULL,
                             "수동 제어 모드 선택"});
     });
-    connect(camera, &QPushButton::clicked, this, [this]() {
-        showCameraFullscreen(m_selectedRobot);
+    connect(addRobot, &QPushButton::clicked, this, [this]() {
+        const int available = kMaxRobots - m_robotCount;
+        if (available <= 0) {
+            QMessageBox::information(this,
+                                     "로봇 투입",
+                                     QString("최대 %1대까지 투입할 수 있습니다.").arg(kMaxRobots));
+            return;
+        }
+
+        QDialog countDialog(this);
+        countDialog.setWindowTitle("로봇 투입");
+        countDialog.setAttribute(Qt::WA_InputMethodEnabled, false);
+        countDialog.setFocusPolicy(Qt::NoFocus);
+
+        QVBoxLayout *countLayout = new QVBoxLayout(&countDialog);
+        countLayout->setContentsMargins(24, 20, 24, 18);
+        countLayout->setSpacing(14);
+
+        QLabel *countLabel = new QLabel("투입할 로봇 수를 선택하세요", &countDialog);
+        countLabel->setWordWrap(true);
+        countLabel->setFocusPolicy(Qt::NoFocus);
+        countLabel->setAttribute(Qt::WA_InputMethodEnabled, false);
+        countLabel->setStyleSheet("QLabel { font-size: 16px; font-weight: 700; }");
+        countLayout->addWidget(countLabel);
+
+        int selectedAddCount = 1;
+        QHBoxLayout *stepperLayout = new QHBoxLayout;
+        stepperLayout->setContentsMargins(0, 4, 0, 4);
+        stepperLayout->setSpacing(12);
+
+        QPushButton *minusButton = new QPushButton("-", &countDialog);
+        QPushButton *plusButton = new QPushButton("+", &countDialog);
+        for (QPushButton *button : {minusButton, plusButton}) {
+            button->setFocusPolicy(Qt::NoFocus);
+            button->setAttribute(Qt::WA_InputMethodEnabled, false);
+            button->setMinimumSize(84, 84);
+            button->setCursor(Qt::PointingHandCursor);
+            button->setStyleSheet("QPushButton { font-size: 34px; font-weight: 800; border-radius: 8px; padding: 0; }");
+        }
+
+        QLabel *countValue = new QLabel(&countDialog);
+        countValue->setAlignment(Qt::AlignCenter);
+        countValue->setMinimumSize(180, 84);
+        countValue->setFocusPolicy(Qt::NoFocus);
+        countValue->setAttribute(Qt::WA_InputMethodEnabled, false);
+        countValue->setStyleSheet("QLabel { font-size: 42px; font-weight: 800; border: 1px solid rgba(255,255,255,70); border-radius: 8px; padding: 8px 18px; }");
+
+        auto updateCountValue = [&]() {
+            countValue->setText(QString("%1대").arg(selectedAddCount));
+            minusButton->setEnabled(selectedAddCount > 1);
+            plusButton->setEnabled(selectedAddCount < available);
+        };
+        connect(minusButton, &QPushButton::clicked, &countDialog, [&]() {
+            selectedAddCount = qMax(1, selectedAddCount - 1);
+            updateCountValue();
+        });
+        connect(plusButton, &QPushButton::clicked, &countDialog, [&]() {
+            selectedAddCount = qMin(available, selectedAddCount + 1);
+            updateCountValue();
+        });
+        updateCountValue();
+
+        stepperLayout->addWidget(minusButton);
+        stepperLayout->addWidget(countValue, 1);
+        stepperLayout->addWidget(plusButton);
+        countLayout->addLayout(stepperLayout);
+
+        QDialogButtonBox *countButtons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                                              Qt::Horizontal,
+                                                              &countDialog);
+        auto makeDeployDialogIcon = [](bool deploy) {
+            constexpr int side = 28;
+            QPixmap pix(side, side);
+            pix.fill(Qt::transparent);
+
+            QPainter p(&pix);
+            p.setRenderHint(QPainter::Antialiasing, true);
+
+            const QColor stroke = deploy ? QColor(138, 210, 255) : QColor(255, 118, 118);
+            const QColor glow = deploy ? QColor(72, 176, 255, 65) : QColor(255, 84, 84, 60);
+            const QColor fill = deploy ? QColor(25, 73, 108, 120) : QColor(88, 37, 45, 118);
+            QPen glowPen(glow, 4.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+            QPen linePen(stroke, 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+
+            QRectF body(6.0, 10.0, 12.0, 8.0);
+            p.setPen(glowPen);
+            p.drawRoundedRect(body, 3.0, 3.0);
+            p.setPen(linePen);
+            p.setBrush(fill);
+            p.drawRoundedRect(body, 3.0, 3.0);
+            p.setBrush(stroke);
+            p.drawEllipse(QPointF(10.0, 14.0), 1.1, 1.1);
+            p.drawEllipse(QPointF(14.5, 14.0), 1.1, 1.1);
+            p.setBrush(Qt::NoBrush);
+            p.drawLine(QPointF(7.5, 18.0), QPointF(5.5, 21.5));
+            p.drawLine(QPointF(16.5, 18.0), QPointF(18.5, 21.5));
+
+            if (deploy) {
+                p.drawLine(QPointF(19.0, 14.0), QPointF(24.0, 14.0));
+                p.drawLine(QPointF(21.5, 10.8), QPointF(24.2, 14.0));
+                p.drawLine(QPointF(21.5, 17.2), QPointF(24.2, 14.0));
+            } else {
+                p.drawLine(QPointF(19.5, 9.0), QPointF(24.0, 18.8));
+                p.drawLine(QPointF(24.0, 9.0), QPointF(19.5, 18.8));
+            }
+
+            return QIcon(pix);
+        };
+        QPushButton *deployButton = countButtons->button(QDialogButtonBox::Ok);
+        QPushButton *cancelButton = countButtons->button(QDialogButtonBox::Cancel);
+        deployButton->setText("투입");
+        deployButton->setIcon(makeDeployDialogIcon(true));
+        deployButton->setIconSize(QSize(28, 28));
+        deployButton->setFocusPolicy(Qt::NoFocus);
+        deployButton->setAttribute(Qt::WA_InputMethodEnabled, false);
+        cancelButton->setText("취소");
+        cancelButton->setIcon(makeDeployDialogIcon(false));
+        cancelButton->setIconSize(QSize(28, 28));
+        cancelButton->setFocusPolicy(Qt::NoFocus);
+        cancelButton->setAttribute(Qt::WA_InputMethodEnabled, false);
+        connect(countButtons, &QDialogButtonBox::accepted, &countDialog, &QDialog::accept);
+        connect(countButtons, &QDialogButtonBox::rejected, &countDialog, &QDialog::reject);
+        countLayout->addWidget(countButtons);
+
+        QTimer::singleShot(0, &countDialog, [&countDialog]() {
+            countDialog.setFocus();
+            if (QGuiApplication::inputMethod()) {
+                QGuiApplication::inputMethod()->hide();
+            }
+        });
+
+        if (countDialog.exec() != QDialog::Accepted) {
+            return;
+        }
+
+        const int addCount = selectedAddCount;
+        if (addCount <= 0) {
+            return;
+        }
+
+        const int previousCount = m_robotCount;
+        setRobotCount(m_robotCount + addCount);
+        selectRobot(m_robotCount - 1);
+        appendEvent(UiEvent{-1,
+                            1,
+                            0,
+                            static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000ULL,
+                            QString("로봇 투입: %1대 -> %2대").arg(previousCount).arg(m_robotCount)});
     });
     connect(estop, &QPushButton::clicked, this, &MainWindow::sendEstop);
-    for (QPushButton *button : {move, manual, camera, estop}) {
+    for (QPushButton *button : {move, manual, addRobot, estop}) {
         button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         commands->addWidget(button);
     }
@@ -778,19 +1570,19 @@ void MainWindow::buildUi()
     robotPageLayout->addWidget(robotTitle);
 
     QWidget *robotGridBody = new QWidget;
-    QGridLayout *robotGrid = new QGridLayout(robotGridBody);
-    robotGrid->setContentsMargins(0, 0, 0, 0);
-    robotGrid->setSpacing(10);
-    robotGrid->setColumnStretch(0, 1);
-    robotGrid->setColumnStretch(1, 1);
-    robotGrid->setRowStretch(0, 1);
-    robotGrid->setRowStretch(1, 1);
-    for (int i = 0; i < kDefaultRobotCount; ++i) {
-        RobotStatusCard *card = new RobotStatusCard(i);
-        m_robotStatusCards.append(card);
-        robotGrid->addWidget(card, i / 2, i % 2);
-    }
-    robotPageLayout->addWidget(robotGridBody, 1);
+    m_robotCardGrid = new QGridLayout(robotGridBody);
+    m_robotCardGrid->setContentsMargins(0, 0, 0, 0);
+    m_robotCardGrid->setSpacing(10);
+    m_robotCardGrid->setColumnStretch(0, 1);
+    m_robotCardGrid->setColumnStretch(1, 1);
+    m_robotCardScroll = new QScrollArea;
+    m_robotCardScroll->setObjectName("panelScrollArea");
+    m_robotCardScroll->setWidgetResizable(true);
+    m_robotCardScroll->setFrameShape(QFrame::NoFrame);
+    m_robotCardScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_robotCardScroll->setWidget(robotGridBody);
+    syncRobotStatusCards(m_robotCount);
+    robotPageLayout->addWidget(m_robotCardScroll, 1);
 
     QFrame *robotFooter = new QFrame;
     robotFooter->setObjectName("robotFooter");
@@ -818,7 +1610,8 @@ void MainWindow::buildUi()
     addLegendItem("주의", "#ffd447");
     addLegendItem("경고", "#ff5b57");
     footerLayout->addSpacing(14);
-    footerLayout->addWidget(new QLabel(QString("총 로봇: %1").arg(kDefaultRobotCount)));
+    m_robotTotalLabel = new QLabel(QString("총 로봇: %1").arg(m_robotCount));
+    footerLayout->addWidget(m_robotTotalLabel);
     footerLayout->addStretch();
     footerLayout->addWidget(new QLabel("마지막 업데이트: 실시간"));
     footerLayout->addWidget(new QLabel("자동 갱신  ●"));
@@ -1057,14 +1850,14 @@ void MainWindow::buildUi()
     form->setContentsMargins(8, 4, 8, 4);
     QSpinBox *maxRobots = new QSpinBox;
     maxRobots->setRange(1, kMaxRobots);
-    maxRobots->setValue(kDefaultRobotCount);
+    maxRobots->setValue(m_robotCount);
     QLineEdit *cmdIpc = new QLineEdit("SHM cmd_queue (/robot_bridge_N)");
     cmdIpc->setReadOnly(true);
     QLineEdit *shmPattern = new QLineEdit("/robot_bridge_%d");
     shmPattern->setReadOnly(true);
     QPushButton *apply = new QPushButton("공유메모리 재스캔");
     connect(apply, &QPushButton::clicked, this, [this, maxRobots] {
-        m_monitor.start(maxRobots->value());
+        setRobotCount(maxRobots->value());
         showPage(0);
     });
     form->addRow("감시 로봇 수", maxRobots);
@@ -1163,7 +1956,7 @@ void MainWindow::buildUi()
                             static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000ULL,
                             "생존자 탐지 테스트"});
     });
-    selectRobot(0);
+    selectRobot(kAllRobotsSelection);
 }
 
 void MainWindow::applyStyle()
@@ -1191,6 +1984,28 @@ void MainWindow::applyStyle()
         #systemText { font-size:15px; font-weight:700; color:#00e66b; }
         #clockText { font-size:18px; color:#c7d0db; }
         #panelTitle { font-size:20px; font-weight:800; color:#ffffff; background:transparent; border:0; }
+        QScrollArea#panelScrollArea {
+            background:transparent;
+            border:0;
+        }
+        QScrollArea#panelScrollArea > QWidget > QWidget {
+            background:transparent;
+        }
+        QScrollBar:vertical {
+            background:#06111a;
+            width:8px;
+            margin:0;
+            border:0;
+        }
+        QScrollBar::handle:vertical {
+            background:#2f4b5e;
+            min-height:24px;
+            border-radius:4px;
+        }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            height:0;
+            border:0;
+        }
         #metric { padding:10px 14px; font-size:15px; line-height:1.35; }
         #metric b { font-size:24px; }
         #headerMetric {
@@ -1329,6 +2144,8 @@ void MainWindow::applyStyle()
         #videoImage { background:#020507; color:#61707f; font-size:18px; font-weight:800; border-radius:7px; }
         #videoTitle { color:#ffffff; font-size:17px; font-weight:800; background:rgba(0,0,0,130); padding:2px 6px; }
         #videoBadge { color:#00e66b; font-size:11px; font-weight:800; background:rgba(0,0,0,150); padding:2px 6px; }
+        #videoBadge[state="wait"] { color:#9aa7b2; }
+        #videoBadge[state="nosignal"] { color:#ff453a; }
         #victimAlert {
             background:rgba(176, 0, 18, 185);
             border:3px solid #ff3b30;
@@ -1538,7 +2355,7 @@ void MainWindow::applyStyle()
         QComboBox QAbstractItemView {
             background:#071017;
             color:#dce7f3;
-            border:1px solid #2b4050;
+            border:0;
             padding:0;
             margin:0;
             outline:0;
@@ -1637,6 +2454,10 @@ void MainWindow::applyStyle()
             background:#4a080c;
             border-color:#ff6b6b;
             color:#ffffff;
+        }
+        #controlCommand {
+            font-size:17px;
+            font-weight:800;
         }
         #smallButton, #smallActive { min-height:30px; min-width:70px; }
         #infoLine { color:#b9c5d0; background:#071017; border:0; padding:6px 2px; font-size:14px; }
@@ -2005,12 +2826,561 @@ QString MainWindow::formatMissionTime() const
         .arg(seconds % 60, 2, 10, QLatin1Char('0'));
 }
 
+void MainWindow::startDemoMode(int count)
+{
+    m_robotCount = qBound(1, count, kMaxRobots);
+    m_demoTimer = new QTimer(this);
+    connect(m_demoTimer, &QTimer::timeout, this, [this]() {
+        updateSnapshots(makeDemoSnapshots(m_robotCount));
+    });
+    updateSnapshots(makeDemoSnapshots(m_robotCount));
+    appendEvent(UiEvent{-1, 1, 0, 0,
+                        QString("UI 테스트 모드 시작: %1대").arg(m_robotCount)});
+    m_demoTimer->start(1000);
+}
+
+QVector<RobotSnapshot> MainWindow::makeDemoSnapshots(int count) const
+{
+    QVector<RobotSnapshot> snapshots;
+    const int clamped = qBound(1, count, kMaxRobots);
+    snapshots.reserve(clamped);
+
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    const float phase = static_cast<float>((nowMs / 100) % 360) * 0.017453292f;
+    const QVector<QColor> colors = {
+        QColor("#18d878"), QColor("#00d4ff"), QColor("#ffd21a"), QColor("#ff5b57"),
+        QColor("#a78bfa"), QColor("#f97316"), QColor("#14b8a6"), QColor("#e879f9"),
+        QColor("#84cc16"), QColor("#60a5fa")
+    };
+
+    for (int i = 0; i < clamped; ++i) {
+        RobotSnapshot snapshot;
+        snapshot.id = i;
+        snapshot.shmOpen = true;
+        snapshot.connected = true;
+        snapshot.mode = i % 3;
+        snapshot.faultLevel = (i == 2) ? 4 : 0;
+        snapshot.faultCode = (i == 2) ? 0x10u : 0u;
+        snapshot.faultText = (i == 2) ? QStringLiteral("drive fault") : QString();
+        snapshot.x = 2.0f + static_cast<float>(i % 5) * 1.7f + std::sin(phase + i) * 0.12f;
+        snapshot.y = 1.1f + static_cast<float>(i / 5) * 2.25f + std::cos(phase + i) * 0.12f;
+        snapshot.theta = phase + static_cast<float>(i) * 0.25f;
+        snapshot.vx = 0.15f + static_cast<float>(i % 4) * 0.08f;
+        snapshot.vy = 0.0f;
+        snapshot.omega = 0.02f;
+        snapshot.battery = static_cast<float>(qMax(18, 96 - i * 7));
+        snapshot.linkRttMs = 17.0f + static_cast<float>(i * 2);
+        snapshot.imageFps = (i == 4 || i == 9) ? 0.0f : 24.0f;
+        snapshot.lidarFps = 12.0f;
+        snapshot.dropRate = i == 2 ? 8.0f : 0.2f * static_cast<float>(i);
+        snapshot.odomSeq = static_cast<uint32_t>(nowMs / 100 + i);
+        snapshot.odomTimestampUs = static_cast<quint64>(nowMs) * 1000ULL;
+        snapshot.missionId = 100 + i;
+        snapshot.waypointIdx = static_cast<uint32_t>((nowMs / 1000 + i) % 8);
+        snapshot.totalWaypoints = 8;
+        snapshot.missionProgress = static_cast<float>((i * 9 + (nowMs / 500) % 30) % 100);
+        snapshot.pathOk = i != 7;
+        snapshot.poseOk = true;
+        snapshot.goalReached = snapshot.missionProgress >= 95.0f;
+        snapshot.distanceToGoalM = qMax(0.0f, 12.0f - snapshot.missionProgress * 0.11f);
+        snapshot.rxPackets = static_cast<int>(nowMs / 100 + i * 11);
+        snapshot.txCommands = i;
+        snapshot.ackPackets = qMax(0, i - 1);
+        snapshot.lastRxUs = static_cast<quint64>(nowMs) * 1000ULL;
+
+        if (i != 4 && i != 9) {
+            QImage image(640, 360, QImage::Format_RGB32);
+            const QColor accent = colors[i % colors.size()];
+            image.fill(QColor("#071017"));
+            QPainter painter(&image);
+            QLinearGradient bg(0, 0, 640, 360);
+            bg.setColorAt(0.0, accent.darker(260));
+            bg.setColorAt(1.0, QColor("#03080d"));
+            painter.fillRect(image.rect(), bg);
+            painter.setPen(QPen(accent, 4));
+            painter.drawRect(image.rect().adjusted(18, 18, -18, -18));
+            painter.setPen(Qt::white);
+            painter.setFont(QFont("Noto Sans", 40, QFont::Black));
+            painter.drawText(image.rect(), Qt::AlignCenter, robotName(i));
+            painter.setFont(QFont("Noto Sans", 18, QFont::Bold));
+            painter.setPen(QColor("#c8d7e4"));
+            painter.drawText(QRect(0, 232, 640, 42), Qt::AlignCenter,
+                             QString("DEMO FEED  %1 fps").arg(snapshot.imageFps, 0, 'f', 0));
+            snapshot.image = image;
+        }
+
+        snapshot.globalPath = {
+            {snapshot.x, snapshot.y, 0.0f, 0.0f},
+            {qMin(snapshot.x + 1.2f, 11.0f), qMin(snapshot.y + 0.8f, 7.0f), 0.0f, 0.0f},
+            {qMin(snapshot.x + 2.2f, 11.0f), qMin(snapshot.y + 1.4f, 7.0f), 0.0f, 0.0f}
+        };
+
+        snapshots.append(snapshot);
+    }
+
+    return snapshots;
+}
+
+void MainWindow::setRobotCount(int count)
+{
+    m_robotCount = qBound(1, count, kMaxRobots);
+    syncRobotUi(m_robotCount);
+    clampSelectedRobot();
+
+    if (m_victimAlertRobotId >= m_robotCount) {
+        m_victimAlertRobotId = -1;
+        if (m_victimAlertButton) {
+            m_victimAlertButton->hide();
+        }
+    }
+    if (m_expandedRobotId >= m_robotCount) {
+        m_expandedRobotId = -1;
+        if (m_contentStack && m_cameraPage && m_contentStack->currentWidget() == m_cameraPage) {
+            leaveCameraFullscreen();
+        }
+    }
+
+    if (m_demoMode) {
+        updateSnapshots(makeDemoSnapshots(m_robotCount));
+        return;
+    }
+
+    m_monitor.start(kMaxRobots);
+    refreshRobotSelector();
+    refreshRobotList();
+}
+
+void MainWindow::syncRobotUi(int count)
+{
+    const int clamped = qBound(1, count, kMaxRobots);
+    syncVideoTiles(clamped);
+    syncStatusRows(clamped);
+    syncRobotStatusCards(clamped);
+
+    if (m_robotSelector) {
+        m_robotSelector->setMaxVisibleItems(qMin(clamped + 1, kMaxRobots + 1));
+    }
+    if (m_robotTotalLabel) {
+        m_robotTotalLabel->setText(QString("총 로봇: %1").arg(clamped));
+    }
+}
+
+void MainWindow::syncVideoTiles(int count)
+{
+    if (!m_videoGrid) {
+        return;
+    }
+
+    const bool resetLayout = m_videoPlacements.size() != count;
+    while (m_videoTiles.size() > count) {
+        VideoTile *tile = m_videoTiles.takeLast();
+        m_videoGrid->removeWidget(tile);
+        tile->deleteLater();
+    }
+    while (m_videoTiles.size() < count) {
+        const int robotId = m_videoTiles.size();
+        VideoTile *tile = new VideoTile(robotId);
+        m_videoTiles.append(tile);
+        connect(tile, &VideoTile::clicked, this, &MainWindow::showCameraFullscreen);
+        connect(tile, &VideoTile::moveRequested, this, &MainWindow::moveVideoTile);
+        connect(tile, &VideoTile::resizeRequested, this, &MainWindow::resizeVideoTile);
+        connect(tile, &VideoTile::shrinkRequested, this, &MainWindow::shrinkVideoTile);
+        if (robotId < m_snapshots.size()) {
+            tile->setSnapshot(m_snapshots[robotId]);
+        }
+    }
+    if (resetLayout) {
+        resetVideoLayout(count);
+    }
+    relayoutVideoTiles();
+}
+
+void MainWindow::syncStatusRows(int count)
+{
+    if (!m_robotStatusGrid) {
+        return;
+    }
+
+    while (m_statusRows.size() > count) {
+        StatusRow *row = m_statusRows.takeLast();
+        m_robotStatusGrid->removeWidget(row);
+        row->deleteLater();
+    }
+    while (m_statusRows.size() < count) {
+        const int robotId = m_statusRows.size();
+        StatusRow *row = new StatusRow(robotId);
+        m_statusRows.append(row);
+        if (robotId < m_snapshots.size()) {
+            row->setSnapshot(m_snapshots[robotId]);
+        }
+    }
+    const GridSpec spec = statusGridSpec(count);
+    for (StatusRow *row : m_statusRows) {
+        m_robotStatusGrid->removeWidget(row);
+    }
+    for (int row = 0; row < kMaxRobots; ++row) {
+        m_robotStatusGrid->setRowStretch(row, 0);
+    }
+    for (int col = 0; col < kMaxRobots; ++col) {
+        m_robotStatusGrid->setColumnStretch(col, 0);
+    }
+    for (int i = 0; i < m_statusRows.size(); ++i) {
+        const int row = i / spec.columns;
+        const int col = i % spec.columns;
+        m_robotStatusGrid->addWidget(m_statusRows[i], row, col);
+        m_robotStatusGrid->setRowStretch(row, count >= 6 ? 0 : 1);
+        m_robotStatusGrid->setColumnStretch(col, 1);
+    }
+    if (QWidget *body = m_robotStatusGrid->parentWidget()) {
+        if (count >= 6) {
+            body->setMinimumHeight(m_statusRows.size() * 36 + qMax(0, m_statusRows.size() - 1) * m_robotStatusGrid->spacing());
+            body->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+        } else {
+            body->setMinimumHeight(0);
+            body->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Expanding);
+        }
+    }
+}
+
+void MainWindow::syncRobotStatusCards(int count)
+{
+    if (!m_robotCardGrid) {
+        return;
+    }
+
+    while (m_robotStatusCards.size() > count) {
+        RobotStatusCard *card = m_robotStatusCards.takeLast();
+        m_robotCardGrid->removeWidget(card);
+        card->deleteLater();
+    }
+    while (m_robotStatusCards.size() < count) {
+        const int robotId = m_robotStatusCards.size();
+        RobotStatusCard *card = new RobotStatusCard(robotId);
+        m_robotStatusCards.append(card);
+        if (robotId < m_snapshots.size()) {
+            card->setSnapshot(m_snapshots[robotId]);
+        }
+    }
+    relayoutRobotStatusCards();
+}
+
+void MainWindow::resetVideoLayout(int count)
+{
+    const int clamped = qBound(1, count, kMaxRobots);
+    const VideoLayoutSpec spec = videoLayoutSpec(clamped);
+    m_videoPlacements.clear();
+    m_videoPlacements.resize(clamped);
+
+    QVector<int> ordered;
+    ordered.reserve(clamped);
+    const int primary = featuredVideoRobotForSelection(m_selectedRobot, clamped);
+    if (spec.hasFeaturedTile) {
+        ordered.append(primary);
+    }
+    for (int i = 0; i < clamped; ++i) {
+        if (!spec.hasFeaturedTile || i != primary) {
+            ordered.append(i);
+        }
+    }
+
+    for (int i = 0; i < ordered.size() && i < spec.placements.size(); ++i) {
+        const int robotId = ordered[i];
+        const VideoLayoutSlot &slot = spec.placements[i];
+        if (robotId < 0 || robotId >= m_videoPlacements.size()) {
+            continue;
+        }
+        const VideoLayoutSlot scaledSlot = scaledVideoSlot(slot);
+        m_videoPlacements[robotId] = {scaledSlot.row, scaledSlot.column,
+                                      scaledSlot.rowSpan, scaledSlot.columnSpan};
+    }
+    updateVideoLayoutBodySize();
+}
+
+bool MainWindow::videoPlacementAvailable(int robotId, int row, int column,
+                                         int rowSpan, int columnSpan) const
+{
+    if (row < 0 || column < 0 || rowSpan < 1 || columnSpan < 1
+        || row + rowSpan > kVideoLayoutRows
+        || column + columnSpan > kVideoLayoutColumns) {
+        return false;
+    }
+
+    const QRect candidate(column, row, columnSpan, rowSpan);
+    for (int i = 0; i < m_videoPlacements.size(); ++i) {
+        if (i == robotId) {
+            continue;
+        }
+        const VideoPlacement &placement = m_videoPlacements[i];
+        const QRect occupied(placement.column, placement.row,
+                             placement.columnSpan, placement.rowSpan);
+        if (candidate.intersects(occupied)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool MainWindow::setVideoPlacementIfFree(int robotId, int row, int column,
+                                         int rowSpan, int columnSpan)
+{
+    if (robotId < 0 || robotId >= m_videoPlacements.size()) {
+        return false;
+    }
+
+    if (!videoPlacementAvailable(robotId, row, column, rowSpan, columnSpan)) {
+        return false;
+    }
+
+    m_videoPlacements[robotId] = {row, column, rowSpan, columnSpan};
+    relayoutVideoTiles();
+    return true;
+}
+
+bool MainWindow::autoArrangeVideoLayout(int fixedRobotId, int row, int column,
+                                        int rowSpan, int columnSpan)
+{
+    if (fixedRobotId < 0 || fixedRobotId >= m_videoPlacements.size()) {
+        return false;
+    }
+
+    const VideoLayoutSlot fixedSlot{row, column, rowSpan, columnSpan};
+    QVector<VideoLayoutSlot> remainingSlots;
+    if (!arrangeRemainingVideoSlots(fixedSlot,
+                                    m_videoPlacements.size() - 1,
+                                    &remainingSlots)) {
+        return false;
+    }
+
+    QVector<VideoPlacement> nextPlacements;
+    nextPlacements.resize(m_videoPlacements.size());
+    nextPlacements[fixedRobotId] = {fixedSlot.row,
+                                    fixedSlot.column,
+                                    fixedSlot.rowSpan,
+                                    fixedSlot.columnSpan};
+
+    int slotIndex = 0;
+    for (int robotId = 0; robotId < nextPlacements.size(); ++robotId) {
+        if (robotId == fixedRobotId) {
+            continue;
+        }
+        if (slotIndex >= remainingSlots.size()) {
+            return false;
+        }
+        const VideoLayoutSlot &slot = remainingSlots[slotIndex++];
+        nextPlacements[robotId] = {slot.row, slot.column, slot.rowSpan, slot.columnSpan};
+    }
+
+    m_videoPlacements = nextPlacements;
+    relayoutVideoTiles();
+    return true;
+}
+
+void MainWindow::updateVideoLayoutBodySize()
+{
+    if (!m_videoGrid || !m_videoGrid->parentWidget()) {
+        return;
+    }
+
+    QWidget *body = m_videoGrid->parentWidget();
+    body->setMinimumSize(0, 0);
+    body->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+}
+
+QPoint MainWindow::videoGridCellAt(const QPoint &globalPos) const
+{
+    if (!m_videoGrid || !m_videoGrid->parentWidget()) {
+        return QPoint(-1, -1);
+    }
+
+    QWidget *body = m_videoGrid->parentWidget();
+    const QPoint local = body->mapFromGlobal(globalPos);
+    if (local.x() < 0 || local.y() < 0) {
+        return QPoint(-1, -1);
+    }
+
+    const int column = qBound(0, local.x() * kVideoLayoutColumns / qMax(1, body->width()),
+                              kVideoLayoutColumns - 1);
+    const int row = qBound(0, local.y() * kVideoLayoutRows / qMax(1, body->height()),
+                           kVideoLayoutRows - 1);
+    return QPoint(column, row);
+}
+
+void MainWindow::moveVideoTile(int robotId, const QPoint &globalPos)
+{
+    if (robotId < 0 || robotId >= m_videoPlacements.size()) {
+        return;
+    }
+
+    const QPoint cell = videoGridCellAt(globalPos);
+    if (cell.x() < 0 || cell.y() < 0) {
+        return;
+    }
+
+    const VideoPlacement placement = m_videoPlacements[robotId];
+    autoArrangeVideoLayout(robotId, cell.y(), cell.x(),
+                           placement.rowSpan, placement.columnSpan);
+}
+
+void MainWindow::resizeVideoTile(int robotId, int edgeMask, const QPoint &globalPos)
+{
+    if (robotId < 0 || robotId >= m_videoPlacements.size() || edgeMask == VideoTile::NoEdge) {
+        return;
+    }
+
+    const QPoint cell = videoGridCellAt(globalPos);
+    if (cell.x() < 0 || cell.y() < 0) {
+        return;
+    }
+
+    const VideoPlacement placement = m_videoPlacements[robotId];
+    int row = placement.row;
+    int column = placement.column;
+    int rowSpan = placement.rowSpan;
+    int columnSpan = placement.columnSpan;
+    const int right = placement.column + placement.columnSpan - 1;
+    const int bottom = placement.row + placement.rowSpan - 1;
+
+    if (edgeMask & VideoTile::LeftEdge) {
+        column = qBound(0, cell.x(), right);
+        columnSpan = right - column + 1;
+    } else if (edgeMask & VideoTile::RightEdge) {
+        const int newRight = qBound(column, cell.x(), kVideoLayoutColumns - 1);
+        columnSpan = newRight - column + 1;
+    }
+
+    if (edgeMask & VideoTile::TopEdge) {
+        row = qBound(0, cell.y(), bottom);
+        rowSpan = bottom - row + 1;
+    } else if (edgeMask & VideoTile::BottomEdge) {
+        const int newBottom = qBound(row, cell.y(), kVideoLayoutRows - 1);
+        rowSpan = newBottom - row + 1;
+    }
+
+    autoArrangeVideoLayout(robotId, row, column, rowSpan, columnSpan);
+}
+
+void MainWindow::shrinkVideoTile(int robotId, int edgeMask)
+{
+    if (robotId < 0 || robotId >= m_videoPlacements.size() || edgeMask == VideoTile::NoEdge) {
+        return;
+    }
+
+    VideoPlacement placement = m_videoPlacements[robotId];
+    if ((edgeMask & VideoTile::LeftEdge) && placement.columnSpan > 1) {
+        ++placement.column;
+        --placement.columnSpan;
+    } else if ((edgeMask & VideoTile::RightEdge) && placement.columnSpan > 1) {
+        --placement.columnSpan;
+    }
+
+    if ((edgeMask & VideoTile::TopEdge) && placement.rowSpan > 1) {
+        ++placement.row;
+        --placement.rowSpan;
+    } else if ((edgeMask & VideoTile::BottomEdge) && placement.rowSpan > 1) {
+        --placement.rowSpan;
+    }
+
+    autoArrangeVideoLayout(robotId, placement.row, placement.column,
+                           placement.rowSpan, placement.columnSpan);
+}
+
+void MainWindow::relayoutVideoTiles()
+{
+    if (!m_videoGrid) {
+        return;
+    }
+    if (m_videoPlacements.size() != m_videoTiles.size()) {
+        resetVideoLayout(m_videoTiles.size());
+    }
+    for (VideoTile *tile : m_videoTiles) {
+        m_videoGrid->removeWidget(tile);
+    }
+    for (int row = 0; row < kVideoLayoutRows; ++row) {
+        m_videoGrid->setRowStretch(row, 0);
+    }
+    for (int col = 0; col < kVideoLayoutColumns; ++col) {
+        m_videoGrid->setColumnStretch(col, 0);
+    }
+
+    for (int i = 0; i < m_videoTiles.size() && i < m_videoPlacements.size(); ++i) {
+        const VideoPlacement &placement = m_videoPlacements[i];
+        if (!videoPlacementAvailable(i, placement.row, placement.column,
+                                     placement.rowSpan, placement.columnSpan)) {
+            continue;
+        }
+        m_videoGrid->addWidget(m_videoTiles[i], placement.row, placement.column,
+                               placement.rowSpan, placement.columnSpan);
+    }
+    for (int row = 0; row < kVideoLayoutRows; ++row) {
+        m_videoGrid->setRowStretch(row, 1);
+    }
+    for (int col = 0; col < kVideoLayoutColumns; ++col) {
+        m_videoGrid->setColumnStretch(col, 1);
+    }
+
+    updateVideoLayoutBodySize();
+}
+
+void MainWindow::relayoutRobotStatusCards()
+{
+    if (!m_robotCardGrid) {
+        return;
+    }
+    const bool scrollLayout = m_robotStatusCards.size() >= 6;
+    for (RobotStatusCard *card : m_robotStatusCards) {
+        m_robotCardGrid->removeWidget(card);
+    }
+    for (int row = 0; row <= kMaxRobots / kRobotCardGridColumns; ++row) {
+        m_robotCardGrid->setRowStretch(row, 0);
+    }
+    for (int i = 0; i < m_robotStatusCards.size(); ++i) {
+        m_robotCardGrid->addWidget(m_robotStatusCards[i], i / kRobotCardGridColumns, i % kRobotCardGridColumns);
+        m_robotCardGrid->setRowStretch(i / kRobotCardGridColumns, scrollLayout ? 0 : 1);
+    }
+    if (scrollLayout) {
+        m_robotCardGrid->setRowStretch((m_robotStatusCards.size() + kRobotCardGridColumns - 1) / kRobotCardGridColumns, 1);
+    }
+    if (QWidget *body = m_robotCardGrid->parentWidget()) {
+        const int rows = qMax(1, (m_robotStatusCards.size() + kRobotCardGridColumns - 1) / kRobotCardGridColumns);
+        if (scrollLayout) {
+            body->setMinimumWidth(kRobotCardGridColumns * 620 + (kRobotCardGridColumns - 1) * m_robotCardGrid->spacing());
+            body->setMinimumHeight(rows * 350 + (rows - 1) * m_robotCardGrid->spacing());
+            body->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+        } else {
+            body->setMinimumSize(kRobotCardGridColumns * 620 + (kRobotCardGridColumns - 1) * m_robotCardGrid->spacing(),
+                                 rows * 350 + (rows - 1) * m_robotCardGrid->spacing());
+            body->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Expanding);
+        }
+    }
+}
+
+void MainWindow::clampSelectedRobot()
+{
+    if (m_selectedRobot == kAllRobotsSelection) {
+        if (m_map) {
+            m_map->setSelectedRobot(m_selectedRobot);
+        }
+        return;
+    }
+    const int upper = qMax(0, m_robotCount - 1);
+    const int clamped = qBound(0, m_selectedRobot, upper);
+    if (clamped == m_selectedRobot) {
+        return;
+    }
+
+    m_selectedRobot = clamped;
+    if (m_map) {
+        m_map->setSelectedRobot(m_selectedRobot);
+    }
+}
+
 void MainWindow::updateMissionSummary()
 {
+    const QVector<RobotSnapshot> deployedSnapshots = snapshotsForDeployedRobots(m_snapshots, m_robotCount);
     int connected = 0;
     float progressTotal = 0.0f;
     int progressCount = 0;
-    for (const RobotSnapshot &snapshot : m_snapshots) {
+    for (const RobotSnapshot &snapshot : deployedSnapshots) {
         if (snapshot.connected) {
             ++connected;
             progressTotal += snapshot.missionProgress > 1.0f
@@ -2038,7 +3408,7 @@ void MainWindow::updateMissionSummary()
         m_metricMissionTime->setText(formatMissionTime());
     }
     if (m_metricConnected) {
-        m_metricConnected->setText(QString("%1/%2").arg(connected).arg(m_snapshots.size()));
+        m_metricConnected->setText(QString::number(connected));
     }
     if (m_metricEvents) {
         m_metricEvents->setText(QString::number(m_eventList ? m_eventList->count() : 0));
@@ -2051,11 +3421,12 @@ void MainWindow::updatePacketLogPanel()
         return;
     }
     m_packetStatsList->clear();
+    const QVector<RobotSnapshot> deployedSnapshots = snapshotsForDeployedRobots(m_snapshots, m_robotCount);
     int totalRx = 0;
     int totalTx = 0;
     int totalAck = 0;
     int totalDrops = 0;
-    for (const RobotSnapshot &snapshot : m_snapshots) {
+    for (const RobotSnapshot &snapshot : deployedSnapshots) {
         const int drops = static_cast<int>(snapshot.imgDropCount + snapshot.lidarDropCount);
         totalRx += snapshot.rxPackets;
         totalTx += snapshot.txCommands;
@@ -2083,9 +3454,14 @@ void MainWindow::updatePacketLogPanel()
 
 void MainWindow::updateSnapshots(const QVector<RobotSnapshot> &snapshots)
 {
-    m_snapshots = snapshots;
+    QVector<RobotSnapshot> displaySnapshots = remapSnapshotsForDisplay(snapshots);
+    for (RobotSnapshot &snapshot : displaySnapshots) {
+        snapshot.commandMoving = snapshot.connected && m_commandMovingRobotIds.contains(snapshot.id);
+    }
+    const QVector<RobotSnapshot> deployedSnapshots = snapshotsForDeployedRobots(displaySnapshots, m_robotCount);
+    m_snapshots = displaySnapshots;
     int connected = 0;
-    for (const RobotSnapshot &snapshot : snapshots) {
+    for (const RobotSnapshot &snapshot : deployedSnapshots) {
         if (snapshot.connected) {
             connected++;
         }
@@ -2108,7 +3484,7 @@ void MainWindow::updateSnapshots(const QVector<RobotSnapshot> &snapshots)
     m_system->setText(connected > 0 ? "● 시스템 정상" : "● 브릿지 대기");
     m_system->setStyleSheet(connected > 0 ? "color:#00e66b" : "color:#ffd21a");
     refreshRobotSelector();
-    m_map->setSnapshots(snapshots);
+    m_map->setSnapshots(deployedSnapshots);
     refreshRobotList();
 }
 
@@ -2339,7 +3715,7 @@ void MainWindow::updateLogSummary()
 
 void MainWindow::appendEvent(const UiEvent &event)
 {
-    if (isBridgeCommandSentEvent(event) || isReassemblyTimeoutEvent(event)) {
+    if (isBridgeCommandSentEvent(event) || isReassemblyTimeoutEvent(event) || isCommandAckEvent(event)) {
         return;
     }
 
@@ -2487,7 +3863,8 @@ void MainWindow::showPage(int index)
 
 void MainWindow::showCameraFullscreen(int robotId)
 {
-    if (!m_contentStack || !m_cameraPage || !m_expandedVideoTile || robotId < 0) {
+    if (!m_contentStack || !m_cameraPage || !m_expandedVideoTile ||
+        robotId < 0 || robotId >= m_robotCount) {
         return;
     }
     if (m_contentStack->currentWidget() != m_cameraPage) {
@@ -2553,7 +3930,7 @@ void MainWindow::showMapFullscreen()
     m_contentStack->setCurrentWidget(m_mapFullscreenPage);
     QTimer::singleShot(0, this, [this]() {
         if (m_map) {
-            m_map->fitToAvailableSize();
+            m_map->fitToAvailableSize(2.2f);
         }
     });
 }
@@ -2581,6 +3958,13 @@ void MainWindow::leaveMapFullscreen()
 void MainWindow::showMap2D()
 {
     m_map->setViewMode3D(false);
+    if (m_contentStack && m_contentStack->currentWidget() == m_mapFullscreenPage) {
+        QTimer::singleShot(0, this, [this]() {
+            if (m_map) {
+                m_map->fitToAvailableSize(2.2f);
+            }
+        });
+    }
     m_btn2d->setObjectName("smallActive");
     m_btn3d->setObjectName("smallButton");
     m_fullscreenBtn2d->setObjectName("smallActive");
@@ -2606,6 +3990,9 @@ void MainWindow::showMap3D()
 
 void MainWindow::selectRobot(int robotId)
 {
+    if (robotId != kAllRobotsSelection && (robotId < 0 || robotId >= m_robotCount)) {
+        return;
+    }
     m_selectedRobot = robotId;
     if (m_robotSelector) {
         const int idx = m_robotSelector->findData(robotId);
@@ -2616,6 +4003,25 @@ void MainWindow::selectRobot(int robotId)
         }
     }
     m_map->setSelectedRobot(robotId);
+
+    const int layoutRobotId = featuredVideoRobotForSelection(robotId, m_videoPlacements.size());
+    if (layoutRobotId >= 0 && layoutRobotId < m_videoPlacements.size()) {
+        int largestRobotId = layoutRobotId;
+        int largestArea = 0;
+        for (int i = 0; i < m_videoPlacements.size(); ++i) {
+            const VideoPlacement &placement = m_videoPlacements[i];
+            const int area = placement.rowSpan * placement.columnSpan;
+            if (area > largestArea) {
+                largestArea = area;
+                largestRobotId = i;
+            }
+        }
+        if (largestRobotId != layoutRobotId) {
+            std::swap(m_videoPlacements[layoutRobotId], m_videoPlacements[largestRobotId]);
+        }
+    }
+
+    relayoutVideoTiles();
     refreshRobotList();
 }
 
@@ -2625,8 +4031,22 @@ void MainWindow::refreshRobotSelector()
         return;
     }
 
+    auto fitPopupHeightToItems = [this]() {
+        QAbstractItemView *view = m_robotSelector->view();
+        if (!view || m_robotSelector->count() <= 0) {
+            return;
+        }
+        const int rowHeight = qMax(1, view->sizeHintForRow(0));
+        view->setFrameShape(QFrame::NoFrame);
+        view->setLineWidth(0);
+        view->setMidLineWidth(0);
+        view->setFixedHeight(rowHeight * m_robotSelector->count());
+    };
+
     QVector<int> availableIds;
-    for (int i = 0; i < m_snapshots.size() && i < kSelectableRobotCount; ++i) {
+    availableIds.append(kAllRobotsSelection);
+    const int count = qBound(0, m_robotCount, kMaxRobots);
+    for (int i = 0; i < count; ++i) {
         availableIds.append(i);
     }
 
@@ -2637,6 +4057,7 @@ void MainWindow::refreshRobotSelector()
             m_robotSelector->setCurrentIndex(idx);
             m_updatingRobotSelector = false;
         }
+        fitPopupHeightToItems();
         return;
     }
     m_availableRobotIds = availableIds;
@@ -2645,18 +4066,52 @@ void MainWindow::refreshRobotSelector()
     m_robotSelector->clear();
     m_robotSelector->setEnabled(true);
     for (int robotId : availableIds) {
-        m_robotSelector->addItem(robotName(robotId), robotId);
+        m_robotSelector->addItem(robotId == kAllRobotsSelection ? QStringLiteral("전체")
+                                                                : robotName(robotId),
+                                 robotId);
     }
 
     const int selectedIndex = m_robotSelector->findData(m_selectedRobot);
     if (selectedIndex >= 0) {
         m_robotSelector->setCurrentIndex(selectedIndex);
+    } else if (m_robotSelector->count() > 0) {
+        m_robotSelector->setCurrentIndex(0);
+        m_selectedRobot = m_robotSelector->itemData(0).toInt();
     }
     m_updatingRobotSelector = false;
+    fitPopupHeightToItems();
 }
 
 void MainWindow::refreshRobotList()
 {
+    if (m_selectedRobot == kAllRobotsSelection) {
+        if (!m_robotInfo || !m_missionInfo || !m_selected) {
+            return;
+        }
+        const QVector<RobotSnapshot> deployedSnapshots = snapshotsForDeployedRobots(m_snapshots, m_robotCount);
+        int connected = 0;
+        float progressTotal = 0.0f;
+        int progressCount = 0;
+        for (const RobotSnapshot &snapshot : deployedSnapshots) {
+            if (snapshot.connected) {
+                ++connected;
+                progressTotal += snapshot.missionProgress > 1.0f
+                    ? snapshot.missionProgress
+                    : snapshot.missionProgress * 100.0f;
+                ++progressCount;
+            }
+        }
+        const int progress = progressCount > 0
+            ? qBound(0, qRound(progressTotal / progressCount), 100)
+            : 0;
+        m_robotInfo->setText(QString("로봇 상태  |  전체 선택  |  온라인 %1/%2")
+                             .arg(connected)
+                             .arg(deployedSnapshots.size()));
+        m_missionInfo->setText(QString("임무 정보  |  전체 로봇 제어     평균 진행률: %1%")
+                               .arg(progress));
+        m_selected->setText(QStringLiteral("좌표  |  전체 선택  |  경로 생성 시 모든 투입 로봇 기준"));
+        return;
+    }
     if (m_selectedRobot < 0 || m_selectedRobot >= m_snapshots.size()) {
         return;
     }
@@ -2666,11 +4121,11 @@ void MainWindow::refreshRobotList()
     const RobotSnapshot &s = m_snapshots[m_selectedRobot];
     m_robotInfo->setText(QString("로봇 상태  |  %1  %2  |  배터리 %3%  |  RTT %4 ms")
                          .arg(robotName(s.id),
-                              s.connected ? "온라인" : (s.shmOpen ? "대기" : "미연결"))
+                              s.connected ? "온라인" : (robotConnectionLost(s) ? "연결 끊김" : "연결 안됨"))
                          .arg(displayBatteryPercent(s.id, s.battery))
                          .arg(s.linkRttMs, 0, 'f', 1));
     m_missionInfo->setText(QString("임무 정보  |  현재 임무: %1     목표거리: %2     진행률: %3%     Waypoint: %4")
-                           .arg(missionComplete(s) ? QStringLiteral("임무 완료") : QStringLiteral("탐색 중"),
+                           .arg(robotMissionStateText(s),
                                 pathDistanceSummary(s))
                            .arg(missionProgressPercent(s))
                            .arg(waypointSummary(s)));
@@ -2684,17 +4139,230 @@ void MainWindow::refreshRobotList()
 
 void MainWindow::sendCommand(uint8_t commandType, float vx, float vy, float omega)
 {
+    const int severity = commandType == CMD_TYPE_ESTOP ? 4
+        : (commandType == CMD_TYPE_MOVE ? 2
+           : (commandType == CMD_TYPE_STOP ? 3 : 1));
+    auto noteCommandState = [this, commandType](int displayRobotId) {
+        if (displayRobotId < 0) {
+            return;
+        }
+        if (commandType == CMD_TYPE_MOVE) {
+            m_commandMovingRobotIds.insert(displayRobotId);
+        } else if (commandType == CMD_TYPE_STOP || commandType == CMD_TYPE_ESTOP ||
+                   commandType == CMD_TYPE_PAUSE_MISSION ||
+                   commandType == CMD_TYPE_CANCEL_MISSION) {
+            m_commandMovingRobotIds.remove(displayRobotId);
+        }
+    };
+    auto showMoveIndicators = [this, commandType](const QVector<int> &robotIds) {
+        if (commandType == CMD_TYPE_MOVE && m_map && !robotIds.isEmpty()) {
+            m_map->showMoveCommandIndicators(robotIds);
+        }
+    };
+    int targetRobot = m_selectedRobot;
+    if (m_robotSelector && m_robotSelector->currentIndex() >= 0) {
+        targetRobot = m_robotSelector->currentData().toInt();
+        m_selectedRobot = targetRobot;
+    }
+
+    if (m_demoMode) {
+        Q_UNUSED(vx);
+        Q_UNUSED(vy);
+        Q_UNUSED(omega);
+        QVector<int> demoMoveRobotIds;
+        if (targetRobot == kAllRobotsSelection) {
+            for (int robotId = 0; robotId < m_robotCount; ++robotId) {
+                demoMoveRobotIds.append(robotId);
+            }
+        } else if (targetRobot >= 0) {
+            demoMoveRobotIds.append(targetRobot);
+        }
+        showMoveIndicators(demoMoveRobotIds);
+        appendEvent(UiEvent{targetRobot, severity, commandType, 0,
+                            QString("테스트 명령: %1").arg(commandTypeText(commandType))});
+        return;
+    }
+
+    if (targetRobot == kAllRobotsSelection) {
+        QString failed;
+        int sent = 0;
+        QVector<int> sentRobotIds;
+        for (int robotId = 0; robotId < m_robotCount; ++robotId) {
+            if (isHardcodedDisplayRobot(robotId)) {
+                continue;
+            }
+            const int commandRobotId = displayToPhysicalRobotId(robotId);
+            QString errorMessage;
+            if (!m_monitor.sendCommand(commandRobotId, commandType, vx, vy, omega, &errorMessage)) {
+                failed += QString("%1: %2\n").arg(robotName(robotId), errorMessage);
+                continue;
+            }
+            noteCommandState(robotId);
+            sentRobotIds.append(robotId);
+            ++sent;
+        }
+        showMoveIndicators(sentRobotIds);
+        if (!failed.isEmpty()) {
+            QMessageBox::warning(this, "명령 전송 실패",
+                                 QString("일부 로봇의 브릿지 명령 큐에 쓰지 못했습니다.\n%1").arg(failed));
+        }
+        if (sent > 0) {
+            appendEvent(UiEvent{kAllRobotsSelection, severity, commandType, 0,
+                                QString("전체 명령 전송: %1 (%2대)")
+                                    .arg(commandTypeText(commandType))
+                                    .arg(sent)});
+        }
+        return;
+    }
+
     QString errorMessage;
-    if (!m_monitor.sendCommand(m_selectedRobot, commandType, vx, vy, omega, &errorMessage)) {
+    if (isHardcodedDisplayRobot(targetRobot)) {
+        QMessageBox::warning(this, "명령 전송 실패",
+                             QString("%1은 고정 표시 로봇이라 실제 명령 대상이 아닙니다.")
+                                 .arg(robotName(targetRobot)));
+        return;
+    }
+    const int physicalTargetRobot = displayToPhysicalRobotId(targetRobot);
+    if (!m_monitor.sendCommand(physicalTargetRobot, commandType, vx, vy, omega, &errorMessage)) {
         QMessageBox::warning(this, "명령 전송 실패",
                              QString("브릿지 명령 큐에 쓰지 못했습니다.\n%1").arg(errorMessage));
         return;
     }
-    const int severity = commandType == CMD_TYPE_ESTOP ? 4
-        : (commandType == CMD_TYPE_MOVE ? 2
-           : (commandType == CMD_TYPE_STOP ? 3 : 1));
-    appendEvent(UiEvent{m_selectedRobot, severity, commandType, 0,
+    noteCommandState(targetRobot);
+    showMoveIndicators(QVector<int>{targetRobot});
+    appendEvent(UiEvent{targetRobot, severity, commandType, 0,
                         QString("명령 전송: %1").arg(commandTypeText(commandType))});
+}
+
+void MainWindow::handleRouteGenerationRequested(int robotId, const QPointF &end)
+{
+    if (robotId != kAllRobotsSelection && (robotId < 0 || robotId >= m_robotCount)) {
+        QMessageBox::warning(this, "경로 생성 실패",
+                             QString("로봇 ID가 올바르지 않습니다: %1").arg(robotId));
+        return;
+    }
+    if (isHardcodedDisplayRobot(robotId)) {
+        QMessageBox::warning(this, "경로 생성 실패",
+                             QString("%1은 고정 표시 로봇이라 경로 생성 대상이 아닙니다.")
+                                 .arg(robotName(robotId)));
+        return;
+    }
+
+    if (m_demoMode) {
+        QVector<int> visiblePathIds;
+        if (robotId == kAllRobotsSelection) {
+            visiblePathIds = deployedRobotIds(m_snapshots, m_robotCount);
+        } else {
+            const QVector<RobotSnapshot> deployedSnapshots =
+                snapshotsForDeployedRobots(m_snapshots, m_robotCount);
+            auto it = std::find_if(deployedSnapshots.cbegin(), deployedSnapshots.cend(),
+                                   [robotId](const RobotSnapshot &snapshot) {
+                                       return snapshot.id == robotId;
+                                   });
+            if (it != deployedSnapshots.cend() && routeEligibleSnapshot(*it)) {
+                visiblePathIds.append(robotId);
+            }
+        }
+        if (visiblePathIds.isEmpty()) {
+            QMessageBox::warning(this, "경로 생성 실패",
+                                 "경로를 생성할 수 있는 정상 로봇이 없습니다.");
+            return;
+        }
+        appendEvent(UiEvent{robotId, 1, CMD_TYPE_SET_ROUTE, 0,
+                            QString("테스트 경로 생성: 목적지(%1, %2)")
+                                .arg(end.x(), 0, 'f', 2)
+                                .arg(end.y(), 0, 'f', 2)});
+        if (m_map) {
+            m_map->setGlobalPathRobotIds(visiblePathIds);
+            m_map->setGlobalPathsVisible(true);
+        }
+        return;
+    }
+
+    QString errorMessage;
+    if (robotId == kAllRobotsSelection) {
+        QString failed;
+        int sent = 0;
+        QVector<int> sentIds;
+        const QVector<RobotSnapshot> deployedSnapshots =
+            snapshotsForDeployedRobots(m_snapshots, m_robotCount);
+        for (const RobotSnapshot &snapshot : deployedSnapshots) {
+            if (isHardcodedDisplayRobot(snapshot.id)) {
+                continue;
+            }
+            if (!routeEligibleSnapshot(snapshot)) {
+                continue;
+            }
+            QString perRobotError;
+            const int physicalRobotId = displayToPhysicalRobotId(snapshot.id);
+            if (!m_monitor.sendCommand(physicalRobotId, CMD_TYPE_SET_ROUTE,
+                                       static_cast<float>(end.x()),
+                                       static_cast<float>(end.y()),
+                                       0.0f,
+                                       &perRobotError)) {
+                failed += QString("%1: %2\n").arg(robotName(snapshot.id), perRobotError);
+                continue;
+            }
+            ++sent;
+            sentIds.append(snapshot.id);
+        }
+        if (sentIds.isEmpty()) {
+            QMessageBox::warning(this, "경로 생성 실패",
+                                 "경로를 생성할 수 있는 정상 로봇이 없습니다.");
+            return;
+        }
+        if (!failed.isEmpty()) {
+            QMessageBox::warning(this, "경로 생성 실패",
+                                 QString("일부 로봇의 목적지 좌표를 브릿지 명령 큐에 쓰지 못했습니다.\n%1")
+                                     .arg(failed));
+        }
+        if (sent > 0) {
+            if (m_map) {
+                m_map->setGlobalPathRobotIds(deployedRobotIds(m_snapshots, m_robotCount));
+                m_map->setGlobalPathsVisible(true);
+            }
+            appendEvent(UiEvent{kAllRobotsSelection, 1, CMD_TYPE_SET_ROUTE, 0,
+                                QString("전체 경로 생성 요청: 목적지(%1, %2), %3대")
+                                    .arg(end.x(), 0, 'f', 2)
+                                    .arg(end.y(), 0, 'f', 2)
+                                    .arg(sent)});
+        }
+        return;
+    }
+
+    const QVector<RobotSnapshot> deployedSnapshots =
+        snapshotsForDeployedRobots(m_snapshots, m_robotCount);
+    auto selectedIt = std::find_if(deployedSnapshots.cbegin(), deployedSnapshots.cend(),
+                                   [robotId](const RobotSnapshot &snapshot) {
+                                       return snapshot.id == robotId;
+                                   });
+    if (selectedIt == deployedSnapshots.cend() || !routeEligibleSnapshot(*selectedIt)) {
+        QMessageBox::warning(this, "경로 생성 실패",
+                             QString("%1은 현재 고장/미연결 상태라 경로를 생성하지 않았습니다.")
+                                 .arg(robotName(robotId)));
+        return;
+    }
+
+    const int physicalRobotId = displayToPhysicalRobotId(robotId);
+    if (!m_monitor.sendCommand(physicalRobotId, CMD_TYPE_SET_ROUTE,
+                               static_cast<float>(end.x()),
+                               static_cast<float>(end.y()),
+                               0.0f,
+                               &errorMessage)) {
+        QMessageBox::warning(this, "경로 생성 실패",
+                             QString("목적지 좌표를 브릿지 명령 큐에 쓰지 못했습니다.\n%1")
+                                 .arg(errorMessage));
+        return;
+    }
+
+    appendEvent(UiEvent{robotId, 1, CMD_TYPE_SET_ROUTE, 0,
+                        QString("경로 생성 요청: 목적지(%1, %2)")
+                            .arg(end.x(), 0, 'f', 2)
+                            .arg(end.y(), 0, 'f', 2)});
+    if (m_map) {
+        m_map->addGlobalPathRobotIds(QVector<int>{robotId});
+        m_map->setGlobalPathsVisible(true);
+    }
 }
 
 void MainWindow::sendMove()
