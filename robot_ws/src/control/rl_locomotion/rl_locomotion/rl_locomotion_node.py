@@ -160,6 +160,7 @@ class RlLocomotionNode(Node):
         self.declare_parameter("max_joint_speed_rad_s", 1.5)
         self.declare_parameter("walk_start_cmd_norm", 0.01)
         self.declare_parameter("walk_start_ramp_s", 1.2)
+        self.declare_parameter("walk_stop_ramp_s", 1.2)
         self.declare_parameter("reset_phase_on_walk_start", False)
         self.declare_parameter("reset_target_to_feedback_on_walk_start", True)
 
@@ -238,6 +239,7 @@ class RlLocomotionNode(Node):
         self.max_joint_speed_rad_s = float(self.get_parameter("max_joint_speed_rad_s").value)
         self.walk_start_cmd_norm = float(self.get_parameter("walk_start_cmd_norm").value)
         self.walk_start_ramp_s = float(self.get_parameter("walk_start_ramp_s").value)
+        self.walk_stop_ramp_s = float(self.get_parameter("walk_stop_ramp_s").value)
         self.reset_phase_on_walk_start = bool(
             self.get_parameter("reset_phase_on_walk_start").value
         )
@@ -308,6 +310,11 @@ class RlLocomotionNode(Node):
         self.walk_active = False
         self.walk_ramp_start_time: Optional[float] = None
         self.walk_ramp_scale = 0.0
+        self.walk_stop_start_time: Optional[float] = None
+        self.walk_stop_start_cmd = [0.0, 0.0, 0.0]
+        self.effective_cmd_vx = 0.0
+        self.effective_cmd_vy = 0.0
+        self.effective_cmd_wz = 0.0
 
         self.joint_position = list(self.default_joint_angles)
         self.joint_velocity = [0.0] * 12
@@ -467,6 +474,8 @@ class RlLocomotionNode(Node):
             raise RuntimeError("walk_start_cmd_norm must be non-negative")
         if self.walk_start_ramp_s < 0.0:
             raise RuntimeError("walk_start_ramp_s must be non-negative")
+        if self.walk_stop_ramp_s < 0.0:
+            raise RuntimeError("walk_stop_ramp_s must be non-negative")
 
     def resolve_model_path(self, model_path: str) -> str:
         if not model_path:
@@ -639,6 +648,11 @@ class RlLocomotionNode(Node):
         self.walk_active = False
         self.walk_ramp_start_time = None
         self.walk_ramp_scale = 0.0
+        self.walk_stop_start_time = None
+        self.walk_stop_start_cmd = [0.0, 0.0, 0.0]
+        self.effective_cmd_vx = 0.0
+        self.effective_cmd_vy = 0.0
+        self.effective_cmd_wz = 0.0
 
     def apply_walk_transition(self, snapshot, now: float):
         cmd_norm = self.command_norm(
@@ -650,12 +664,42 @@ class RlLocomotionNode(Node):
 
         effective = dict(snapshot)
         if not active:
+            if self.walk_active and self.walk_stop_ramp_s > 0.0:
+                if self.walk_stop_start_time is None:
+                    self.walk_stop_start_time = now
+                    self.walk_stop_start_cmd = [
+                        self.effective_cmd_vx,
+                        self.effective_cmd_vy,
+                        self.effective_cmd_wz,
+                    ]
+                    stop_norm = self.command_norm(*self.walk_stop_start_cmd)
+                    self.get_logger().info(
+                        "walk stop: "
+                        f"cmd_norm={stop_norm:.3f}, "
+                        f"ramp_s={self.walk_stop_ramp_s:.2f}"
+                    )
+
+                stop_elapsed = now - self.walk_stop_start_time
+                scale = clamp(1.0 - stop_elapsed / self.walk_stop_ramp_s, 0.0, 1.0)
+                vx = self.walk_stop_start_cmd[0] * scale
+                vy = self.walk_stop_start_cmd[1] * scale
+                wz = self.walk_stop_start_cmd[2] * scale
+                if scale > 0.0 and self.command_norm(vx, vy, wz) > self.walk_start_cmd_norm:
+                    self.effective_cmd_vx = vx
+                    self.effective_cmd_vy = vy
+                    self.effective_cmd_wz = wz
+                    effective["cmd_vx"] = vx
+                    effective["cmd_vy"] = vy
+                    effective["cmd_wz"] = wz
+                    return effective
+
             self.reset_walk_transition()
             effective["cmd_vx"] = 0.0
             effective["cmd_vy"] = 0.0
             effective["cmd_wz"] = 0.0
             return effective
 
+        self.walk_stop_start_time = None
         if not self.walk_active:
             self.walk_active = True
             self.walk_ramp_start_time = now
@@ -684,9 +728,12 @@ class RlLocomotionNode(Node):
             scale = clamp(ramp_elapsed / self.walk_start_ramp_s, 0.0, 1.0)
 
         self.walk_ramp_scale = scale
-        effective["cmd_vx"] = snapshot["cmd_vx"] * scale
-        effective["cmd_vy"] = snapshot["cmd_vy"] * scale
-        effective["cmd_wz"] = snapshot["cmd_wz"] * scale
+        self.effective_cmd_vx = snapshot["cmd_vx"] * scale
+        self.effective_cmd_vy = snapshot["cmd_vy"] * scale
+        self.effective_cmd_wz = snapshot["cmd_wz"] * scale
+        effective["cmd_vx"] = self.effective_cmd_vx
+        effective["cmd_vy"] = self.effective_cmd_vy
+        effective["cmd_wz"] = self.effective_cmd_wz
         return effective
 
     def update_gait_phase(self, cmd_vx: float, cmd_vy: float, cmd_wz: float):
@@ -810,6 +857,13 @@ class RlLocomotionNode(Node):
                         successful=False,
                         reason="walk_start_ramp_s must be non-negative and finite",
                     )
+            elif param.name == "walk_stop_ramp_s":
+                value = float(param.value)
+                if not math.isfinite(value) or value < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason="walk_stop_ramp_s must be non-negative and finite",
+                    )
 
         for param in params:
             if param.name == "max_joint_speed_rad_s":
@@ -829,6 +883,11 @@ class RlLocomotionNode(Node):
                 self.walk_start_ramp_s = float(param.value)
                 self.get_logger().info(
                     f"updated walk_start_ramp_s={self.walk_start_ramp_s:.3f}"
+                )
+            elif param.name == "walk_stop_ramp_s":
+                self.walk_stop_ramp_s = float(param.value)
+                self.get_logger().info(
+                    f"updated walk_stop_ramp_s={self.walk_stop_ramp_s:.3f}"
                 )
             elif param.name == "reset_phase_on_walk_start":
                 self.reset_phase_on_walk_start = bool(param.value)

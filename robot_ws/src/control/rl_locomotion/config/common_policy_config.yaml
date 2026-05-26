@@ -83,5 +83,6 @@ rl_locomotion_node:
     max_joint_speed_rad_s: 0.75
     walk_start_cmd_norm: 0.01
     walk_start_ramp_s: 1.2
+    walk_stop_ramp_s: 0.0
     reset_phase_on_walk_start: false
     reset_target_to_feedback_on_walk_start: true
