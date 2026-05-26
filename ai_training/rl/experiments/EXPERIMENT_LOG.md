@@ -89,3 +89,5 @@
 | 086 | 05/26 | spotmicro_v7_0_slope_terrain_curriculum | v7.0: 지형 학습 시작 | 58.6% | 0.028 | 14.2% | ❌ |
 | 087 | 05/26 | spotmicro_v7_0_1_slope_terrain_continue | v7.0.1: 지형 학습 추가 학습 | 56.8% | 0.029 | 15.2% | ❌ |
 | 088 | 05/26 | spotmicro_v7_1_slope_terrain_gentle_restart | v7.1: 지형 학습 설정 변경 후 학습 | 65.0% | 0.029 | 13.1% | ❌ |
+| 089 | 05/26 | spotmicro_v7_1_slope_terrain_gentle_restart | v7.1: 지형 학습 설정 변경 후 학습 - walk-eval | 76.2% | 0.022 | 13.2% | ❌ |
+| 090 | 05/26 | spotmicro_v7_1_1_slope_terrain_walk_refine | v7.1.1: 과도한 tilt transition 끄고 학습 | 73.7% | 0.020 | 11.9% | ❌ |

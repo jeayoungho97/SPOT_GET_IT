@@ -133,10 +133,10 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             lin_vel_z = -2.0
             ang_vel_xy = -1.0
             orientation = -10.0
-            torques = -0.001
+            torques = -0.0015
             dof_vel = -0.0005
             dof_acc = -2.5e-7
-            action_rate = -0.05
+            action_rate = -0.06
             base_height = -2.0
             feet_air_time = 0.04
             dof_pos_limits = 0.0
@@ -218,7 +218,7 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         damping_scale_range = [1.0, 1.0]
         randomize_joint_obs_offset = False
         joint_obs_offset_range = [0.0, 0.0]
-        push_robots = True
+        push_robots = False
         push_interval_s = 4
         max_push_vel_xy = 0.18
         max_push_ang_vel_xy = 0.85
@@ -226,7 +226,7 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         push_lin_vel_clip = 0.30
         push_ang_vel_xy_clip = 1.20
         push_ang_vel_z_clip = 0.35
-        transition_tilt_push = True
+        transition_tilt_push = False
         transition_tilt_push_prob = 0.20
         transition_tilt_push_min_deg = 18.0
         transition_tilt_push_max_deg = 27.0
@@ -235,12 +235,12 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         transition_tilt_zero_yaw_cmd = True
         action_delay = True
         action_delay_range = [1, 2]
-        recovery_roll_pitch_range_deg = 30.0
-        recovery_yaw_range_deg = 180.0
-        recovery_lin_vel_xy_range = 0.14
-        recovery_lin_vel_z_range = 0.04
-        recovery_ang_vel_xy_range = 0.90
-        recovery_ang_vel_z_range = 0.35
+        recovery_roll_pitch_range_deg = 0.0
+        recovery_yaw_range_deg = 0.0
+        recovery_lin_vel_xy_range = 0.0
+        recovery_lin_vel_z_range = 0.0
+        recovery_ang_vel_xy_range = 0.0
+        recovery_ang_vel_z_range = 0.0
 
 
 class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
@@ -250,10 +250,10 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         learning_rate = 1e-4
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v7_1_slope_terrain_gentle_restart'
+        run_name = 'spotmicro_v7_1_1_slope_terrain_walk_refine'
         experiment_name = 'spotmicro_test'
-        max_iterations = 800
+        max_iterations = 500
         save_interval = 100
         resume = True
-        load_run = "May25_16-41-52_spotmicro_v6_3_1_prefall_transition_tilt_sampler_soft"
-        checkpoint = 8100
+        load_run = "May26_13-42-58_spotmicro_v7_1_slope_terrain_gentle_restart"
+        checkpoint = 8900
