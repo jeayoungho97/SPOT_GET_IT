@@ -54,20 +54,20 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         horizontal_scale = 0.05
         vertical_scale = 0.005
         border_size = 8.0
-        max_init_terrain_level = 2
+        max_init_terrain_level = 1
         num_rows = 8
         num_cols = 12
         terrain_length = 6.0
         terrain_width = 6.0
-        curriculum_move_up_distance = 0.90
+        curriculum_move_up_distance = 1.10
         curriculum_move_down_command_scale = 0.25
-        terrain_proportions = [0.40, 0.25, 0.35]
+        terrain_proportions = [0.50, 0.25, 0.25]
         spotmicro_slope_min = 0.02
-        spotmicro_slope_max = 0.14
-        spotmicro_rough_height_max = 0.008
-        spotmicro_rolling_amp_max = 0.025
-        spotmicro_rolling_wavelength_min = 0.45
-        spotmicro_rolling_wavelength_max = 1.20
+        spotmicro_slope_max = 0.10
+        spotmicro_rough_height_max = 0.005
+        spotmicro_rolling_amp_max = 0.015
+        spotmicro_rolling_wavelength_min = 0.65
+        spotmicro_rolling_wavelength_max = 1.40
         spotmicro_terrain_platform_size = 0.7
         slope_treshold = 0.75
         static_friction = 1.0
@@ -250,10 +250,10 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         learning_rate = 1e-4
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v7_0_1_slope_terrain_continue'
+        run_name = 'spotmicro_v7_1_slope_terrain_gentle_restart'
         experiment_name = 'spotmicro_test'
-        max_iterations = 500
+        max_iterations = 800
         save_interval = 100
         resume = True
-        load_run = "May26_12-31-57_spotmicro_v7_0_slope_terrain_curriculum"
-        checkpoint = 8900
+        load_run = "May25_16-41-52_spotmicro_v6_3_1_prefall_transition_tilt_sampler_soft"
+        checkpoint = 8100
