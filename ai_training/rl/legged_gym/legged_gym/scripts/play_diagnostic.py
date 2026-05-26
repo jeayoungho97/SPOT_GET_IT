@@ -3,6 +3,9 @@
 # 사용법: python legged_gym/scripts/play_diagnostic.py --task=spotmicro_test
 #         python legged_gym/scripts/play_diagnostic.py --task=spotmicro_test --checkpoint /path/to/model_500.pt --lightweight
 #         python legged_gym/scripts/play_diagnostic.py --task=spotmicro_test --with_dr --prefall-eval
+#         python legged_gym/scripts/play_diagnostic.py --task=spotmicro_test --flat-eval
+#         python legged_gym/scripts/play_diagnostic.py --task=spotmicro_test --terrain-curriculum-eval
+#         python legged_gym/scripts/play_diagnostic.py --task=spotmicro_test --walk-eval
 #
 # 출력:
 #   1. 터미널에 종합 진단 리포트
@@ -36,13 +39,33 @@ import matplotlib.pyplot as plt
 from collections import defaultdict
 import argparse, sys 
  
-def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False, recovery_range_deg=None):
+def run_diagnostic(
+    args,
+    checkpoint_path=None,
+    lightweight=False,
+    with_dr=False,
+    recovery_range_deg=None,
+    flat_eval=False,
+    terrain_curriculum_eval=False,
+    walk_eval=False,
+):
     # ============ 환경 설정 ============
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
     env_cfg.env.num_envs = min(env_cfg.env.num_envs, 256)
     env_cfg.terrain.num_rows = 5
     env_cfg.terrain.num_cols = 5
-    env_cfg.terrain.curriculum = False
+    env_cfg.terrain.curriculum = bool(terrain_curriculum_eval)
+    if flat_eval:
+        env_cfg.terrain.mesh_type = 'plane'
+        env_cfg.terrain.measure_heights = False
+        print("[진단] flat_eval: plane 지형으로 진단합니다")
+    else:
+        terrain_profile = getattr(env_cfg.terrain, "terrain_profile", "default")
+        print(
+            "[진단] terrain_eval: "
+            f"mesh={env_cfg.terrain.mesh_type}, profile={terrain_profile}, "
+            f"measure_heights={env_cfg.terrain.measure_heights}, "
+            f"curriculum={env_cfg.terrain.curriculum}")
     if not with_dr:
         env_cfg.noise.add_noise = False
         env_cfg.domain_rand.randomize_friction = False
@@ -54,6 +77,16 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False,
         print(
             "[진단] recovery_roll_pitch_range_deg override: "
             f"{env_cfg.domain_rand.recovery_roll_pitch_range_deg:.1f} deg")
+    if walk_eval:
+        env_cfg.domain_rand.recovery_roll_pitch_range_deg = 0.0
+        env_cfg.domain_rand.recovery_yaw_range_deg = 0.0
+        env_cfg.domain_rand.recovery_lin_vel_xy_range = 0.0
+        env_cfg.domain_rand.recovery_lin_vel_z_range = 0.0
+        env_cfg.domain_rand.recovery_ang_vel_xy_range = 0.0
+        env_cfg.domain_rand.recovery_ang_vel_z_range = 0.0
+        env_cfg.domain_rand.transition_tilt_push = False
+        env_cfg.domain_rand.push_robots = False
+        print("[진단] walk_eval: recovery reset/push 없이 보행만 진단합니다")
  
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     obs = env.get_observations()
@@ -1495,6 +1528,14 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False,
     import json as _json
     from datetime import datetime as _dt
 
+    terrain_eval_mode = (
+        'flat'
+        if flat_eval else
+        ('terrain_curriculum' if terrain_curriculum_eval else 'terrain_random')
+    )
+    if walk_eval:
+        terrain_eval_mode = f"{terrain_eval_mode}_walk"
+
     diagnostic_summary = {
         'timestamp': _dt.now().isoformat(),
         'run_name': train_cfg.runner.run_name,
@@ -1561,6 +1602,21 @@ def run_diagnostic(args, checkpoint_path=None, lightweight=False, with_dr=False,
             'lin_vel_y': list(env.cfg.commands.ranges.lin_vel_y),
             'ang_vel_yaw': list(env.cfg.commands.ranges.ang_vel_yaw),
             'command_deadband': float(getattr(env.cfg.commands, 'command_deadband', 0.2)),
+            'terrain': {
+                'eval_mode': terrain_eval_mode,
+                'walk_eval': bool(walk_eval),
+                'mesh_type': str(getattr(env.cfg.terrain, 'mesh_type', 'unknown')),
+                'terrain_profile': str(getattr(env.cfg.terrain, 'terrain_profile', 'default')),
+                'measure_heights': bool(getattr(env.cfg.terrain, 'measure_heights', False)),
+                'curriculum': bool(getattr(env.cfg.terrain, 'curriculum', False)),
+                'num_rows': int(getattr(env.cfg.terrain, 'num_rows', 0)),
+                'num_cols': int(getattr(env.cfg.terrain, 'num_cols', 0)),
+                'terrain_length': float(getattr(env.cfg.terrain, 'terrain_length', 0.0)),
+                'terrain_width': float(getattr(env.cfg.terrain, 'terrain_width', 0.0)),
+                'terrain_proportions': list(getattr(env.cfg.terrain, 'terrain_proportions', [])),
+                'spotmicro_slope_max': float(getattr(env.cfg.terrain, 'spotmicro_slope_max', 0.0)),
+                'spotmicro_rolling_amp_max': float(getattr(env.cfg.terrain, 'spotmicro_rolling_amp_max', 0.0)),
+            },
         },
         'reward_scales': {},
         'torque_per_joint': {},
@@ -1651,6 +1707,18 @@ if __name__ == '__main__':
     if prefall_eval:
         sys.argv.remove('--prefall-eval')
 
+    flat_eval = '--flat-eval' in sys.argv
+    if flat_eval:
+        sys.argv.remove('--flat-eval')
+
+    terrain_curriculum_eval = '--terrain-curriculum-eval' in sys.argv
+    if terrain_curriculum_eval:
+        sys.argv.remove('--terrain-curriculum-eval')
+
+    walk_eval = '--walk-eval' in sys.argv
+    if walk_eval:
+        sys.argv.remove('--walk-eval')
+
     recovery_range_deg = 30.0 if prefall_eval else None
     i = 1
     while i < len(sys.argv):
@@ -1693,4 +1761,7 @@ if __name__ == '__main__':
         lightweight=lightweight,
         with_dr=with_dr,
         recovery_range_deg=recovery_range_deg,
+        flat_eval=flat_eval,
+        terrain_curriculum_eval=terrain_curriculum_eval,
+        walk_eval=walk_eval,
     )

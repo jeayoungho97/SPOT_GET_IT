@@ -195,7 +195,9 @@ class SpotmicroTest(LeggedRobot):
         self.recovery_roll_pitch_range = math.radians(
             getattr(self.cfg.domain_rand, "recovery_roll_pitch_range_deg", 10.0)
         )
-        self.recovery_yaw_range = math.pi
+        self.recovery_yaw_range = math.radians(
+            getattr(self.cfg.domain_rand, "recovery_yaw_range_deg", 180.0)
+        )
         self.recovery_lin_vel_xy_range = getattr(self.cfg.domain_rand, "recovery_lin_vel_xy_range", 0.10)
         self.recovery_lin_vel_z_range = getattr(self.cfg.domain_rand, "recovery_lin_vel_z_range", 0.03)
         self.recovery_ang_vel_xy_range = getattr(self.cfg.domain_rand, "recovery_ang_vel_xy_range", 0.60)

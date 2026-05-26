@@ -449,11 +449,12 @@ def auto_judge(metrics, run_name='', recovery_data=None, transition_recovery_dat
 
     judgments = []
     all_pass = True
+    terrain_mode = 'terrain' in run_name or 'slope' in run_name
     prefall_mode = (
         'prefall' in run_name
-        or bool(recovery_data)
-        or bool(transition_recovery_data)
+        or ('recovery' in run_name and not terrain_mode)
     )
+    recovery_metrics_present = bool(recovery_data) or bool(transition_recovery_data)
 
     timeout = metrics.get('timeout_pct', 0)
     timeout_pass = 95 if prefall_mode else 80
@@ -462,7 +463,7 @@ def auto_judge(metrics, run_name='', recovery_data=None, transition_recovery_dat
         judgments.append(f"✅ Timeout: {timeout:.1f}% (≥{timeout_pass}%)")
     elif timeout >= timeout_warn:
         judgments.append(f"⚠️ Timeout: {timeout:.1f}% ({timeout_warn}~{timeout_pass}%, 개선 필요)")
-        if prefall_mode:
+        if prefall_mode or terrain_mode:
             all_pass = False
     elif timeout >= 60:
         judgments.append(f"⚠️ Timeout: {timeout:.1f}% (60~{timeout_warn}%, 보통)")
@@ -491,12 +492,23 @@ def auto_judge(metrics, run_name='', recovery_data=None, transition_recovery_dat
 
     roll = metrics.get('mean_roll_deg', 0)
     pitch = metrics.get('mean_pitch_deg', 0)
-    if roll < 8 and pitch < 8:
-        judgments.append(f"✅ 자세: roll {roll:.1f}°, pitch {pitch:.1f}° (안정)")
-    elif roll < 15 and pitch < 15:
-        judgments.append(f"⚠️ 자세: roll {roll:.1f}°, pitch {pitch:.1f}° (보통)")
+    posture_pass = 10 if terrain_mode else 8
+    posture_warn = 18 if terrain_mode else 15
+    if roll < posture_pass and pitch < posture_pass:
+        judgments.append(
+            f"✅ 자세: roll {roll:.1f}°, pitch {pitch:.1f}° "
+            f"(<{posture_pass}°)"
+        )
+    elif roll < posture_warn and pitch < posture_warn:
+        judgments.append(
+            f"⚠️ 자세: roll {roll:.1f}°, pitch {pitch:.1f}° "
+            f"({posture_pass}~{posture_warn}°)"
+        )
     else:
-        judgments.append(f"❌ 자세: roll {roll:.1f}°, pitch {pitch:.1f}° (불안정)")
+        judgments.append(
+            f"❌ 자세: roll {roll:.1f}°, pitch {pitch:.1f}° "
+            f"(>{posture_warn}°)"
+        )
         all_pass = False
 
     early_death = metrics.get('early_death_pct', 0)
@@ -505,7 +517,7 @@ def auto_judge(metrics, run_name='', recovery_data=None, transition_recovery_dat
         judgments.append(f"✅ 조기종료: {early_death:.1f}% (<{early_death_pass}%)")
     elif early_death < 20:
         judgments.append(f"⚠️ 조기종료: {early_death:.1f}% (5~20%)")
-        if prefall_mode:
+        if prefall_mode or terrain_mode:
             all_pass = False
     else:
         judgments.append(f"❌ 조기종료: {early_death:.1f}% (>20%)")
@@ -517,9 +529,12 @@ def auto_judge(metrics, run_name='', recovery_data=None, transition_recovery_dat
             judgments.append(f"✅ 전환복구: {transition_sr:.1f}% (≥80%)")
         elif transition_sr >= 50:
             judgments.append(f"⚠️ 전환복구: {transition_sr:.1f}% (50~80%)")
+            if prefall_mode:
+                all_pass = False
         else:
             judgments.append(f"❌ 전환복구: {transition_sr:.1f}% (<50%)")
-            all_pass = False
+            if prefall_mode:
+                all_pass = False
 
     prefall_trials = metrics.get('transition_prefall_trials', 0)
     prefall_sr = metrics.get('transition_prefall_success_rate_pct')
@@ -534,7 +549,8 @@ def auto_judge(metrics, run_name='', recovery_data=None, transition_recovery_dat
                 all_pass = False
         elif prefall_sr is not None:
             judgments.append(f"❌ 18도+ pre-fall 복구: {prefall_sr:.1f}% (<{prefall_warn}%)")
-            all_pass = False
+            if prefall_mode:
+                all_pass = False
     else:
         judgments.append("⚠️ 18도+ pre-fall 복구: trial 없음 (30도 목표 미검증)")
         if prefall_mode:
@@ -570,6 +586,11 @@ def auto_judge(metrics, run_name='', recovery_data=None, transition_recovery_dat
         elif transition_sr is not None:
             judgments.append(f"❌ Transition 25-30도 복구: {transition_sr:.1f}% (<55%, n={transition_trials})")
             all_pass = False
+    elif terrain_mode and recovery_metrics_present:
+        judgments.append(
+            "ℹ️ Recovery/pre-fall 지표는 참고값입니다 "
+            "(terrain run 자동 PASS/FAIL 기준에서는 제외)"
+        )
 
     overall = "✅ PASS" if all_pass else "❌ FAIL (일부 기준 미달)"
     return overall, judgments
@@ -615,6 +636,26 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
 
     # 변경점 요약
     changes_summary = parse_config_changes(diff_text)
+
+    terrain_cfg = config_snapshot.get('terrain', {}) if config_snapshot else {}
+    terrain_section = ""
+    if terrain_cfg:
+        terrain_section = f"""
+### 지형 설정
+
+| 항목 | 값 |
+|------|-----|
+| 평가 모드 | {terrain_cfg.get('eval_mode', 'N/A')} |
+| walk_eval | {terrain_cfg.get('walk_eval', 'N/A')} |
+| mesh_type | {terrain_cfg.get('mesh_type', 'N/A')} |
+| terrain_profile | {terrain_cfg.get('terrain_profile', 'N/A')} |
+| measure_heights | {terrain_cfg.get('measure_heights', 'N/A')} |
+| grid | {terrain_cfg.get('num_rows', 'N/A')} x {terrain_cfg.get('num_cols', 'N/A')} |
+| env 크기 | {terrain_cfg.get('terrain_length', 'N/A')} x {terrain_cfg.get('terrain_width', 'N/A')} m |
+| terrain_proportions | {terrain_cfg.get('terrain_proportions', 'N/A')} |
+| slope max | {terrain_cfg.get('spotmicro_slope_max', 'N/A')} |
+| rolling amp max | {terrain_cfg.get('spotmicro_rolling_amp_max', 'N/A')} m |
+"""
 
     # --- 이전 대비 비교표 ---
     comparison = ""
@@ -1136,6 +1177,8 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
 ---
 
 ## 진단 결과 (Diagnostic)
+
+{terrain_section}
 
 ### 핵심 지표
 
