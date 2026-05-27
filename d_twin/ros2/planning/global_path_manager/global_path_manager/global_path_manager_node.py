@@ -3,14 +3,16 @@
 global_path_manager_node.py
 
 시작 시:
-  맵 로드 → 로봇별 path set 생성 → 유효성 판정 → 선정 → 발행
+  맵 로드 → 로봇별 path set 생성 → 유효성 판정 → 선정 → 즉시 발행
 이후 spin() 유지 (TRANSIENT_LOCAL 캐시 보존)
 
 Publish:
   /planning/global_path/spot_01  (robot_interfaces/GlobalPathWaypoints)
-  /planning/global_path/spot_02  (robot_interfaces/GlobalPathWaypoints)
-  /planning/global_path/spot_03  (robot_interfaces/GlobalPathWaypoints)
-  ※ 토픽은 map.yaml의 starts 키 기준으로 자동 생성
+  /planning/global_path/spot_02
+  /planning/global_path/spot_03
+  /planning/global_path/spot_04
+  /planning/global_path/spot_05  (spot_01 경로를 robot_id=spot_05로 복사)
+  ※ spot_01~04 토픽은 map.yaml의 starts 키 기준으로 자동 생성
 """
 
 import math
@@ -128,12 +130,18 @@ class GlobalPathManagerNode(Node):
             f"장애물 {len(cfg.obstacles)}개: {[o['id'] for o in cfg.obstacles]}"
         )
 
-        # 로봇별 publisher 생성
+        # 로봇별 publisher 생성 (starts 기준)
         pubs: Dict[str, rclpy.publisher.Publisher] = {}
         for robot_key in cfg.starts:
             topic = f"/planning/global_path/{robot_key}"
             pubs[robot_key] = self.create_publisher(GlobalPathWaypoints, topic, qos)
             self.get_logger().info(f"Publisher 등록: {topic}")
+
+        # spot_05 별도 등록 (starts에 없음)
+        pubs['spot_05'] = self.create_publisher(
+            GlobalPathWaypoints, '/planning/global_path/spot_05', qos
+        )
+        self.get_logger().info("Publisher 등록: /planning/global_path/spot_05")
 
         # ── path set 생성 ──
         path_sets = build_path_set(cfg)
@@ -146,10 +154,8 @@ class GlobalPathManagerNode(Node):
             valid = sum(1 for p in paths if p.valid)
             self.get_logger().info(f"  [{robot_key}] 유효: {valid}/{len(paths)}개")
 
-        # ── 선정 ──
+        # ── 선정 및 즉시 발행 ──
         selected = select_paths(path_sets, starts=cfg.starts, cfg=cfg)
-
-        # ── 발행 ──
         stamp = self.get_clock().now().to_msg()
         for robot_key, path in selected.items():
             wp_msg = _to_waypoints_msg(path, robot_key, stamp, self.frame_id)
@@ -157,6 +163,15 @@ class GlobalPathManagerNode(Node):
             self.get_logger().info(
                 f"  [{robot_key}] {path.path_id} "
                 f"원본 {len(path.waypoints)}wp → 보간 후 {len(wp_msg.waypoints)}wp"
+            )
+
+        # spot_05: spot_01 경로를 robot_id=spot_05로 복사 발행
+        src = selected.get('spot_01')
+        if src:
+            wp_msg = _to_waypoints_msg(src, 'spot_05', stamp, self.frame_id)
+            pubs['spot_05'].publish(wp_msg)
+            self.get_logger().info(
+                f"  [spot_05] spot_01 경로 복사 발행 ({len(wp_msg.waypoints)}wp)"
             )
 
         self.get_logger().info("발행 완료.")

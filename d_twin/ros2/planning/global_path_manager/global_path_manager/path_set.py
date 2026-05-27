@@ -25,7 +25,7 @@ COVER_RADIUS       = 1.0    # 커버리지 판정 반경 (m)
 # ═══════════════════════════════════════════════════════════
 
 # ── 탐색 설정 ─────────────────────────────────────────────
-MAX_WAYPOINTS      = 6      
+MAX_WAYPOINTS      = 6
 
 # ── 격자 / 반경 설정 ──────────────────────────────────────
 FOOTPRINT_RADIUS  = 0.3    
@@ -59,8 +59,7 @@ class MapConfig:
             cfg = yaml.safe_load(f)["map"]
         self.starts:      Dict[str, Waypoint] = {k: tuple(v) for k, v in cfg["starts"].items()}
         self.end:         Waypoint             = tuple(cfg["end"])
-        self.lobby:       dict                 = cfg["lobby"]
-        self.corridor_1:  Optional[dict]       = cfg.get("corridor_1")
+        self.room:        dict                 = cfg["room"]
         self.wp_sampling: dict                 = cfg["waypoint_sampling"]
         self.obstacles:   List[dict]           = cfg.get("obstacles", [])
         rt = cfg.get("robot_types", {})
@@ -79,50 +78,29 @@ class MapConfig:
 # ── 유효성 및 구역 판정 ─────────────────────────
 
 def _is_in_map(x: float, y: float, cfg: MapConfig, use_clearance: bool = True) -> bool:
-    l = cfg.lobby
+    r = cfg.room
     margin = 0.0 if use_clearance else 0.3
-    
-    in_lobby = (l["x_min"] - margin <= x <= l["x_max"] + margin and
-                l["y_min"] - margin <= y <= l["y_max"] + margin)
-    
-    in_corr = False
-    if cfg.corridor_1:
-        c = cfg.corridor_1
-        in_corr = (c["x_min"] - margin <= x <= c["x_max"] + margin and
-                   c["y_min"] - margin <= y <= c["y_max"] + margin)
-        
-    return in_lobby or in_corr
+    return (r["x_min"] - margin <= x <= r["x_max"] + margin and
+            r["y_min"] - margin <= y <= r["y_max"] + margin)
 
 def _pt_blocked(x: float, y: float, cfg: MapConfig, use_clearance: bool = True) -> bool:
     if not _is_in_map(x, y, cfg, use_clearance):
         return True
-        
+
     c_margin = 0.3 if use_clearance else 0.0
     if c_margin > 0:
-        l = cfg.lobby
-        c = cfg.corridor_1
-        
-        if x < l["x_min"] + c_margin: return True
-        if y < l["y_min"] + c_margin: return True
-        if x > l["x_max"] - c_margin: return True
-        
-        if not c:
-            if y > l["y_max"] - c_margin: return True
-        else:
-            if y > l["y_max"] - c_margin:
-                if not (c["x_min"] + c_margin <= x <= c["x_max"] - c_margin):
-                    return True
-            if y >= l["y_max"] - c_margin:
-                if x < c["x_min"] + c_margin: return True
-                if x > c["x_max"] - c_margin: return True
-                if y > c["y_max"] - c_margin: return True
+        r = cfg.room
+        if x < r["x_min"] + c_margin: return True
+        if x > r["x_max"] - c_margin: return True
+        if y < r["y_min"] + c_margin: return True
+        if y > r["y_max"] - c_margin: return True
 
     for obs in cfg.obstacles:
         obs_c = obs.get("clearance", 0.0) if use_clearance else 0.0
         if (obs["x_min"] - obs_c <= x <= obs["x_max"] + obs_c and
                 obs["y_min"] - obs_c <= y <= obs["y_max"] + obs_c):
             return True
-            
+
     return False
 
 def _seg_blocked(p1: Waypoint, p2: Waypoint, cfg: MapConfig, n: int = 12) -> bool:
@@ -148,10 +126,11 @@ def _cell_center(cell: Cell, x_min: float, y_min: float) -> Tuple[float, float]:
 def _build_map_cells(cfg: MapConfig) -> FrozenSet[Cell]:
     cells: Set[Cell] = set()
     x_min, y_min = 0.0, 0.0
-    x = 0.0 + GRID_STEP / 2
-    while x < 13.0:
-        y = 0.0 + GRID_STEP / 2
-        while y < 13.0:
+    r = cfg.room
+    x = r["x_min"] + GRID_STEP / 2
+    while x < r["x_max"]:
+        y = r["y_min"] + GRID_STEP / 2
+        while y < r["y_max"]:
             if not _pt_blocked(x, y, cfg, use_clearance=False):
                 cells.add(_to_cell(x, y, x_min, y_min))
             y += GRID_STEP
@@ -327,22 +306,14 @@ def _build_wall_cells(cfg: MapConfig, all_cells: FrozenSet[Cell]) -> FrozenSet[C
     r2 = WALL_RADIUS ** 2
 
     boundary_pts: List[Waypoint] = []
-    l = cfg.lobby
+    r = cfg.room
     for t in np.arange(0, 1.01, 0.1):
         boundary_pts += [
-            (l['x_min'] + t * (l['x_max'] - l['x_min']), l['y_min']),
-            (l['x_min'] + t * (l['x_max'] - l['x_min']), l['y_max']),
-            (l['x_min'], l['y_min'] + t * (l['y_max'] - l['y_min'])),
-            (l['x_max'], l['y_min'] + t * (l['y_max'] - l['y_min'])),
+            (r['x_min'] + t * (r['x_max'] - r['x_min']), r['y_min']),
+            (r['x_min'] + t * (r['x_max'] - r['x_min']), r['y_max']),
+            (r['x_min'], r['y_min'] + t * (r['y_max'] - r['y_min'])),
+            (r['x_max'], r['y_min'] + t * (r['y_max'] - r['y_min'])),
         ]
-    if cfg.corridor_1:
-        c = cfg.corridor_1
-        for t in np.arange(0, 1.01, 0.1):
-            boundary_pts += [
-                (c['x_min'] + t * (c['x_max'] - c['x_min']), c['y_max']),
-                (c['x_min'], c['y_min'] + t * (c['y_max'] - c['y_min'])),
-                (c['x_max'], c['y_min'] + t * (c['y_max'] - c['y_min'])),
-            ]
     for obs in cfg.obstacles:
         for t in np.arange(0, 1.01, 0.1):
             boundary_pts += [
@@ -374,8 +345,10 @@ def _build_paths_for(robot_key: str, start: Waypoint,
                      cfg: MapConfig) -> List[GlobalPath]:
     paths: List[GlobalPath] = []
     
-    grid_xs = [round(x, 2) for x in np.arange(1.0, 12.0, SEARCH_GRID_STEP)]
-    grid_ys = [round(y, 2) for y in np.arange(1.0, 8.0, SEARCH_GRID_STEP)]
+    grid_xs = [round(x, 2) for x in np.arange(cfg.room["x_min"] + SEARCH_GRID_STEP,
+                                                cfg.room["x_max"], SEARCH_GRID_STEP)]
+    grid_ys = [round(y, 2) for y in np.arange(cfg.room["y_min"] + SEARCH_GRID_STEP,
+                                                cfg.room["y_max"], SEARCH_GRID_STEP)]
     
     queue = [([start], 'any')]
     seen_wps = set()
@@ -414,7 +387,7 @@ def _build_paths_for(robot_key: str, start: Waypoint,
             for d in np.arange(SEARCH_GRID_STEP, 10.0, SEARCH_GRID_STEP):
                 nx = round(curr[0] + d, 2)
                 ny = round(curr[1] + d, 2)
-                if nx <= 12.0 and ny <= 8.0:
+                if nx <= cfg.room["x_max"] and ny <= cfg.room["y_max"]:
                     nxt = (nx, ny)
                     if _path_valid([curr, nxt], cfg):
                         queue.append((wps + [nxt], 'ortho'))
@@ -461,7 +434,12 @@ def select_paths(
     벽 담당 먼저 선정 후 내부 담당 선정.
     """
     first_path = next((p[0] for p in path_sets.values() if p), None)
-    end_pt = first_path.waypoints[-1] if first_path else (11.2, 7.0)
+    if cfg is not None:
+        end_pt = cfg.end
+    elif first_path:
+        end_pt = first_path.waypoints[-1]
+    else:
+        end_pt = (19.0, 14.0)
 
     if starts is None:
         starts = {k: paths[0].waypoints[0] for k, paths in path_sets.items() if paths}
@@ -596,15 +574,12 @@ def _build_wall_cells_from_sets(
 ) -> FrozenSet[Cell]:
     """
     all_cells 중 맵 경계/장애물 인접 셀.
-    path_set 내부에 cfg 접근이 없으므로 좌표 기반 heuristic 사용:
-      x < 2.5 또는 x > 10.5 또는 y < 2.0 또는 y > 6.5 인 셀 → 벽 근접
-    실제 WALL_RADIUS 판단은 _build_wall_cells(cfg) 를 사용하는 것이 정확하나
-    select_paths 는 cfg 를 받지 않으므로 근사값 사용.
+    cfg 없을 때 fallback용 heuristic. 실제 운용 시 _build_wall_cells(cfg) 사용.
     """
     wall: Set[Cell] = set()
     for cell in all_cells:
         cx = (cell[0] + 0.5) * GRID_STEP
         cy = (cell[1] + 0.5) * GRID_STEP
-        if cx < 2.5 or cx > 10.5 or cy < 2.0 or cy > 6.5:
+        if cx < 3.0 or cx > 17.0 or cy < 2.0 or cy > 13.0:
             wall.add(cell)
     return frozenset(wall)
