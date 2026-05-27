@@ -73,23 +73,11 @@ def draw_map(ax, cfg: MapConfig):
     ax.set_xlabel('X (m)', fontsize=10)
     ax.set_ylabel('Y (m)', fontsize=10)
 
+    r = cfg.room
     ax.add_patch(patches.Rectangle(
-        (0, 0), 12.22, 7.54,
+        (r['x_min'], r['y_min']),
+        r['x_max'] - r['x_min'], r['y_max'] - r['y_min'],
         lw=2, ec='#2C3E50', fc='#ECF0F1', zorder=1))
-
-    if hasattr(cfg, 'corridor_1') and cfg.corridor_1:
-        c = cfg.corridor_1
-        ax.add_patch(patches.Rectangle(
-            (c['x_min'], c['y_min']),
-            c['x_max'] - c['x_min'], c['y_max'] - c['y_min'],
-            lw=2, ec='#2C3E50', fc='#ECF0F1', zorder=1))
-
-    lobby = cfg.lobby
-    ax.add_patch(patches.Rectangle(
-        (lobby['x_min'], lobby['y_min']),
-        lobby['x_max'] - lobby['x_min'],
-        lobby['y_max'] - lobby['y_min'],
-        lw=1, ec='#27AE60', fc='none', ls='--', alpha=0.35, zorder=2))
 
     for obs in cfg.obstacles:
         ax.add_patch(patches.Rectangle(
@@ -111,8 +99,8 @@ def draw_paths_with_coverage(ax, selected, all_cells, cfg):
         color = COLORS.get(robot_key, DEFAULT_COLOR)
         wps = path.waypoints
         interp_wps = _interpolate(wps)
-
-        cov = _cells_within_radius(wps, COVER_RADIUS, all_cells, x_min, y_min)
+	# 커버리지 색칠만 2m로
+        cov = _cells_within_radius(wps, 2, all_cells, x_min, y_min)
         for cell in cov:
             cx = x_min + (cell[0] + 0.5) * GRID_STEP
             cy = y_min + (cell[1] + 0.5) * GRID_STEP
@@ -191,8 +179,9 @@ def main():
         f'Global Path — 4 Robots  (Session {session_idx:02d}, {map_filename})',
         fontweight='bold', fontsize=13,
     )
-    ax.set_xlim(-0.5, 13.5)
-    ax.set_ylim(-0.5, 12.5)
+    margin = 1.0
+    ax.set_xlim(cfg.room['x_min'] - margin, cfg.room['x_max'] + margin)
+    ax.set_ylim(cfg.room['y_min'] - margin, cfg.room['y_max'] + margin)
 
     draw_map(ax, cfg)
     total_pct = draw_paths_with_coverage(ax, selected, all_cells, cfg)

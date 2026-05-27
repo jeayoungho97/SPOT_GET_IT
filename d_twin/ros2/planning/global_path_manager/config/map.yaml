@@ -1,102 +1,103 @@
 map:
   starts:
-    spot_01:  #
-    - 2.0
+    spot_01:
+    - 1.0
     - 1.0
     spot_02:
-    - 2.0
-    - 2.0
-    spot_03:
-    - 3.0
     - 1.0
-    spot_04:
-    - 3.0
+    - 4.0
+    spot_03:
+    - 5.0
     - 2.0
+    spot_04:
+    - 5.0
+    - 1.0
   end:
-  - 11.2
-  - 7.0
-  lobby:
+  - 19.0
+  - 14.0
+  room:
     x_min: 0.0
-    x_max: 12.22
+    x_max: 20.0
     y_min: 0.0
-    y_max: 7.54
-  corridor_1:
-    x_min: 10.49
-    x_max: 11.92
-    y_min: 7.54
-    y_max: 11.54
-    z: 0.05
+    y_max: 15.0
   waypoint_sampling:
-    x_min: 2.5
-    x_max: 11.0
-    x_step: 0.5
+    x_min: 1.0
+    x_max: 19.0
+    x_step: 1.0
     y_min: 1.0
-    y_max: 7.0
-    y_step: 0.5
+    y_max: 14.0
+    y_step: 1.0
   obstacles:
   - id: wall_bottom
     x_min: 0.0
-    x_max: 12.22
+    x_max: 20.0
     y_min: -0.01
     y_max: 0.0
+    clearance: 0.3
+  - id: wall_top
+    x_min: 0.0
+    x_max: 20.0
+    y_min: 15.0
+    y_max: 15.01
     clearance: 0.3
   - id: wall_left
     x_min: -0.01
     x_max: 0.0
     y_min: 0.0
-    y_max: 7.54
+    y_max: 15.0
     clearance: 0.3
   - id: wall_right
-    x_min: 12.22
-    x_max: 12.23
+    x_min: 20.0
+    x_max: 20.01
     y_min: 0.0
-    y_max: 7.54
+    y_max: 15.0
     clearance: 0.3
-  - id: wall_top_left
-    x_min: 0.0
-    x_max: 10.49
-    y_min: 7.54
-    y_max: 7.55
+  # 시나리오 내 장애물 (물리 공간)
+  - id: obs_01  # (180,250) ~ (422,326) [cm], 장애물 A
+    x_min: 2.00
+    x_max: 4.42
+    y_min: 2.48
+    y_max: 3.24
     clearance: 0.3
-  - id: corridor_wall_left
-    x_min: 10.48
-    x_max: 10.49
-    y_min: 7.54
-    y_max: 11.54
+  - id: obs_02  # (180,250) ~ (422,326) [cm], 장애물 A
+    x_min: 2.00
+    x_max: 4.42
+    y_min: 3.24
+    y_max: 4.00
     clearance: 0.3
-  - id: corridor_wall_right
-    x_min: 11.92
-    x_max: 11.93
-    y_min: 7.54
-    y_max: 11.54
-    clearance: 0.3
-  - id: corridor_wall_top
-    x_min: 10.49
-    x_max: 11.92
-    y_min: 11.54
-    y_max: 11.55
-    clearance: 0.3
-  - id: stage
-    x_min: 0.0
-    x_max: 1.21
-    y_min: 0.74
-    y_max: 6.75
-    clearance: 0.3
-  - id: L1ed
-    x_min: 4.0
+  - id: obs_11  # (2,7) ~ (6,9)
+    x_min: 2.0
     x_max: 6.0
-    y_min: 5.0
-    y_max: 6.5
+    y_min: 6.0
+    y_max: 9.0
     clearance: 0.3
-  - id: _
-    x_min: 5.0
+  - id: obs_12  # (5,11) ~ (7,15)
+    x_min: 0.0
     x_max: 7.0
-    y_min: 3.0
-    y_max: 3.5
+    y_min: 11.0
+    y_max: 15.0
     clearance: 0.3
-  - id: ssafy
-    x_min: 9.5
-    x_max: 10
+  - id: obs_13  # (6,2) ~ (10,3)
+    x_min: 6.0
+    x_max: 10.0
     y_min: 2.0
-    y_max: 5.5
+    y_max: 3.0
+    clearance: 0.3
+  - id: obs_14  # (10,5) ~ (13,8)
+    x_min: 10.0
+    x_max: 13.0
+    y_min: 5.0
+    y_max: 8.0
+    clearance: 0.3
+  - id: obs_15  # (15,7) ~ (18,8)
+    x_min: 15.0
+    x_max: 18.0
+    y_min: 7.0
+    y_max: 8.0
+    clearance: 0.3
+  - id: obs_16  # (18,4) ~ (20,5)
+    x_min: 18.0
+    x_max: 20.0
+    y_min: 0.0
+    y_max: 5.0
     clearance: 0.3
