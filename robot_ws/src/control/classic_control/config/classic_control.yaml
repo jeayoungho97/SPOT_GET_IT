@@ -32,7 +32,7 @@ classic_control_node:
     lower_link_mm: 115.0
     toe_radius_mm: 15.0
     body_height_mm: 200.0
-    body_height_mm_per_leg: [210.0, 210.0, 210.0, 210.0]
+    body_height_mm_per_leg: [200.0, 200.0, 200.0, 200.0]
     default_foot_x_mm: -20.0
     default_foot_y_mm: 52.0
     default_foot_y_mm_per_leg: [52.0, -52.0, 52.0, -52.0]
@@ -47,10 +47,11 @@ classic_control_node:
 
     gait_period_sec: 1.2
     duty_factor: 0.58
-    lift_z_mm: 22.0
-    lift_z_mm_per_leg: [22.0, 22.0, 22.0, 22.0]
+    lift_z_mm: 12.0
+    lift_z_mm_per_leg: [12.0, 12.0, 12.0, 12.0]
     max_stride_x_mm: 85.0
     max_stride_y_mm: 24.0
+    soft_stride_limit: true
 
     stand_dwell_sec: 0.5
     min_transition_sec: 2.0
@@ -58,7 +59,13 @@ classic_control_node:
     transition_sec_per_rad: 1.0
 
     max_delta_smooth_rad: 0.02
-    max_delta_walk_rad: 0.06
+    max_delta_walk_rad: 0.03
+    max_delta_walk_rad_per_joint: [
+      0.03, 0.03, 0.03,
+      0.03, 0.03, 0.03,
+      0.03, 0.03, 0.03,
+      0.03, 0.03, 0.03
+    ]
 
     joint_min_rad:
       [-0.548, -2.666, -0.100,

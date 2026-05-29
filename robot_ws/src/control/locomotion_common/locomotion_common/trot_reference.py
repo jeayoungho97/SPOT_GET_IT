@@ -45,6 +45,7 @@ class SharedTrotReference:
         phase_offsets: Sequence[float] = (0.0, 0.5, 0.5, 0.0),
         max_stride_x: float = 0.085,
         max_stride_y: float = 0.024,
+        soft_stride_limit: bool = True,
         upper_link_x: float = 0.010,
         upper_link_z: float = 0.120,
         lower_link: float = 0.115,
@@ -80,6 +81,7 @@ class SharedTrotReference:
 
         self.max_stride_x = float(max_stride_x)
         self.max_stride_y = float(max_stride_y)
+        self.soft_stride_limit = bool(soft_stride_limit)
         self.upper_link_x = float(upper_link_x)
         self.upper_link_z = float(upper_link_z)
         self.lower_link = float(lower_link)
@@ -108,16 +110,8 @@ class SharedTrotReference:
             foot_vx = cmd_vx - cmd_wz * self.leg_origin_y[leg]
             foot_vy = cmd_vy + cmd_wz * self.leg_origin_x[leg]
 
-            stride_x = clamp(
-                foot_vx * stance_time,
-                -self.max_stride_x,
-                self.max_stride_x,
-            )
-            stride_y = clamp(
-                foot_vy * stance_time,
-                -self.max_stride_y,
-                self.max_stride_y,
-            )
+            stride_x = self._limit_stride(foot_vx * stance_time, self.max_stride_x)
+            stride_y = self._limit_stride(foot_vy * stance_time, self.max_stride_y)
 
             local_phase = (phase + self.phase_offsets[leg]) % 1.0
             x_off, y_off, z_off = self._foot_offset(
@@ -154,12 +148,21 @@ class SharedTrotReference:
             return x, y, 0.0
 
         s = (leg_phase - self.duty_factor) / (1.0 - self.duty_factor)
-        # Smooth x/y endpoints, but use a sine lift to avoid low mid-swing clearance.
+        # Smooth x/y endpoints. Use sin^2 lift so liftoff/touchdown vertical
+        # velocity starts and ends at zero, which is easier for small servos.
         ss = s * s * (3.0 - 2.0 * s)
         x = stride_x * (-0.5 + ss)
         y = stride_y * (-0.5 + ss)
-        z = step_height * math.sin(math.pi * s)
+        lift = math.sin(math.pi * s)
+        z = step_height * lift * lift
         return x, y, z
+
+    def _limit_stride(self, stride: float, limit: float) -> float:
+        if limit <= 0.0:
+            return 0.0
+        if self.soft_stride_limit:
+            return limit * math.tanh(stride / limit)
+        return clamp(stride, -limit, limit)
 
     def _leg_ik(self, leg: int, x: float, y: float, z: float):
         shoulder_axis = self.shoulder_sign[leg]

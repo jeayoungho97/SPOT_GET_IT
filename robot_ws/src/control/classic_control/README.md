@@ -53,11 +53,12 @@ STM command의 `motion_state`를 만들고, STM feedback 기반
 joint가 발끝 sphere 중심이다. IK 링크는 `shoulder -> leg = (0, +/-52, 0)mm`,
 `leg -> foot = (10, 0, -120)mm`, `foot -> toe = (0, 0, -115)mm`이고
 toe collision sphere 반지름 `15mm`를 지면 접점 높이에 반영한다. 기본 서기
-목표는 지면 접점 기준 shoulder frame `x=0mm`, `y=+/-52mm`, `z=-210mm`이다.
-기본 발 들기 높이는 `22mm`, 최대 보폭 제한은 전후 `85mm`, 좌우 `24mm`로
-둔다. `gait_period_sec=1.2`, `duty_factor=0.58`에서 전후 `85mm` stride는
-약 `0.12m/s` 명령까지 포화 없이 만들고, stride 끝에서도 링크 최대 reach의
-약 85%만 쓰는 설정이다.
+목표는 지면 접점 기준 shoulder frame `x=-20mm`, `y=+/-52mm`, `z=-200mm`이다.
+기본 발 들기 높이는 작은 STS 서보가 따라가기 쉽도록 `12mm`로 낮게 둔다.
+최대 보폭 제한은 전후 `85mm`, 좌우 `24mm`이며, hard clipping 대신
+`tanh` 기반 soft stride limit을 사용해 큰 속도 명령 근처에서 보폭이
+급격히 포화되지 않게 한다. Swing foot lift는 `sin^2` profile을 써서
+liftoff/touchdown의 수직 속도가 0에서 시작하고 0으로 끝난다.
 
 ## 실행
 

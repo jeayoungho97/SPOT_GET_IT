@@ -106,6 +106,7 @@ class ClassicControlNode(Node):
         self.declare_parameter("lift_z_mm_per_leg", [22.0, 22.0, 22.0, 22.0])
         self.declare_parameter("max_stride_x_mm", 85.0)
         self.declare_parameter("max_stride_y_mm", 24.0)
+        self.declare_parameter("soft_stride_limit", True)
 
         self.declare_parameter("stand_dwell_sec", 1.0)
         self.declare_parameter("min_transition_sec", 2.0)
@@ -113,6 +114,8 @@ class ClassicControlNode(Node):
         self.declare_parameter("transition_sec_per_rad", 1.0)
         self.declare_parameter("max_delta_smooth_rad", 0.02)
         self.declare_parameter("max_delta_walk_rad", 0.06)
+        self.declare_parameter("max_delta_walk_rad_per_joint", [0.0] * NUM_JOINTS)
+        self.declare_parameter("max_delta_smooth_rad_per_joint", [0.0] * NUM_JOINTS)
 
         self.declare_parameter(
             "joint_min_rad",
@@ -199,6 +202,7 @@ class ClassicControlNode(Node):
         )
         self.max_stride_x_mm = float(self.get_parameter("max_stride_x_mm").value)
         self.max_stride_y_mm = float(self.get_parameter("max_stride_y_mm").value)
+        self.soft_stride_limit = bool(self.get_parameter("soft_stride_limit").value)
 
         self.stand_dwell_sec = float(self.get_parameter("stand_dwell_sec").value)
         self.min_transition_sec = float(self.get_parameter("min_transition_sec").value)
@@ -207,6 +211,15 @@ class ClassicControlNode(Node):
         self.max_delta_smooth_rad = float(self.get_parameter("max_delta_smooth_rad").value)
         self.max_delta_walk_rad = float(self.get_parameter("max_delta_walk_rad").value)
 
+        self.max_delta_smooth_rad_per_joint = self._load_joint_values_rad(
+                "max_delta_smooth_rad_per_joint",
+                self.max_delta_smooth_rad,
+)
+
+        self.max_delta_walk_rad_per_joint = self._load_joint_values_rad(
+                "max_delta_walk_rad_per_joint",
+                self.max_delta_walk_rad,
+)
         self.joint_min_rad = [float(x) for x in self.get_parameter("joint_min_rad").value]
         self.joint_max_rad = [float(x) for x in self.get_parameter("joint_max_rad").value]
 
@@ -218,6 +231,16 @@ class ClassicControlNode(Node):
             return [float(fallback)] * NUM_LEGS
         if len(values) != NUM_LEGS:
             raise RuntimeError(f"{name} must have {NUM_LEGS} elements")
+        return values
+
+    def _load_joint_values_rad(self, name: str, fallback: float) -> List[float]:
+        if name not in getattr(self, "_parameter_overrides", {}):
+            return [float(fallback)] * NUM_JOINTS
+
+        values = [float(x) for x in self.get_parameter(name).value]
+        if len(values) != NUM_JOINTS:
+            raise RuntimeError(f"{name} must have {NUM_JOINTS} elements")
+
         return values
 
     def validate_config(self):
@@ -258,6 +281,16 @@ class ClassicControlNode(Node):
             if self.joint_min_rad[i] >= self.joint_max_rad[i]:
                 raise RuntimeError(f"invalid joint limit at index {i}")
 
+        for name, arr in [
+                ("max_delta_smooth_rad_per_joint", self.max_delta_smooth_rad_per_joint),
+                ("max_delta_walk_rad_per_joint", self.max_delta_walk_rad_per_joint),
+]:
+            if len(arr) != NUM_JOINTS:
+                raise RuntimeError(f"{name} must have {NUM_JOINTS} elements")
+        for v in arr:
+            if v <= 0.0:
+                raise RuntimeError(f"{name} values must be positive")
+
     def configure_motion_model(self):
         self.gait = SharedTrotReference(
             gait_period=self.gait_period_sec,
@@ -273,6 +306,7 @@ class ClassicControlNode(Node):
             phase_offsets=self.phase_offsets,
             max_stride_x=self.max_stride_x_mm * 0.001,
             max_stride_y=self.max_stride_y_mm * 0.001,
+            soft_stride_limit=self.soft_stride_limit,
             upper_link_x=self.upper_link_x_mm * 0.001,
             upper_link_z=self.upper_link_z_mm * 0.001,
             lower_link=self.lower_link_mm * 0.001,
@@ -488,19 +522,19 @@ class ClassicControlNode(Node):
             self.activation_pending = False
             self.state = self.STAND
             self.update_filtered_command(0.0, 0.0, 0.0)
-            return self.transition_source(), self.max_delta_smooth_rad
+            return self.transition_source(), self.max_delta_smooth_rad_per_joint
 
         if self.activation_pending:
             self.activation_pending = False
             self.begin_transition(self.STANDUP, self.stand_target)
-            return self.transition_target()[0], self.max_delta_smooth_rad
+            return self.transition_target()[0], self.max_delta_smooth_rad_per_joint
 
         if self.state == self.STAND:
             self.update_filtered_command(0.0, 0.0, 0.0)
             if moving:
                 self.begin_transition(self.STANDUP, self.stand_target)
                 return self.transition_target()[0], self.max_delta_smooth_rad
-            return list(self.stand_target), self.max_delta_smooth_rad
+            return list(self.stand_target), self.max_delta_smooth_rad_per_joint
 
         if self.state == self.STANDUP:
             self.update_filtered_command(0.0, 0.0, 0.0)
@@ -509,19 +543,19 @@ class ClassicControlNode(Node):
                 self.state = self.DWELL
                 self.state_start_time = now
                 self.get_logger().info("standing dwell started")
-            return target, self.max_delta_smooth_rad
+            return target, self.max_delta_smooth_rad_per_joint
 
         if self.state == self.DWELL:
             self.update_filtered_command(0.0, 0.0, 0.0)
             if not moving:
                 self.state = self.STAND
-                return list(self.stand_target), self.max_delta_smooth_rad
+                return list(self.stand_target), self.max_delta_smooth_rad_per_joint
             if now - self.state_start_time >= self.stand_dwell_sec:
                 self.state = self.WALK
                 self.walk_start_time = now
                 self.gait_cycle_count = 0
                 self.get_logger().info("classic trot walking started")
-            return list(self.stand_target), self.max_delta_smooth_rad
+            return list(self.stand_target), self.max_delta_smooth_rad_per_joint
 
         if self.state == self.WALK:
             self.update_filtered_command(vx, vy, wz)
@@ -533,7 +567,7 @@ class ClassicControlNode(Node):
 
             if not moving and not filtered_moving:
                 self.begin_transition(self.SETTLE, self.stand_target)
-                return self.transition_target()[0], self.max_delta_smooth_rad
+                return self.transition_target()[0], self.max_delta_smooth_rad_per_joint
 
             elapsed = now - self.walk_start_time
             total_phase = elapsed / self.gait_period_sec
@@ -547,7 +581,7 @@ class ClassicControlNode(Node):
                     self.filtered_vy,
                     self.filtered_wz,
                 ),
-                self.max_delta_walk_rad,
+                self.max_delta_walk_rad_per_joint,
             )
 
         if self.state == self.SETTLE:
@@ -557,10 +591,10 @@ class ClassicControlNode(Node):
                 self.state = self.STAND
                 self.gait_phase = 0.0
                 self.get_logger().info("settled to standing")
-            return target, self.max_delta_smooth_rad
+            return target, self.max_delta_smooth_rad_per_joint
 
         self.state = self.STAND
-        return list(self.stand_target), self.max_delta_smooth_rad
+        return list(self.stand_target), self.max_delta_smooth_rad_per_joint
 
     def publish_target(
         self,
@@ -576,7 +610,10 @@ class ClassicControlNode(Node):
         )
         msg.flags = 0
         msg.target_rad = list(target)
-        msg.max_delta_rad = [float(max_delta_rad)] * NUM_JOINTS
+        if isinstance(max_delta_rad, (float, int)):
+            msg.max_delta_rad = [float(max_delta_rad)] * NUM_JOINTS
+        else:
+            msg.max_delta_rad = [float(x) for x in max_delta_rad]
         msg.gait_phase = float(self.gait_phase)
         msg.gait_cycle_count = int(self.gait_cycle_count)
         self.target_pub.publish(msg)
