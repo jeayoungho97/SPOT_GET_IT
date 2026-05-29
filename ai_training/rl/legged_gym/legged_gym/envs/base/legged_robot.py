@@ -443,9 +443,23 @@ class LeggedRobot(BaseTask):
             return
         distance = torch.norm(self.root_states[env_ids, :2] - self.env_origins[env_ids, :2], dim=1)
         # robots that walked far enough progress to harder terains
-        move_up = distance > self.terrain.env_length / 2
+        move_up_distance = getattr(
+            self.cfg.terrain,
+            "curriculum_move_up_distance",
+            self.terrain.env_length / 2,
+        )
+        move_down_command_scale = getattr(
+            self.cfg.terrain,
+            "curriculum_move_down_command_scale",
+            0.5,
+        )
+        move_up = distance > move_up_distance
         # robots that walked less than half of their required distance go to simpler terrains
-        move_down = (distance < torch.norm(self.commands[env_ids, :2], dim=1)*self.max_episode_length_s*0.5) * ~move_up
+        move_down = (
+            distance < torch.norm(self.commands[env_ids, :2], dim=1)
+            * self.max_episode_length_s
+            * move_down_command_scale
+        ) * ~move_up
         self.terrain_levels[env_ids] += 1 * move_up - 1 * move_down
         # Robots that solve the last level are sent to a random one
         self.terrain_levels[env_ids] = torch.where(self.terrain_levels[env_ids]>=self.max_terrain_level,

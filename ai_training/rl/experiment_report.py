@@ -436,18 +436,37 @@ def load_previous_experiment(experiments_dir, current_id):
 # ============================================================
 # 8. Pass/Fail 자동 판정
 # ============================================================
-def auto_judge(metrics, run_name=''):
+def _find_tilt_band(summary, label):
+    for band in summary.get('tilt_bands', []) if summary else []:
+        if band.get('label') == label:
+            return band
+    return {}
+
+
+def auto_judge(metrics, run_name='', recovery_data=None, transition_recovery_data=None):
     if not metrics:
         return "⚠ 수치 데이터 없음 — 수동 판정 필요", []
 
     judgments = []
     all_pass = True
+    terrain_mode = 'terrain' in run_name or 'slope' in run_name
+    prefall_mode = (
+        'prefall' in run_name
+        or ('recovery' in run_name and not terrain_mode)
+    )
+    recovery_metrics_present = bool(recovery_data) or bool(transition_recovery_data)
 
     timeout = metrics.get('timeout_pct', 0)
-    if timeout >= 80:
-        judgments.append(f"✅ Timeout: {timeout:.1f}% (≥80%)")
+    timeout_pass = 95 if prefall_mode else 80
+    timeout_warn = 90 if prefall_mode else 60
+    if timeout >= timeout_pass:
+        judgments.append(f"✅ Timeout: {timeout:.1f}% (≥{timeout_pass}%)")
+    elif timeout >= timeout_warn:
+        judgments.append(f"⚠️ Timeout: {timeout:.1f}% ({timeout_warn}~{timeout_pass}%, 개선 필요)")
+        if prefall_mode or terrain_mode:
+            all_pass = False
     elif timeout >= 60:
-        judgments.append(f"⚠️ Timeout: {timeout:.1f}% (60~80%, 보통)")
+        judgments.append(f"⚠️ Timeout: {timeout:.1f}% (60~{timeout_warn}%, 보통)")
         all_pass = False
     else:
         judgments.append(f"❌ Timeout: {timeout:.1f}% (<60%, 미달)")
@@ -473,19 +492,33 @@ def auto_judge(metrics, run_name=''):
 
     roll = metrics.get('mean_roll_deg', 0)
     pitch = metrics.get('mean_pitch_deg', 0)
-    if roll < 8 and pitch < 8:
-        judgments.append(f"✅ 자세: roll {roll:.1f}°, pitch {pitch:.1f}° (안정)")
-    elif roll < 15 and pitch < 15:
-        judgments.append(f"⚠️ 자세: roll {roll:.1f}°, pitch {pitch:.1f}° (보통)")
+    posture_pass = 10 if terrain_mode else 8
+    posture_warn = 18 if terrain_mode else 15
+    if roll < posture_pass and pitch < posture_pass:
+        judgments.append(
+            f"✅ 자세: roll {roll:.1f}°, pitch {pitch:.1f}° "
+            f"(<{posture_pass}°)"
+        )
+    elif roll < posture_warn and pitch < posture_warn:
+        judgments.append(
+            f"⚠️ 자세: roll {roll:.1f}°, pitch {pitch:.1f}° "
+            f"({posture_pass}~{posture_warn}°)"
+        )
     else:
-        judgments.append(f"❌ 자세: roll {roll:.1f}°, pitch {pitch:.1f}° (불안정)")
+        judgments.append(
+            f"❌ 자세: roll {roll:.1f}°, pitch {pitch:.1f}° "
+            f"(>{posture_warn}°)"
+        )
         all_pass = False
 
     early_death = metrics.get('early_death_pct', 0)
-    if early_death < 5:
-        judgments.append(f"✅ 조기종료: {early_death:.1f}% (<5%)")
+    early_death_pass = 5 if prefall_mode else 5
+    if early_death < early_death_pass:
+        judgments.append(f"✅ 조기종료: {early_death:.1f}% (<{early_death_pass}%)")
     elif early_death < 20:
         judgments.append(f"⚠️ 조기종료: {early_death:.1f}% (5~20%)")
+        if prefall_mode or terrain_mode:
+            all_pass = False
     else:
         judgments.append(f"❌ 조기종료: {early_death:.1f}% (>20%)")
         all_pass = False
@@ -496,9 +529,68 @@ def auto_judge(metrics, run_name=''):
             judgments.append(f"✅ 전환복구: {transition_sr:.1f}% (≥80%)")
         elif transition_sr >= 50:
             judgments.append(f"⚠️ 전환복구: {transition_sr:.1f}% (50~80%)")
+            if prefall_mode:
+                all_pass = False
         else:
             judgments.append(f"❌ 전환복구: {transition_sr:.1f}% (<50%)")
+            if prefall_mode:
+                all_pass = False
+
+    prefall_trials = metrics.get('transition_prefall_trials', 0)
+    prefall_sr = metrics.get('transition_prefall_success_rate_pct')
+    if prefall_trials:
+        prefall_pass = 70 if prefall_mode else 85
+        prefall_warn = 60
+        if prefall_sr is not None and prefall_sr >= prefall_pass:
+            judgments.append(f"✅ 18도+ pre-fall 복구: {prefall_sr:.1f}% (≥{prefall_pass}%)")
+        elif prefall_sr is not None and prefall_sr >= 60:
+            judgments.append(f"⚠️ 18도+ pre-fall 복구: {prefall_sr:.1f}% ({prefall_warn}~{prefall_pass}%, 개선 필요)")
+            if prefall_mode:
+                all_pass = False
+        elif prefall_sr is not None:
+            judgments.append(f"❌ 18도+ pre-fall 복구: {prefall_sr:.1f}% (<{prefall_warn}%)")
+            if prefall_mode:
+                all_pass = False
+    else:
+        judgments.append("⚠️ 18도+ pre-fall 복구: trial 없음 (30도 목표 미검증)")
+        if prefall_mode:
             all_pass = False
+
+    if prefall_mode:
+        reset_25_30 = _find_tilt_band(recovery_data, '25-30 deg')
+        reset_sr = reset_25_30.get('success_rate_pct')
+        reset_trials = reset_25_30.get('trials', 0)
+        if reset_trials <= 0:
+            judgments.append("❌ Reset 25-30도 복구: trial 없음")
+            all_pass = False
+        elif reset_sr is not None and reset_sr >= 75:
+            judgments.append(f"✅ Reset 25-30도 복구: {reset_sr:.1f}% (≥75%, n={reset_trials})")
+        elif reset_sr is not None and reset_sr >= 65:
+            judgments.append(f"⚠️ Reset 25-30도 복구: {reset_sr:.1f}% (65~75%, n={reset_trials})")
+            all_pass = False
+        elif reset_sr is not None:
+            judgments.append(f"❌ Reset 25-30도 복구: {reset_sr:.1f}% (<65%, n={reset_trials})")
+            all_pass = False
+
+        transition_25_30 = _find_tilt_band(transition_recovery_data, '25-30 deg')
+        transition_sr = transition_25_30.get('success_rate_pct')
+        transition_trials = transition_25_30.get('trials', 0)
+        if transition_trials < 20:
+            judgments.append(f"❌ Transition 25-30도 복구: trial 부족 (n={transition_trials}, 최소 20)")
+            all_pass = False
+        elif transition_sr is not None and transition_sr >= 65:
+            judgments.append(f"✅ Transition 25-30도 복구: {transition_sr:.1f}% (≥65%, n={transition_trials})")
+        elif transition_sr is not None and transition_sr >= 55:
+            judgments.append(f"⚠️ Transition 25-30도 복구: {transition_sr:.1f}% (55~65%, n={transition_trials})")
+            all_pass = False
+        elif transition_sr is not None:
+            judgments.append(f"❌ Transition 25-30도 복구: {transition_sr:.1f}% (<55%, n={transition_trials})")
+            all_pass = False
+    elif terrain_mode and recovery_metrics_present:
+        judgments.append(
+            "ℹ️ Recovery/pre-fall 지표는 참고값입니다 "
+            "(terrain run 자동 PASS/FAIL 기준에서는 제외)"
+        )
 
     overall = "✅ PASS" if all_pass else "❌ FAIL (일부 기준 미달)"
     return overall, judgments
@@ -535,10 +627,35 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
     transition_recovery_data = diag_data.get('transition_recovery', {}) if diag_data else {}
 
     # 자동 판정
-    overall_judge, judgments = auto_judge(metrics, run_name)
+    overall_judge, judgments = auto_judge(
+        metrics,
+        run_name,
+        recovery_data=recovery_data,
+        transition_recovery_data=transition_recovery_data,
+    )
 
     # 변경점 요약
     changes_summary = parse_config_changes(diff_text)
+
+    terrain_cfg = config_snapshot.get('terrain', {}) if config_snapshot else {}
+    terrain_section = ""
+    if terrain_cfg:
+        terrain_section = f"""
+### 지형 설정
+
+| 항목 | 값 |
+|------|-----|
+| 평가 모드 | {terrain_cfg.get('eval_mode', 'N/A')} |
+| walk_eval | {terrain_cfg.get('walk_eval', 'N/A')} |
+| mesh_type | {terrain_cfg.get('mesh_type', 'N/A')} |
+| terrain_profile | {terrain_cfg.get('terrain_profile', 'N/A')} |
+| measure_heights | {terrain_cfg.get('measure_heights', 'N/A')} |
+| grid | {terrain_cfg.get('num_rows', 'N/A')} x {terrain_cfg.get('num_cols', 'N/A')} |
+| env 크기 | {terrain_cfg.get('terrain_length', 'N/A')} x {terrain_cfg.get('terrain_width', 'N/A')} m |
+| terrain_proportions | {terrain_cfg.get('terrain_proportions', 'N/A')} |
+| slope max | {terrain_cfg.get('spotmicro_slope_max', 'N/A')} |
+| rolling amp max | {terrain_cfg.get('spotmicro_rolling_amp_max', 'N/A')} m |
+"""
 
     # --- 이전 대비 비교표 ---
     comparison = ""
@@ -782,6 +899,45 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
 
 
     # --- Recovery assist 분석 ---
+    def _fmt_pct(value):
+        return "N/A" if value is None else f"{value:.1f}%"
+
+    def _fmt_num(value, suffix=""):
+        return "N/A" if value is None else f"{value:.2f}{suffix}"
+
+    def _tilt_band_table(summary, title):
+        bands = summary.get('tilt_bands', []) if summary else []
+        prefall = summary.get('prefall', {}) if summary else {}
+        if not bands and not prefall:
+            return ""
+
+        rows = []
+        for band in bands:
+            rows.append(
+                f"| {band.get('label', 'N/A')} | "
+                f"{band.get('trials', 0)} | "
+                f"{_fmt_pct(band.get('success_rate_pct'))} | "
+                f"{_fmt_num(band.get('mean_end_tilt_deg'), '°')} | "
+                f"{_fmt_num(band.get('mean_recovery_time_s'), 's')} |"
+            )
+        rows.append(
+            f"| 18+ deg 전체 | "
+            f"{prefall.get('trials', 0)} | "
+            f"{_fmt_pct(prefall.get('success_rate_pct'))} | "
+            f"{_fmt_num(prefall.get('mean_end_tilt_deg'), '°')} | "
+            f"{_fmt_num(prefall.get('mean_recovery_time_s'), 's')} |"
+        )
+
+        return f"""
+### {title} Tilt Band 분석
+
+| Tilt 구간 | Trials | 성공률 | Horizon 후 평균 tilt | 평균 회복 시간 |
+|-----------|--------|--------|----------------------|----------------|
+{chr(10).join(rows)}
+
+> 이번 pre-fall 목표는 특히 `18-25 deg`, `25-30 deg`, `18+ deg 전체` 행을 우선 봅니다. `25-30 deg` trial이 없으면 30도 근처 회복 성능은 아직 검증되지 않은 것입니다.
+"""
+
     recovery_section = ""
     if recovery_data:
         sr = recovery_data.get('success_rate_pct')
@@ -795,6 +951,7 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
         sr_str = f"{sr:.1f}%" if sr is not None else "N/A"
         ert_str = f"{ert:.1f}%" if ert is not None else "N/A"
         mrt_str = f"{mrt:.3f}s" if mrt is not None else "N/A"
+        recovery_band_section = _tilt_band_table(recovery_data, "Recovery")
 
         if sr is None:
             recovery_judge = "⚠️ eligible trial 없음"
@@ -825,6 +982,7 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
 | 1초 내 최대 roll/pitch 평균 | {recovery_data.get('mean_max_roll_first_1s_deg', 'N/A')}° / {recovery_data.get('mean_max_pitch_first_1s_deg', 'N/A')}° |
 
 > 해석: `Recovery 성공률`은 초기 tilt가 기준 이상인 episode 중 1초 내 안정 자세로 복귀한 비율입니다. 조기 실패율이 높으면 reset 직후 바로 넘어지는 것이고, 평균 회복 시간이 짧을수록 위기 대응이 빠른 것입니다.
+{recovery_band_section}
 """
     # --- 항목 3: Gait 분석 ---
     transition_recovery_section = ""
@@ -840,6 +998,7 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
         sr_str = f"{sr:.1f}%" if sr is not None else "N/A"
         ert_str = f"{ert:.1f}%" if ert is not None else "N/A"
         mrt_str = f"{mrt:.3f}s" if mrt is not None else "N/A"
+        transition_band_section = _tilt_band_table(transition_recovery_data, "Transition Recovery")
 
         if sr is None:
             transition_judge = "⚠️ eligible trial 없음"
@@ -868,6 +1027,7 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
 | horizon 후 평균 roll/pitch | {transition_recovery_data.get('mean_end_roll_deg', 'N/A')}° / {transition_recovery_data.get('mean_end_pitch_deg', 'N/A')}° |
 
 > 해석: `Transition Recovery`는 학습 중 push/roll-pitch angular impulse가 들어간 뒤 일정 시간 안에 자세가 안정 기준으로 돌아오는지를 봅니다.
+{transition_band_section}
 """
 
     # --- 항목 3: Gait 분석 ---
@@ -1018,6 +1178,8 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
 
 ## 진단 결과 (Diagnostic)
 
+{terrain_section}
+
 ### 핵심 지표
 
 {chr(10).join('- ' + j for j in judgments) if judgments else "(데이터 없음)"}
@@ -1042,9 +1204,15 @@ def generate_report(exp_id, purpose, diag_data, tb_data, diff_text,
 | Recovery eligible trials | {metrics.get('recovery_eligible_trials', 'N/A')} |
 | 평균 회복 시간 | {metrics.get('mean_recovery_time_s', 'N/A')} s |
 | Recovery 조기 실패율 | {metrics.get('recovery_early_failure_rate_pct', 'N/A')}% |
+| Recovery 18도+ 성공률 | {metrics.get('recovery_prefall_success_rate_pct', 'N/A')}% |
+| Recovery 18도+ trials | {metrics.get('recovery_prefall_trials', 'N/A')} |
+| Recovery 18도+ horizon 후 tilt | {metrics.get('recovery_prefall_mean_end_tilt_deg', 'N/A')}° |
 | Transition recovery 성공률 | {metrics.get('transition_recovery_success_rate_pct', 'N/A')}% |
 | Transition recovery eligible trials | {metrics.get('transition_recovery_eligible_trials', 'N/A')} |
 | 평균 Transition recovery 시간 | {metrics.get('mean_transition_recovery_time_s', 'N/A')} s |
+| Transition 18도+ 성공률 | {metrics.get('transition_prefall_success_rate_pct', 'N/A')}% |
+| Transition 18도+ trials | {metrics.get('transition_prefall_trials', 'N/A')} |
+| Transition 18도+ horizon 후 tilt | {metrics.get('transition_prefall_mean_end_tilt_deg', 'N/A')}° |
 {recovery_section}
 {transition_recovery_section}
 {command_mode_section}

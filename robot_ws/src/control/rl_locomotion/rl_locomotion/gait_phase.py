@@ -23,9 +23,17 @@ class GaitPhaseGenerator:
     def reset(self):
         self.phase = 0.0
 
-    def update(self, dt: float, cmd_vx: float, cmd_vy: float, cmd_wz: float) -> float:
+    def update(
+        self,
+        dt: float,
+        cmd_vx: float,
+        cmd_vy: float,
+        cmd_wz: float,
+        phase_scale_multiplier: float = 1.0,
+    ) -> float:
         cmd_norm = math.sqrt(cmd_vx * cmd_vx + cmd_vy * cmd_vy + cmd_wz * cmd_wz)
         phase_scale = max(0.0, min(1.0, cmd_norm / self.phase_cmd_norm))
+        phase_scale *= max(0.0, min(1.0, phase_scale_multiplier))
 
         self.phase = (self.phase + (dt / self.gait_period) * phase_scale) % 1.0
         return self.phase

@@ -85,7 +85,10 @@ class Terrain:
     def curiculum(self):
         for j in range(self.cfg.num_cols):
             for i in range(self.cfg.num_rows):
-                difficulty = i / self.cfg.num_rows
+                if getattr(self.cfg, "curriculum_use_full_range", False):
+                    difficulty = i / max(self.cfg.num_rows - 1, 1)
+                else:
+                    difficulty = i / self.cfg.num_rows
                 choice = j / self.cfg.num_cols + 0.001
 
                 terrain = self.make_terrain(choice, difficulty)
@@ -112,6 +115,9 @@ class Terrain:
                                 length=self.width_per_env_pixels,
                                 vertical_scale=self.cfg.vertical_scale,
                                 horizontal_scale=self.cfg.horizontal_scale)
+        if getattr(self.cfg, "terrain_profile", "") == "spotmicro_slope":
+            return self.make_spotmicro_slope_terrain(terrain, choice, difficulty)
+
         slope = difficulty * 0.2
         step_height = 0.005 + 0.03 * difficulty
         discrete_obstacles_height = 0.005 + difficulty * 0.03
@@ -142,6 +148,62 @@ class Terrain:
         else:
             pit_terrain(terrain, depth=pit_depth, platform_size=4.)
         
+        return terrain
+
+    def make_spotmicro_slope_terrain(self, terrain, choice, difficulty):
+        """Gentle blind-terrain curriculum for SpotMicro.
+
+        This profile intentionally excludes stairs, gaps, pits and stepping
+        stones. The policy keeps the same 47-D observation, so terrain should
+        stay smooth enough to infer from IMU/body response rather than local
+        height samples.
+        """
+        proportions = self.proportions
+        slope_min = float(getattr(self.cfg, "spotmicro_slope_min", 0.02))
+        slope_max = float(getattr(self.cfg, "spotmicro_slope_max", 0.14))
+        rough_max = float(getattr(self.cfg, "spotmicro_rough_height_max", 0.008))
+        rolling_amp_max = float(getattr(self.cfg, "spotmicro_rolling_amp_max", 0.025))
+        wavelength_min = float(getattr(self.cfg, "spotmicro_rolling_wavelength_min", 0.45))
+        wavelength_max = float(getattr(self.cfg, "spotmicro_rolling_wavelength_max", 1.20))
+        platform_size = float(getattr(self.cfg, "spotmicro_terrain_platform_size", 1.2))
+
+        difficulty = np.clip(float(difficulty), 0.0, 1.0)
+        slope_abs = slope_min + difficulty * (slope_max - slope_min)
+
+        if choice < proportions[0]:
+            slope = terrain_band_sign(choice, 0.0, proportions[0]) * slope_abs
+            directional_sloped_terrain(
+                terrain,
+                slope=slope,
+                platform_size=platform_size,
+            )
+        elif choice < proportions[1]:
+            slope = terrain_band_sign(choice, proportions[0], proportions[1]) * slope_abs
+            directional_sloped_terrain(
+                terrain,
+                slope=slope,
+                platform_size=platform_size,
+            )
+            rough_height = rough_max * (0.25 + 0.75 * difficulty)
+            terrain_utils.random_uniform_terrain(
+                terrain,
+                min_height=-rough_height,
+                max_height=rough_height,
+                step=self.cfg.vertical_scale,
+                downsampled_scale=0.20,
+            )
+        else:
+            slope = terrain_band_sign(choice, proportions[1], 1.0) * slope_abs
+            amplitude = rolling_amp_max * (0.25 + 0.75 * difficulty)
+            wavelength = wavelength_max - difficulty * (wavelength_max - wavelength_min)
+            rolling_sloped_terrain(
+                terrain,
+                slope=0.5 * slope,
+                amplitude=amplitude,
+                wavelength=wavelength,
+                platform_size=platform_size,
+            )
+
         return terrain
 
     def add_terrain_to_map(self, terrain, row, col):
@@ -185,3 +247,45 @@ def pit_terrain(terrain, depth, platform_size=1.):
     y1 = terrain.width // 2 - platform_size
     y2 = terrain.width // 2 + platform_size
     terrain.height_field_raw[x1:x2, y1:y2] = -depth
+
+def terrain_band_sign(choice, lo, hi):
+    mid = float(lo) + 0.5 * (float(hi) - float(lo))
+    return -1.0 if float(choice) < mid else 1.0
+
+def directional_sloped_terrain(terrain, slope, platform_size=1.0):
+    """Creates a single-axis up/down ramp with a flat spawn platform."""
+    x = (
+        np.arange(terrain.length, dtype=np.float32)
+        - 0.5 * float(terrain.length - 1)
+    ) * terrain.horizontal_scale
+    platform_half = 0.5 * float(platform_size)
+    x_ramp = np.sign(x) * np.maximum(np.abs(x) - platform_half, 0.0)
+    heights = slope * x_ramp
+    raw = np.rint(heights / terrain.vertical_scale).astype(np.int16)
+    terrain.height_field_raw += raw[:, None]
+
+def rolling_sloped_terrain(terrain, slope, amplitude, wavelength, platform_size=1.0):
+    """Creates repeated smooth inclines/declines without discrete steps."""
+    x = (
+        np.arange(terrain.length, dtype=np.float32)
+        - 0.5 * float(terrain.length - 1)
+    ) * terrain.horizontal_scale
+    y = (
+        np.arange(terrain.width, dtype=np.float32)
+        - 0.5 * float(terrain.width - 1)
+    ) * terrain.horizontal_scale
+
+    platform_half = 0.5 * float(platform_size)
+    outside = np.maximum(np.abs(x) - platform_half, 0.0)
+    x_ramp = np.sign(x) * outside
+    envelope = np.clip(outside / max(float(wavelength), 1.0e-6), 0.0, 1.0)
+
+    wave_x = np.sin(2.0 * np.pi * x / max(float(wavelength), 1.0e-6))
+    wave_y = np.sin(2.0 * np.pi * y / max(float(wavelength) * 1.7, 1.0e-6))
+    heights = (
+        slope * x_ramp[:, None]
+        + envelope[:, None] * float(amplitude) * wave_x[:, None]
+        + envelope[:, None] * float(amplitude) * 0.35 * wave_y[None, :]
+    )
+    raw = np.rint(heights / terrain.vertical_scale).astype(np.int16)
+    terrain.height_field_raw += raw

@@ -73,3 +73,23 @@
 | 069 | 05/20 | spotmicro_v6_1_3_stronger_transition_push | v6.1.3: push, roll 수치 강화 | 99.8% | 0.020 | 2.7% | ✅ |
 | 070 | 05/20 | spotmicro_v6_1_4_moderate_shove_recovery | v6.1.4: recovery 수치 강화 | 99.8% | 0.020 | 3.1% | ✅ |
 | 071 | 05/23 | spotmicro_v6_1_5_slippery_rear_com_motor_dr | v6.1.5: 랜덤화 추가 및 마찰 감소 | 100.0% | 0.030 | 2.1% | ✅ |
+| 073 | 05/25 | spotmicro_v6_2_prefall_tilt_recovery | v6.2 : tilt 회복 | 99.4% | 0.024 | 3.6% | ❌ |
+| 074 | 05/25 | spotmicro_v6_2_1_prefall_tilt_recovery_25deg | v6.2.1 : tilt 회복 각도 확장 | 97.0% | 0.022 | 4.1% | ❌ |
+| 075 | 05/25 | spotmicro_v6_2_2_prefall_tilt_recovery_25deg_continue | v6.2.2 : 6.2.1 추가학습 | 98.8% | 0.020 | 4.0% | ✅ |
+| 076 | 05/25 | spotmicro_v6_2_3_prefall_tilt_recovery_30deg | v6.2.3 : recovery 각도 확장 | 92.3% | 0.023 | 4.0% | ✅ |
+| 077 | 05/25 | spotmicro_v6_2_4_prefall_tilt_recovery_30deg_continue | v6.2.4 : recovery 각도 확장 추가 학습 | 94.8% | 0.023 | 4.4% | ❌ |
+| 078 | 05/25 | spotmicro_v6_2_5_prefall_tilt_recovery_30deg_authority | v6.2.5 : 25~30 recovery 강화 | 94.1% | 0.022 | 4.2% | ❌ |
+| 079 | 05/25 | spotmicro_v6_2_6_prefall_tilt_recovery_30deg_rollback | v6.2.6 : 설정 롤백 후 추가학습 | 90.8% | 0.021 | 4.4% | ❌ |
+| 080 | 05/25 | spotmicro_v6_3_prefall_transition_tilt_sampler | v6.3 : transition tilt sampler 추가 | 76.3% | 0.024 | 5.1% | ❌ |
+| 081 | 05/25 | spotmicro_v6_3_1_prefall_transition_tilt_sampler_soft | v6.3.1 : sampler 강도 약화 | 88.9% | 0.021 | 4.4% | ❌ |
+| 082 | 05/25 | spotmicro_v6_3_2_prefall_transition_tilt_sampler_focused | v6.3.2 : sampler 각도 범위 집중 | 79.3% | 0.022 | 4.9% | ❌ |
+| 083 | 05/25 | spotmicro_v6_3_3_prefall_transition_tilt_sampler_stable | v6.3.3 : roll ang vel 감소 후 추가 학습 | 86.1% | 0.021 | 4.6% | ❌ |
+| 084 | 05/25 | spotmicro_v6_4_prefall_brace_mode | v6.4 : brace mode | 82.1% | 0.021 | 4.4% | ❌ |
+| 085 | 05/26 | spotmicro_v7_0_slope_terrain_curriculum | v7.0: 지형 학습 시작 | 61.6% | 0.028 | 5.4% | ❌ |
+| 086 | 05/26 | spotmicro_v7_0_slope_terrain_curriculum | v7.0: 지형 학습 시작 | 58.6% | 0.028 | 14.2% | ❌ |
+| 087 | 05/26 | spotmicro_v7_0_1_slope_terrain_continue | v7.0.1: 지형 학습 추가 학습 | 56.8% | 0.029 | 15.2% | ❌ |
+| 088 | 05/26 | spotmicro_v7_1_slope_terrain_gentle_restart | v7.1: 지형 학습 설정 변경 후 학습 | 65.0% | 0.029 | 13.1% | ❌ |
+| 089 | 05/26 | spotmicro_v7_1_slope_terrain_gentle_restart | v7.1: 지형 학습 설정 변경 후 학습 - walk-eval | 76.2% | 0.022 | 13.2% | ❌ |
+| 090 | 05/26 | spotmicro_v7_1_1_slope_terrain_walk_refine | v7.1.1: 과도한 tilt transition 끄고 학습 | 73.7% | 0.020 | 11.9% | ❌ |
+| 091 | 05/26 | spotmicro_v7_1_2_slope_terrain_walk_margin | v7.1.2: termination 보완 되어야함 | 75.7% | 0.022 | 13.3% | ❌ |
+| 092 | 05/26 | spotmicro_v7_1_3_slope_terrain_survival_margin | v7.1.3: timeout 비율 보완 | 75.1% | 0.025 | 13.9% | ❌ |

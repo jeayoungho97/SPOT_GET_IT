@@ -160,8 +160,15 @@ class RlLocomotionNode(Node):
         self.declare_parameter("max_joint_speed_rad_s", 1.5)
         self.declare_parameter("walk_start_cmd_norm", 0.01)
         self.declare_parameter("walk_start_ramp_s", 1.2)
+        self.declare_parameter("walk_stop_ramp_s", 1.2)
         self.declare_parameter("reset_phase_on_walk_start", False)
         self.declare_parameter("reset_target_to_feedback_on_walk_start", True)
+        self.declare_parameter("recovery_gating_enabled", False)
+        self.declare_parameter("recovery_tilt_threshold_deg", 14.0)
+        self.declare_parameter("recovery_full_tilt_deg", 25.0)
+        self.declare_parameter("recovery_command_scale", 1.0)
+        self.declare_parameter("recovery_phase_scale", 1.0)
+        self.declare_parameter("recovery_action_scale", 0.25)
 
         # ---------------- Read parameters ----------------
         self.policy_rate_hz = float(self.get_parameter("policy_rate_hz").value)
@@ -238,11 +245,30 @@ class RlLocomotionNode(Node):
         self.max_joint_speed_rad_s = float(self.get_parameter("max_joint_speed_rad_s").value)
         self.walk_start_cmd_norm = float(self.get_parameter("walk_start_cmd_norm").value)
         self.walk_start_ramp_s = float(self.get_parameter("walk_start_ramp_s").value)
+        self.walk_stop_ramp_s = float(self.get_parameter("walk_stop_ramp_s").value)
         self.reset_phase_on_walk_start = bool(
             self.get_parameter("reset_phase_on_walk_start").value
         )
         self.reset_target_to_feedback_on_walk_start = bool(
             self.get_parameter("reset_target_to_feedback_on_walk_start").value
+        )
+        self.recovery_gating_enabled = bool(
+            self.get_parameter("recovery_gating_enabled").value
+        )
+        self.recovery_tilt_threshold_deg = float(
+            self.get_parameter("recovery_tilt_threshold_deg").value
+        )
+        self.recovery_full_tilt_deg = float(
+            self.get_parameter("recovery_full_tilt_deg").value
+        )
+        self.recovery_command_scale = float(
+            self.get_parameter("recovery_command_scale").value
+        )
+        self.recovery_phase_scale = float(
+            self.get_parameter("recovery_phase_scale").value
+        )
+        self.recovery_action_scale = float(
+            self.get_parameter("recovery_action_scale").value
         )
 
         self._validate_config()
@@ -308,6 +334,11 @@ class RlLocomotionNode(Node):
         self.walk_active = False
         self.walk_ramp_start_time: Optional[float] = None
         self.walk_ramp_scale = 0.0
+        self.walk_stop_start_time: Optional[float] = None
+        self.walk_stop_start_cmd = [0.0, 0.0, 0.0]
+        self.effective_cmd_vx = 0.0
+        self.effective_cmd_vy = 0.0
+        self.effective_cmd_wz = 0.0
 
         self.joint_position = list(self.default_joint_angles)
         self.joint_velocity = [0.0] * 12
@@ -331,6 +362,7 @@ class RlLocomotionNode(Node):
         self.last_raw_action = [0.0] * self.action_dim
         self.last_ik_ref = list(self.default_joint_angles)
         self.last_target_rad = list(self.default_joint_angles)
+        self.last_recovery_blend = 0.0
 
         # ---------------- ROS IO ----------------
         self.cmd_sub = self.create_subscription(
@@ -382,7 +414,8 @@ class RlLocomotionNode(Node):
             f"backend={self.policy_runner.backend_name()}, "
             f"providers={self.policy_runner.provider_names()}, "
             f"model={resolved_model_path}, "
-            f"safe_mode={self.safe_mode}"
+            f"safe_mode={self.safe_mode}, "
+            f"recovery_gating={self.recovery_gating_enabled}"
         )
 
         self.add_on_set_parameters_callback(self.on_parameter_update)
@@ -467,6 +500,22 @@ class RlLocomotionNode(Node):
             raise RuntimeError("walk_start_cmd_norm must be non-negative")
         if self.walk_start_ramp_s < 0.0:
             raise RuntimeError("walk_start_ramp_s must be non-negative")
+        if self.walk_stop_ramp_s < 0.0:
+            raise RuntimeError("walk_stop_ramp_s must be non-negative")
+        if self.recovery_tilt_threshold_deg < 0.0:
+            raise RuntimeError("recovery_tilt_threshold_deg must be non-negative")
+        if self.recovery_full_tilt_deg < self.recovery_tilt_threshold_deg:
+            raise RuntimeError(
+                "recovery_full_tilt_deg must be greater than or equal to "
+                "recovery_tilt_threshold_deg"
+            )
+        for name, value in [
+            ("recovery_command_scale", self.recovery_command_scale),
+            ("recovery_phase_scale", self.recovery_phase_scale),
+            ("recovery_action_scale", self.recovery_action_scale),
+        ]:
+            if not math.isfinite(value) or value < 0.0:
+                raise RuntimeError(f"{name} must be non-negative and finite")
 
     def resolve_model_path(self, model_path: str) -> str:
         if not model_path:
@@ -635,10 +684,51 @@ class RlLocomotionNode(Node):
     def command_norm(self, cmd_vx: float, cmd_vy: float, cmd_wz: float) -> float:
         return math.sqrt(cmd_vx * cmd_vx + cmd_vy * cmd_vy + cmd_wz * cmd_wz)
 
+    def recovery_blend(self, projected_gravity: Sequence[float]) -> float:
+        if not self.recovery_gating_enabled:
+            return 0.0
+
+        if len(projected_gravity) < 2:
+            return 0.0
+
+        tilt = math.sqrt(
+            float(projected_gravity[0]) * float(projected_gravity[0])
+            + float(projected_gravity[1]) * float(projected_gravity[1])
+        )
+        threshold = math.sin(math.radians(self.recovery_tilt_threshold_deg))
+        full_tilt = math.sin(math.radians(self.recovery_full_tilt_deg))
+        if full_tilt <= threshold:
+            return 1.0 if tilt > threshold else 0.0
+        return clamp((tilt - threshold) / (full_tilt - threshold), 0.0, 1.0)
+
+    def apply_recovery_gating(self, snapshot):
+        blend = self.recovery_blend(snapshot["projected_gravity"])
+        effective = dict(snapshot)
+        if blend <= 0.0:
+            self.last_recovery_blend = 0.0
+            return effective, 1.0, self.action_scale
+
+        command_scale = 1.0 - blend * (1.0 - self.recovery_command_scale)
+        phase_scale = 1.0 - blend * (1.0 - self.recovery_phase_scale)
+        action_scale = self.action_scale + blend * (
+            self.recovery_action_scale - self.action_scale
+        )
+
+        effective["cmd_vx"] = snapshot["cmd_vx"] * command_scale
+        effective["cmd_vy"] = snapshot["cmd_vy"] * command_scale
+        effective["cmd_wz"] = snapshot["cmd_wz"] * command_scale
+        self.last_recovery_blend = blend
+        return effective, phase_scale, action_scale
+
     def reset_walk_transition(self):
         self.walk_active = False
         self.walk_ramp_start_time = None
         self.walk_ramp_scale = 0.0
+        self.walk_stop_start_time = None
+        self.walk_stop_start_cmd = [0.0, 0.0, 0.0]
+        self.effective_cmd_vx = 0.0
+        self.effective_cmd_vy = 0.0
+        self.effective_cmd_wz = 0.0
 
     def apply_walk_transition(self, snapshot, now: float):
         cmd_norm = self.command_norm(
@@ -650,12 +740,42 @@ class RlLocomotionNode(Node):
 
         effective = dict(snapshot)
         if not active:
+            if self.walk_active and self.walk_stop_ramp_s > 0.0:
+                if self.walk_stop_start_time is None:
+                    self.walk_stop_start_time = now
+                    self.walk_stop_start_cmd = [
+                        self.effective_cmd_vx,
+                        self.effective_cmd_vy,
+                        self.effective_cmd_wz,
+                    ]
+                    stop_norm = self.command_norm(*self.walk_stop_start_cmd)
+                    self.get_logger().info(
+                        "walk stop: "
+                        f"cmd_norm={stop_norm:.3f}, "
+                        f"ramp_s={self.walk_stop_ramp_s:.2f}"
+                    )
+
+                stop_elapsed = now - self.walk_stop_start_time
+                scale = clamp(1.0 - stop_elapsed / self.walk_stop_ramp_s, 0.0, 1.0)
+                vx = self.walk_stop_start_cmd[0] * scale
+                vy = self.walk_stop_start_cmd[1] * scale
+                wz = self.walk_stop_start_cmd[2] * scale
+                if scale > 0.0 and self.command_norm(vx, vy, wz) > self.walk_start_cmd_norm:
+                    self.effective_cmd_vx = vx
+                    self.effective_cmd_vy = vy
+                    self.effective_cmd_wz = wz
+                    effective["cmd_vx"] = vx
+                    effective["cmd_vy"] = vy
+                    effective["cmd_wz"] = wz
+                    return effective
+
             self.reset_walk_transition()
             effective["cmd_vx"] = 0.0
             effective["cmd_vy"] = 0.0
             effective["cmd_wz"] = 0.0
             return effective
 
+        self.walk_stop_start_time = None
         if not self.walk_active:
             self.walk_active = True
             self.walk_ramp_start_time = now
@@ -684,18 +804,28 @@ class RlLocomotionNode(Node):
             scale = clamp(ramp_elapsed / self.walk_start_ramp_s, 0.0, 1.0)
 
         self.walk_ramp_scale = scale
-        effective["cmd_vx"] = snapshot["cmd_vx"] * scale
-        effective["cmd_vy"] = snapshot["cmd_vy"] * scale
-        effective["cmd_wz"] = snapshot["cmd_wz"] * scale
+        self.effective_cmd_vx = snapshot["cmd_vx"] * scale
+        self.effective_cmd_vy = snapshot["cmd_vy"] * scale
+        self.effective_cmd_wz = snapshot["cmd_wz"] * scale
+        effective["cmd_vx"] = self.effective_cmd_vx
+        effective["cmd_vy"] = self.effective_cmd_vy
+        effective["cmd_wz"] = self.effective_cmd_wz
         return effective
 
-    def update_gait_phase(self, cmd_vx: float, cmd_vy: float, cmd_wz: float):
+    def update_gait_phase(
+        self,
+        cmd_vx: float,
+        cmd_vy: float,
+        cmd_wz: float,
+        phase_scale_multiplier: float = 1.0,
+    ):
         prev_phase = self.gait_phase
         self.gait_phase = self.gait_phase_gen.update(
             dt=self.dt,
             cmd_vx=cmd_vx,
             cmd_vy=cmd_vy,
             cmd_wz=cmd_wz,
+            phase_scale_multiplier=phase_scale_multiplier,
         )
         if self.gait_phase < prev_phase:
             self.gait_cycle_count += 1
@@ -718,6 +848,7 @@ class RlLocomotionNode(Node):
         self,
         raw_action: Sequence[float],
         ik_ref: Sequence[float],
+        action_scale: Optional[float] = None,
     ) -> List[float]:
         if not finite_list(raw_action, 12):
             raise RuntimeError("policy output is invalid")
@@ -733,8 +864,9 @@ class RlLocomotionNode(Node):
             for a in raw_action
         ]
 
+        scale = self.action_scale if action_scale is None else float(action_scale)
         target = [
-            float(ik_ref[i]) + clipped_action[i] * self.action_scale
+            float(ik_ref[i]) + clipped_action[i] * scale
             for i in range(12)
         ]
 
@@ -784,6 +916,7 @@ class RlLocomotionNode(Node):
         self.last_raw_action = [0.0] * 12
         self.last_ik_ref = list(self.default_joint_angles)
         self.last_target_rad = list(self.default_joint_angles)
+        self.last_recovery_blend = 0.0
 
         self._warn_throttled("safe_target", f"publishing safe target: {reason}")
 
@@ -810,6 +943,42 @@ class RlLocomotionNode(Node):
                         successful=False,
                         reason="walk_start_ramp_s must be non-negative and finite",
                     )
+            elif param.name == "walk_stop_ramp_s":
+                value = float(param.value)
+                if not math.isfinite(value) or value < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason="walk_stop_ramp_s must be non-negative and finite",
+                    )
+            elif param.name in (
+                "recovery_tilt_threshold_deg",
+                "recovery_full_tilt_deg",
+                "recovery_command_scale",
+                "recovery_phase_scale",
+                "recovery_action_scale",
+            ):
+                value = float(param.value)
+                if not math.isfinite(value) or value < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason=f"{param.name} must be non-negative and finite",
+                    )
+
+        next_threshold = self.recovery_tilt_threshold_deg
+        next_full_tilt = self.recovery_full_tilt_deg
+        for param in params:
+            if param.name == "recovery_tilt_threshold_deg":
+                next_threshold = float(param.value)
+            elif param.name == "recovery_full_tilt_deg":
+                next_full_tilt = float(param.value)
+        if next_full_tilt < next_threshold:
+            return SetParametersResult(
+                successful=False,
+                reason=(
+                    "recovery_full_tilt_deg must be greater than or equal to "
+                    "recovery_tilt_threshold_deg"
+                ),
+            )
 
         for param in params:
             if param.name == "max_joint_speed_rad_s":
@@ -830,6 +999,11 @@ class RlLocomotionNode(Node):
                 self.get_logger().info(
                     f"updated walk_start_ramp_s={self.walk_start_ramp_s:.3f}"
                 )
+            elif param.name == "walk_stop_ramp_s":
+                self.walk_stop_ramp_s = float(param.value)
+                self.get_logger().info(
+                    f"updated walk_stop_ramp_s={self.walk_stop_ramp_s:.3f}"
+                )
             elif param.name == "reset_phase_on_walk_start":
                 self.reset_phase_on_walk_start = bool(param.value)
                 self.get_logger().info(
@@ -841,6 +1015,37 @@ class RlLocomotionNode(Node):
                     "updated "
                     f"reset_target_to_feedback_on_walk_start="
                     f"{self.reset_target_to_feedback_on_walk_start}"
+                )
+            elif param.name == "recovery_gating_enabled":
+                self.recovery_gating_enabled = bool(param.value)
+                self.get_logger().info(
+                    f"updated recovery_gating_enabled={self.recovery_gating_enabled}"
+                )
+            elif param.name == "recovery_tilt_threshold_deg":
+                self.recovery_tilt_threshold_deg = float(param.value)
+                self.get_logger().info(
+                    "updated "
+                    f"recovery_tilt_threshold_deg={self.recovery_tilt_threshold_deg:.2f}"
+                )
+            elif param.name == "recovery_full_tilt_deg":
+                self.recovery_full_tilt_deg = float(param.value)
+                self.get_logger().info(
+                    f"updated recovery_full_tilt_deg={self.recovery_full_tilt_deg:.2f}"
+                )
+            elif param.name == "recovery_command_scale":
+                self.recovery_command_scale = float(param.value)
+                self.get_logger().info(
+                    f"updated recovery_command_scale={self.recovery_command_scale:.3f}"
+                )
+            elif param.name == "recovery_phase_scale":
+                self.recovery_phase_scale = float(param.value)
+                self.get_logger().info(
+                    f"updated recovery_phase_scale={self.recovery_phase_scale:.3f}"
+                )
+            elif param.name == "recovery_action_scale":
+                self.recovery_action_scale = float(param.value)
+                self.get_logger().info(
+                    f"updated recovery_action_scale={self.recovery_action_scale:.3f}"
                 )
 
         return SetParametersResult(successful=True)
@@ -940,12 +1145,16 @@ class RlLocomotionNode(Node):
             self.seq = (self.seq + 1) & 0xFFFF
             return
 
-        effective_snapshot = self.apply_walk_transition(snapshot, loop_start)
+        walk_snapshot = self.apply_walk_transition(snapshot, loop_start)
+        effective_snapshot, phase_scale_multiplier, effective_action_scale = (
+            self.apply_recovery_gating(walk_snapshot)
+        )
 
         self.update_gait_phase(
             cmd_vx=effective_snapshot["cmd_vx"],
             cmd_vy=effective_snapshot["cmd_vy"],
             cmd_wz=effective_snapshot["cmd_wz"],
+            phase_scale_multiplier=phase_scale_multiplier,
         )
 
         try:
@@ -964,7 +1173,11 @@ class RlLocomotionNode(Node):
             raw_action = self.policy_runner.infer(obs)
             t2 = time.perf_counter()
 
-            target_rad = self.postprocess_action(raw_action, ik_ref)
+            target_rad = self.postprocess_action(
+                raw_action,
+                ik_ref,
+                action_scale=effective_action_scale,
+            )
             t3 = time.perf_counter()
 
             self.publish_target(

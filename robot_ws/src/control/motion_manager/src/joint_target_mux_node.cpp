@@ -14,6 +14,7 @@ namespace
 using JointTarget = robot_interfaces::msg::JointTarget;
 
 constexpr uint8_t MODE_STAND = 1;
+constexpr uint8_t MODE_SIT = 6;
 
 std::string toUpper(std::string value)
 {
@@ -48,8 +49,9 @@ public:
     rl_timeout_ms_ = this->declare_parameter<double>("rl_timeout_ms", 100.0);
     classic_timeout_ms_ = this->declare_parameter<double>("classic_timeout_ms", 100.0);
     stand_timeout_ms_ = this->declare_parameter<double>("stand_timeout_ms", 100.0);
+    sit_timeout_ms_ = this->declare_parameter<double>("sit_timeout_ms", 100.0);
     detect_timeout_ms_ = this->declare_parameter<double>("detect_timeout_ms", 100.0);
-    behavior_mode_ = normalizeMode(this->declare_parameter<std::string>("default_mode", "STAND"));
+    behavior_mode_ = normalizeMode(this->declare_parameter<std::string>("default_mode", "SIT"));
 
     mode_sub_ = this->create_subscription<std_msgs::msg::String>(
       "/control/behavior/mode",
@@ -74,6 +76,11 @@ public:
       "/control/stand/joint_target",
       rclcpp::QoS(rclcpp::KeepLast(1)).best_effort(),
       std::bind(&JointTargetMuxNode::standCallback, this, std::placeholders::_1));
+
+    sit_sub_ = this->create_subscription<JointTarget>(
+      "/control/sit/joint_target",
+      rclcpp::QoS(rclcpp::KeepLast(1)).best_effort(),
+      std::bind(&JointTargetMuxNode::sitCallback, this, std::placeholders::_1));
 
     detect_sub_ = this->create_subscription<JointTarget>(
       "/control/detect/joint_target",
@@ -109,10 +116,13 @@ private:
       return;
     }
 
-    if (new_mode != "RL" && new_mode != "CLASSIC" && new_mode != "STAND" && new_mode != "DETECT") {
+    if (
+      new_mode != "RL" && new_mode != "CLASSIC" && new_mode != "STAND" &&
+      new_mode != "SIT" && new_mode != "DETECT")
+    {
       RCLCPP_WARN(
         this->get_logger(),
-        "unsupported mode '%s'. Allowed modes: RL, CLASSIC, STAND, DETECT. Keeping current mode=%s",
+        "unsupported mode '%s'. Allowed modes: RL, CLASSIC, STAND, SIT, DETECT. Keeping current mode=%s",
         msg->data.c_str(),
         behavior_mode_.c_str());
       return;
@@ -155,6 +165,12 @@ private:
     latest_stand_time_ = this->now();
   }
 
+  void sitCallback(const JointTarget::SharedPtr msg)
+  {
+    latest_sit_ = *msg;
+    latest_sit_time_ = this->now();
+  }
+
   void detectCallback(const JointTarget::SharedPtr msg)
   {
     latest_detect_ = *msg;
@@ -194,7 +210,13 @@ private:
         this->get_logger(),
         *this->get_clock(),
         1000,
-        "RL target stale. Falling back to STAND.");
+        "RL target stale. Falling back to SIT.");
+
+      if (isSitFresh()) {
+        selected = latest_sit_.value();
+        selected.mode = MODE_SIT;
+        return true;
+      }
 
       if (isStandFresh()) {
         selected = latest_stand_.value();
@@ -215,7 +237,13 @@ private:
         this->get_logger(),
         *this->get_clock(),
         1000,
-        "CLASSIC target stale. Falling back to STAND.");
+        "CLASSIC target stale. Falling back to SIT.");
+
+      if (isSitFresh()) {
+        selected = latest_sit_.value();
+        selected.mode = MODE_SIT;
+        return true;
+      }
 
       if (isStandFresh()) {
         selected = latest_stand_.value();
@@ -236,7 +264,13 @@ private:
         this->get_logger(),
         *this->get_clock(),
         1000,
-        "DETECT target stale. Falling back to STAND.");
+        "DETECT target stale. Falling back to SIT.");
+
+      if (isSitFresh()) {
+        selected = latest_sit_.value();
+        selected.mode = MODE_SIT;
+        return true;
+      }
 
       if (isStandFresh()) {
         selected = latest_stand_.value();
@@ -247,7 +281,35 @@ private:
       return false;
     }
 
-    // default: STAND
+    if (behavior_mode_ == "STAND") {
+      if (isStandFresh()) {
+        selected = latest_stand_.value();
+        selected.mode = MODE_STAND;
+        return true;
+      }
+
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(),
+        *this->get_clock(),
+        1000,
+        "STAND target stale. No selected target published.");
+
+      return false;
+    }
+
+    // default: SIT
+    if (isSitFresh()) {
+      selected = latest_sit_.value();
+      selected.mode = MODE_SIT;
+      return true;
+    }
+
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(),
+      *this->get_clock(),
+      1000,
+      "SIT target stale. Falling back to STAND.");
+
     if (isStandFresh()) {
       selected = latest_stand_.value();
       selected.mode = MODE_STAND;
@@ -258,7 +320,7 @@ private:
       this->get_logger(),
       *this->get_clock(),
       1000,
-      "STAND target stale. No selected target published.");
+      "SIT and STAND targets stale. No selected target published.");
 
     return false;
   }
@@ -293,6 +355,16 @@ private:
     return age_ms <= stand_timeout_ms_;
   }
 
+  bool isSitFresh() const
+  {
+    if (!latest_sit_.has_value()) {
+      return false;
+    }
+
+    const double age_ms = (this->now() - latest_sit_time_).seconds() * 1000.0;
+    return age_ms <= sit_timeout_ms_;
+  }
+
   bool isDetectFresh() const
   {
     if (!latest_detect_.has_value()) {
@@ -308,18 +380,21 @@ private:
   double rl_timeout_ms_{100.0};
   double classic_timeout_ms_{100.0};
   double stand_timeout_ms_{100.0};
+  double sit_timeout_ms_{100.0};
   double detect_timeout_ms_{100.0};
 
-  std::string behavior_mode_{"STAND"};
+  std::string behavior_mode_{"SIT"};
 
   std::optional<JointTarget> latest_rl_;
   std::optional<JointTarget> latest_classic_;
   std::optional<JointTarget> latest_stand_;
+  std::optional<JointTarget> latest_sit_;
   std::optional<JointTarget> latest_detect_;
 
   rclcpp::Time latest_rl_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time latest_classic_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time latest_stand_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time latest_sit_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time latest_detect_time_{0, 0, RCL_ROS_TIME};
 
   uint32_t seq_{0};
@@ -328,6 +403,7 @@ private:
   rclcpp::Subscription<JointTarget>::SharedPtr rl_sub_;
   rclcpp::Subscription<JointTarget>::SharedPtr classic_sub_;
   rclcpp::Subscription<JointTarget>::SharedPtr stand_sub_;
+  rclcpp::Subscription<JointTarget>::SharedPtr sit_sub_;
   rclcpp::Subscription<JointTarget>::SharedPtr detect_sub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr active_mode_pub_;
   rclcpp::Publisher<JointTarget>::SharedPtr selected_pub_;

@@ -7,6 +7,7 @@ uint8 MODE_CROUCH=3
 uint8 MODE_E_STOP=4
 uint8 MODE_CLASSIC=5
 uint8 MODE_CLASSIC_CONTROL=5
+uint8 MODE_SIT=6
 
 uint16 seq
 uint8 mode

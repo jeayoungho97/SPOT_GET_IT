@@ -49,6 +49,7 @@ constexpr uint8_t JT_MODE_RL = 2;
 constexpr uint8_t JT_MODE_CROUCH = 3;
 constexpr uint8_t JT_MODE_E_STOP = 4;
 constexpr uint8_t JT_MODE_CLASSIC = 5;
+constexpr uint8_t JT_MODE_SIT = 6;
 
 // Wire mode: STM firmware가 실제로 이해하는 최소 mode
 constexpr uint8_t WIRE_MODE_DISABLE = 0;
@@ -69,6 +70,7 @@ uint8_t mapRosModeToWireMode(uint8_t ros_mode, uint8_t ros_flags)
     case JT_MODE_RL:
     case JT_MODE_CROUCH:
     case JT_MODE_CLASSIC:
+    case JT_MODE_SIT:
       return WIRE_MODE_OPERATE;
 
     case JT_MODE_DISABLE:
@@ -143,6 +145,23 @@ uint8_t classifyMotionStateFromTwist(
   return vy > 0.0 ?
          robot_interfaces::msg::StmMotion::STRAFE_LEFT :
          robot_interfaces::msg::StmMotion::STRAFE_RIGHT;
+}
+
+uint8_t effectiveMotionStateForMode(uint8_t ros_mode, uint8_t requested_motion_state)
+{
+  switch (ros_mode) {
+    case JT_MODE_RL:
+    case JT_MODE_CLASSIC:
+      return requested_motion_state;
+
+    case JT_MODE_DISABLE:
+    case JT_MODE_STAND:
+    case JT_MODE_CROUCH:
+    case JT_MODE_E_STOP:
+    case JT_MODE_SIT:
+    default:
+      return robot_interfaces::msg::StmMotion::STOP;
+  }
 }
 
 }  // namespace
@@ -366,7 +385,7 @@ private:
       command.flags = 0U;
       command.gait_phase = latest_gait_phase_;
       command.gait_cycle_count = latest_gait_cycle_count_;
-      command.motion_state = latest_motion_state_;
+      command.motion_state = robot_interfaces::msg::StmMotion::STOP;
 
       for (std::size_t i = 0; i < actuator_bridge::NUM_JOINTS; ++i) {
         command.target_rad[i] = default_target_rad_[i];
@@ -378,7 +397,9 @@ private:
       command.flags = mapRosModeToWireFlags(latest_mode_, latest_flags_);
       command.gait_phase = latest_gait_phase_;
       command.gait_cycle_count = latest_gait_cycle_count_;
-      command.motion_state = latest_motion_state_;
+      command.motion_state = effectiveMotionStateForMode(
+        latest_mode_,
+        latest_motion_state_);
 
       for (std::size_t i = 0; i < actuator_bridge::NUM_JOINTS; ++i) {
         command.target_rad[i] = latest_target_rad_[i];

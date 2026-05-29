@@ -8,7 +8,8 @@ from typing import List, Optional, Sequence, Tuple
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import String
 
 from locomotion_common import SharedTrotReference
 from classic_control.constants import MODE_CLASSIC_CONTROL, NUM_JOINTS, NUM_LEGS
@@ -64,6 +65,7 @@ class ClassicControlNode(Node):
         self.declare_parameter("cmd_vel_topic", "")
         self.declare_parameter("target_topic", "/control/classic_control/joint_target")
         self.declare_parameter("feedback_topic", "/control/actuator/joint_feedback")
+        self.declare_parameter("active_mode_topic", "/control/behavior/active_mode")
 
         self.declare_parameter("command_timeout_sec", 0.35)
         self.declare_parameter("linear_deadband_mps", 0.01)
@@ -103,10 +105,10 @@ class ClassicControlNode(Node):
         self.declare_parameter("max_stride_y_mm", 35.0)
 
         self.declare_parameter("stand_dwell_sec", 1.0)
-        self.declare_parameter("min_transition_sec", 1.0)
+        self.declare_parameter("min_transition_sec", 2.0)
         self.declare_parameter("max_transition_sec", 3.0)
         self.declare_parameter("transition_sec_per_rad", 1.0)
-        self.declare_parameter("max_delta_smooth_rad", 10.0)
+        self.declare_parameter("max_delta_smooth_rad", 0.02)
         self.declare_parameter("max_delta_walk_rad", 0.06)
 
         self.declare_parameter(
@@ -139,6 +141,7 @@ class ClassicControlNode(Node):
         self.cmd_vel_topic = cmd_topic or f"/control/cmd_vel/{self.robot_id}"
         self.target_topic = str(self.get_parameter("target_topic").value)
         self.feedback_topic = str(self.get_parameter("feedback_topic").value)
+        self.active_mode_topic = str(self.get_parameter("active_mode_topic").value)
 
         self.command_timeout_sec = float(self.get_parameter("command_timeout_sec").value)
         self.linear_deadband_mps = float(self.get_parameter("linear_deadband_mps").value)
@@ -274,6 +277,7 @@ class ClassicControlNode(Node):
         self.transition_duration = self.min_transition_sec
         self.transition_from = [0.0] * NUM_JOINTS
         self.transition_to = [0.0] * NUM_JOINTS
+        self.output_motion_active = False
 
         self.filtered_vx = 0.0
         self.filtered_vy = 0.0
@@ -283,6 +287,8 @@ class ClassicControlNode(Node):
         self.last_target = list(self.stand_target)
         self.latest_feedback: Optional[List[float]] = None
         self.latest_feedback_time: Optional[float] = None
+        self.classic_active = False
+        self.activation_pending = False
 
         self.cmd_lock = threading.Lock()
         self.cmd_vx = 0.0
@@ -297,6 +303,17 @@ class ClassicControlNode(Node):
             self.cmd_vel_callback,
             10,
         )
+        self.active_mode_sub = self.create_subscription(
+            String,
+            self.active_mode_topic,
+            self.active_mode_callback,
+            QoSProfile(
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            ),
+        )
         self.feedback_sub = self.create_subscription(
             JointFeedback,
             self.feedback_topic,
@@ -308,6 +325,27 @@ class ClassicControlNode(Node):
             self.target_topic,
             self.control_qos,
         )
+
+    def active_mode_callback(self, msg: String):
+        new_active = msg.data.strip().upper() in ("CLASSIC", "CLASSIC_CONTROL")
+        if new_active == self.classic_active:
+            return
+
+        self.classic_active = new_active
+        self.update_filtered_command(0.0, 0.0, 0.0)
+
+        if new_active:
+            self.activation_pending = True
+            self.state = self.STAND
+            self.gait_phase = 0.0
+            self.gait_cycle_count = 0
+            self.get_logger().info("CLASSIC activated; standing before walk")
+            return
+
+        self.activation_pending = False
+        self.state = self.STAND
+        self.state_start_time = time.perf_counter()
+        self.last_target = list(self.stand_target)
 
     def cmd_vel_callback(self, msg: Twist):
         vx = clamp(float(msg.linear.x), self.vx_min_mps, self.vx_max_mps)
@@ -426,8 +464,20 @@ class ClassicControlNode(Node):
         vy: float,
         wz: float,
     ) -> Tuple[List[float], float]:
+        self.output_motion_active = False
         moving = self.command_is_moving(vx, vy, wz)
         now = time.perf_counter()
+
+        if not self.classic_active:
+            self.activation_pending = False
+            self.state = self.STAND
+            self.update_filtered_command(0.0, 0.0, 0.0)
+            return self.transition_source(), self.max_delta_smooth_rad
+
+        if self.activation_pending:
+            self.activation_pending = False
+            self.begin_transition(self.STANDUP, self.stand_target)
+            return self.transition_target()[0], self.max_delta_smooth_rad
 
         if self.state == self.STAND:
             self.update_filtered_command(0.0, 0.0, 0.0)
@@ -473,6 +523,7 @@ class ClassicControlNode(Node):
             total_phase = elapsed / self.gait_period_sec
             self.gait_cycle_count = int(math.floor(total_phase))
             self.gait_phase = total_phase - self.gait_cycle_count
+            self.output_motion_active = True
             return (
                 self.compute_targets(
                     self.gait_phase,
@@ -504,7 +555,9 @@ class ClassicControlNode(Node):
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "base_link"
         msg.seq = self.seq
-        msg.mode = MODE_CLASSIC_CONTROL
+        msg.mode = (
+            MODE_CLASSIC_CONTROL if self.output_motion_active else JointTarget.MODE_STAND
+        )
         msg.flags = 0
         msg.target_rad = list(target)
         msg.max_delta_rad = [float(max_delta_rad)] * NUM_JOINTS
