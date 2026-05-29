@@ -56,7 +56,9 @@ class ClassicControlNode(Node):
             f"feedback={self.feedback_topic}, rate={self.rate_hz:.1f}Hz, "
             f"period={self.gait_period_sec:.2f}s, "
             f"upper=({self.upper_link_x_mm:.1f},{self.upper_link_z_mm:.1f})mm, "
-            f"lower={self.lower_link_mm:.1f}mm"
+            f"lower={self.lower_link_mm:.1f}mm, "
+            f"body_height={self.body_height_mm_per_leg}mm, "
+            f"foot_x={self.default_foot_x_mm_per_leg}mm"
         )
 
     def declare_node_parameters(self):
@@ -80,29 +82,30 @@ class ClassicControlNode(Node):
         self.declare_parameter("max_linear_accel_mps2", 0.25)
         self.declare_parameter("max_angular_accel_radps2", 0.7)
 
-        self.declare_parameter("upper_link_x_mm", 0.0)
-        self.declare_parameter("upper_link_z_mm", 105.0)
-        self.declare_parameter("lower_link_mm", 130.0)
-        self.declare_parameter("body_height_mm", 170.0)
-        self.declare_parameter("body_height_mm_per_leg", [170.0, 170.0, 170.0, 170.0])
-        self.declare_parameter("default_foot_x_mm", -10.0)
-        self.declare_parameter("default_foot_x_mm_per_leg", [-10.0, -10.0, -10.0, -10.0])
-        self.declare_parameter("default_foot_y_mm", 0.0)
-        self.declare_parameter("default_foot_y_mm_per_leg", [0.0, 0.0, 0.0, 0.0])
+        self.declare_parameter("upper_link_x_mm", 10.0)
+        self.declare_parameter("upper_link_z_mm", 120.0)
+        self.declare_parameter("lower_link_mm", 115.0)
+        self.declare_parameter("body_height_mm", 210.0)
+        self.declare_parameter("body_height_mm_per_leg", [210.0, 210.0, 210.0, 210.0])
+        self.declare_parameter("default_foot_x_mm", 0.0)
+        self.declare_parameter("default_foot_x_mm_per_leg", [0.0, 0.0, 0.0, 0.0])
+        self.declare_parameter("default_foot_y_mm", 52.0)
+        self.declare_parameter("default_foot_y_mm_per_leg", [52.0, -52.0, 52.0, -52.0])
+        self.declare_parameter("toe_radius_mm", 15.0)
 
         self.declare_parameter("leg_origin_x_m", [0.093, 0.093, -0.093, -0.093])
         self.declare_parameter("leg_origin_y_m", [0.036, -0.036, 0.036, -0.036])
         self.declare_parameter("shoulder_sign", [1.0, -1.0, 1.0, -1.0])
-        self.declare_parameter("shoulder_y_gain", 1.0)
-        self.declare_parameter("shoulder_limit_rad", 0.16)
+        self.declare_parameter("shoulder_offset_y_m", [0.052, -0.052, 0.052, -0.052])
+        self.declare_parameter("shoulder_limit_rad", 0.548)
         self.declare_parameter("phase_offsets", [0.0, 0.5, 0.5, 0.0])
 
         self.declare_parameter("gait_period_sec", 1.2)
         self.declare_parameter("duty_factor", 0.58)
-        self.declare_parameter("lift_z_mm", 13.0)
-        self.declare_parameter("lift_z_mm_per_leg", [13.0, 13.0, 16.0, 16.0])
-        self.declare_parameter("max_stride_x_mm", 70.0)
-        self.declare_parameter("max_stride_y_mm", 35.0)
+        self.declare_parameter("lift_z_mm", 22.0)
+        self.declare_parameter("lift_z_mm_per_leg", [22.0, 22.0, 22.0, 22.0])
+        self.declare_parameter("max_stride_x_mm", 85.0)
+        self.declare_parameter("max_stride_y_mm", 24.0)
 
         self.declare_parameter("stand_dwell_sec", 1.0)
         self.declare_parameter("min_transition_sec", 2.0)
@@ -176,11 +179,14 @@ class ClassicControlNode(Node):
             "default_foot_y_mm_per_leg",
             self.default_foot_y_mm,
         )
+        self.toe_radius_mm = float(self.get_parameter("toe_radius_mm").value)
 
         self.leg_origin_x_m = [float(x) for x in self.get_parameter("leg_origin_x_m").value]
         self.leg_origin_y_m = [float(y) for y in self.get_parameter("leg_origin_y_m").value]
         self.shoulder_sign = [float(s) for s in self.get_parameter("shoulder_sign").value]
-        self.shoulder_y_gain = float(self.get_parameter("shoulder_y_gain").value)
+        self.shoulder_offset_y_m = [
+            float(y) for y in self.get_parameter("shoulder_offset_y_m").value
+        ]
         self.shoulder_limit_rad = float(self.get_parameter("shoulder_limit_rad").value)
         self.phase_offsets = [float(x) for x in self.get_parameter("phase_offsets").value]
 
@@ -205,10 +211,14 @@ class ClassicControlNode(Node):
         self.joint_max_rad = [float(x) for x in self.get_parameter("joint_max_rad").value]
 
     def _load_leg_values_mm(self, name: str, fallback: float) -> List[float]:
+        if name not in getattr(self, "_parameter_overrides", {}):
+            return [float(fallback)] * NUM_LEGS
         values = [float(x) for x in self.get_parameter(name).value]
+        if not values:
+            return [float(fallback)] * NUM_LEGS
         if len(values) != NUM_LEGS:
             raise RuntimeError(f"{name} must have {NUM_LEGS} elements")
-        return values or [float(fallback)] * NUM_LEGS
+        return values
 
     def validate_config(self):
         if not 0.0 < self.duty_factor < 1.0:
@@ -219,6 +229,10 @@ class ClassicControlNode(Node):
             raise RuntimeError("leg link lengths must be positive")
         if self.body_height_mm <= 0.0:
             raise RuntimeError("body_height_mm must be positive")
+        if self.toe_radius_mm < 0.0:
+            raise RuntimeError("toe_radius_mm must be non-negative")
+        if self.body_height_mm <= self.toe_radius_mm:
+            raise RuntimeError("body_height_mm must be larger than toe_radius_mm")
         if self.max_stride_x_mm <= 0.0 or self.max_stride_y_mm < 0.0:
             raise RuntimeError("stride limits must be valid")
         if self.max_delta_walk_rad <= 0.0:
@@ -228,6 +242,7 @@ class ClassicControlNode(Node):
             ("leg_origin_x_m", self.leg_origin_x_m, NUM_LEGS),
             ("leg_origin_y_m", self.leg_origin_y_m, NUM_LEGS),
             ("shoulder_sign", self.shoulder_sign, NUM_LEGS),
+            ("shoulder_offset_y_m", self.shoulder_offset_y_m, NUM_LEGS),
             ("phase_offsets", self.phase_offsets, NUM_LEGS),
             ("body_height_mm_per_leg", self.body_height_mm_per_leg, NUM_LEGS),
             ("default_foot_x_mm_per_leg", self.default_foot_x_mm_per_leg, NUM_LEGS),
@@ -254,13 +269,14 @@ class ClassicControlNode(Node):
             leg_origin_x=self.leg_origin_x_m,
             leg_origin_y=self.leg_origin_y_m,
             shoulder_sign=self.shoulder_sign,
+            shoulder_offset_y=self.shoulder_offset_y_m,
             phase_offsets=self.phase_offsets,
             max_stride_x=self.max_stride_x_mm * 0.001,
             max_stride_y=self.max_stride_y_mm * 0.001,
             upper_link_x=self.upper_link_x_mm * 0.001,
             upper_link_z=self.upper_link_z_mm * 0.001,
             lower_link=self.lower_link_mm * 0.001,
-            shoulder_y_gain=self.shoulder_y_gain,
+            toe_radius=self.toe_radius_mm * 0.001,
             shoulder_limit=self.shoulder_limit_rad,
             joint_min=self.joint_min_rad,
             joint_max=self.joint_max_rad,

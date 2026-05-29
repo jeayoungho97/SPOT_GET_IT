@@ -19,7 +19,8 @@
 #include "actuator_bridge/packet_codec.hpp"
 #include "actuator_bridge/uart_transport.hpp"
 
-namespace {
+namespace
+{
 
 constexpr uint8_t MODE_DISABLE = 0;
 
@@ -183,17 +184,17 @@ public:
 
     const std::vector<double> default_joint_angles = this->declare_parameter<std::vector<double>>(
       "default_joint_angles",
-      {0.0, -0.926379, 1.531409,
-       0.0, -0.926379, 1.531409,
-       0.0, -0.926379, 1.531409,
-       0.0, -0.926379, 1.531409});
+      {0.0, -0.662447, 1.272883,
+        0.0, -0.662447, 1.272883,
+        0.0, -0.662447, 1.272883,
+        0.0, -0.662447, 1.272883});
 
     const std::vector<double> default_max_delta_rad = this->declare_parameter<std::vector<double>>(
       "default_max_delta_rad",
       {0.03, 0.03, 0.03,
-       0.03, 0.03, 0.03,
-       0.03, 0.03, 0.03,
-       0.03, 0.03, 0.03});
+        0.03, 0.03, 0.03,
+        0.03, 0.03, 0.03,
+        0.03, 0.03, 0.03});
 
     if (default_joint_angles.size() != actuator_bridge::NUM_JOINTS) {
       throw std::runtime_error("default_joint_angles must have 12 elements");

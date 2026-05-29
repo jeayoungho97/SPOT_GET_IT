@@ -23,32 +23,34 @@ classic_control_node:
     max_linear_accel_mps2: 0.25
     max_angular_accel_radps2: 0.7
 
-    # Shared classic-compatible IK model. Keep this as the hardware baseline
-    # for both CLASSIC and future RL retraining unless measurements say otherwise.
-    upper_link_x_mm: 0.0
-    upper_link_z_mm: 105.0
-    lower_link_mm: 130.0
-    body_height_mm: 170.0
-    body_height_mm_per_leg: [170.0, 170.0, 170.0, 170.0]
-    default_foot_x_mm: -10.0
-    default_foot_x_mm_per_leg: [-10.0, -10.0, -10.0, -10.0]
-    default_foot_y_mm: 0.0
-    default_foot_y_mm_per_leg: [0.0, 0.0, 0.0, 0.0]
+    # URDF IK model from spotmicro_test.urdf:
+    # shoulder -> leg: (0, +/-52, 0) mm
+    # leg -> foot: (10, 0, -120) mm
+    # foot -> toe sphere center: (0, 0, -115) mm, toe sphere radius 15 mm.
+    upper_link_x_mm: 10.0
+    upper_link_z_mm: 120.0
+    lower_link_mm: 115.0
+    toe_radius_mm: 15.0
+    body_height_mm: 200.0
+    body_height_mm_per_leg: [210.0, 210.0, 210.0, 210.0]
+    default_foot_x_mm: -20.0
+    default_foot_y_mm: 52.0
+    default_foot_y_mm_per_leg: [52.0, -52.0, 52.0, -52.0]
 
     # Hip/shoulder origins in body frame, meters. Order: FL, FR, RL, RR.
     leg_origin_x_m: [0.093, 0.093, -0.093, -0.093]
     leg_origin_y_m: [0.036, -0.036, 0.036, -0.036]
     shoulder_sign: [1.0, -1.0, 1.0, -1.0]
-    shoulder_y_gain: 1.0
-    shoulder_limit_rad: 0.16
+    shoulder_offset_y_m: [0.052, -0.052, 0.052, -0.052]
+    shoulder_limit_rad: 0.548
     phase_offsets: [0.0, 0.5, 0.5, 0.0]
 
     gait_period_sec: 1.2
     duty_factor: 0.58
-    lift_z_mm: 13.0
-    lift_z_mm_per_leg: [13.0, 13.0, 16.0, 16.0]
-    max_stride_x_mm: 70.0
-    max_stride_y_mm: 35.0
+    lift_z_mm: 22.0
+    lift_z_mm_per_leg: [22.0, 22.0, 22.0, 22.0]
+    max_stride_x_mm: 85.0
+    max_stride_y_mm: 24.0
 
     stand_dwell_sec: 0.5
     min_transition_sec: 2.0

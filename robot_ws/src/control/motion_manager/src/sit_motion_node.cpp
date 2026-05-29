@@ -71,23 +71,23 @@ public:
 
     const std::vector<double> stand_pose_param =
       this->declare_parameter<std::vector<double>>(
-        "stand_pose",
-        {
-          0.0, -0.926379, 1.531409,
-          0.0, -0.926379, 1.531409,
-          0.0, -0.926379, 1.531409,
-          0.0, -0.926379, 1.531409
-        });
+      "stand_pose",
+    {
+      0.0, -0.662447, 1.272883,
+      0.0, -0.662447, 1.272883,
+      0.0, -0.662447, 1.272883,
+      0.0, -0.662447, 1.272883
+    });
 
     const std::vector<double> sit_pose_param =
       this->declare_parameter<std::vector<double>>(
-        "sit_pose",
-        {
-          0.0, -0.720000, 1.050000,
-          0.0, -0.720000, 1.050000,
-          0.0, -1.500000, 2.250000,
-          0.0, -1.500000, 2.250000
-        });
+      "sit_pose",
+    {
+      0.0, -0.720000, 1.050000,
+      0.0, -0.720000, 1.050000,
+      0.0, -1.500000, 2.250000,
+      0.0, -1.500000, 2.250000
+    });
 
     stand_pose_ = toPoseArray(stand_pose_param, "stand_pose");
     sit_pose_ = toPoseArray(sit_pose_param, "sit_pose");
