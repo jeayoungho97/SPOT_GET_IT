@@ -223,6 +223,7 @@
   </joint>
 
   <link name="front_left_toe_link">
+  <!--
     <visual>
       <geometry>
         <mesh filename="../STL/files/foot.stl" scale="0.001 0.001 0.001"/>
@@ -230,15 +231,16 @@
       <origin rpy="0 -0.40010 3.14159" xyz="0 0.01 0"/>
       <material name="grey"/>
     </visual>
+    -->
     <collision>
       <geometry>
-        <sphere radius="0.02"/>
+        <sphere radius="0.015"/>
       </geometry>
       <contact_coefficients mu="1.1"/>
     </collision>
     <inertial>
-      <mass value="0.015"/>
-      <inertia ixx="0.0000024" ixy="0" ixz="0" iyy="0.0000024" iyz="0" izz="0.0000024"/>
+      <mass value="0.005"/>
+      <inertia ixx="0.00000045" ixy="0" ixz="0" iyy="0.00000045" iyz="0" izz="0.00000045"/>
     </inertial>
   </link>
   <joint name="front_left_toe" type="fixed">
@@ -349,6 +351,7 @@
   </joint>
 
   <link name="front_right_toe_link">
+  <!--
     <visual>
       <geometry>
         <mesh filename="../STL/files/foot.stl" scale="0.001 0.001 0.001"/>
@@ -356,15 +359,16 @@
       <origin rpy="0 -0.40010 3.14159" xyz="0 0.01 0"/>
       <material name="grey"/>
     </visual>
+    -->
     <collision>
       <geometry>
-        <sphere radius="0.02"/>
+        <sphere radius="0.015"/>
       </geometry>
       <contact_coefficients mu="1.1"/>
     </collision>
     <inertial>
-      <mass value="0.015"/>
-      <inertia ixx="0.0000024" ixy="0" ixz="0" iyy="0.0000024" iyz="0" izz="0.0000024"/>
+      <mass value="0.005"/>
+      <inertia ixx="0.00000045" ixy="0" ixz="0" iyy="0.00000045" iyz="0" izz="0.00000045"/>
     </inertial>
   </link>
   <joint name="front_right_toe" type="fixed">
@@ -475,6 +479,7 @@
   </joint>
 
   <link name="rear_left_toe_link">
+  <!--
     <visual>
       <geometry>
         <mesh filename="../STL/files/foot.stl" scale="0.001 0.001 0.001"/>
@@ -482,15 +487,16 @@
       <origin rpy="0 -0.40010 3.14159" xyz="0 0.01 0"/>
       <material name="grey"/>
     </visual>
+    -->
     <collision>
       <geometry>
-        <sphere radius="0.02"/>
+        <sphere radius="0.015"/>
       </geometry>
       <contact_coefficients mu="1.1"/>
     </collision>
     <inertial>
-      <mass value="0.015"/>
-      <inertia ixx="0.0000024" ixy="0" ixz="0" iyy="0.0000024" iyz="0" izz="0.0000024"/>
+      <mass value="0.005"/>
+      <inertia ixx="0.00000045" ixy="0" ixz="0" iyy="0.00000045" iyz="0" izz="0.00000045"/>
     </inertial>
   </link>
   <joint name="rear_left_toe" type="fixed">
@@ -601,6 +607,7 @@
   </joint>
 
   <link name="rear_right_toe_link">
+  <!--
     <visual>
       <geometry>
         <mesh filename="../STL/files/foot.stl" scale="0.001 0.001 0.001"/>
@@ -608,15 +615,16 @@
       <origin rpy="0 -0.40010 3.14159" xyz="0 0.01 0"/>
       <material name="grey"/>
     </visual>
+    -->
     <collision>
       <geometry>
-        <sphere radius="0.02"/>
+        <sphere radius="0.015"/>
       </geometry>
       <contact_coefficients mu="1.1"/>
     </collision>
     <inertial>
-      <mass value="0.015"/>
-      <inertia ixx="0.0000024" ixy="0" ixz="0" iyy="0.0000024" iyz="0" izz="0.0000024"/>
+      <mass value="0.005"/>
+      <inertia ixx="0.00000045" ixy="0" ixz="0" iyy="0.00000045" iyz="0" izz="0.00000045"/>
     </inertial>
   </link>
   <joint name="rear_right_toe" type="fixed">
