@@ -112,6 +112,7 @@ class ClassicControlNode(Node):
         self.declare_parameter("min_transition_sec", 2.0)
         self.declare_parameter("max_transition_sec", 3.0)
         self.declare_parameter("transition_sec_per_rad", 1.0)
+        self.declare_parameter("walk_start_stand_tolerance_rad", 0.08)
         self.declare_parameter("max_delta_smooth_rad", 0.02)
         self.declare_parameter("max_delta_walk_rad", 0.06)
         self.declare_parameter("max_delta_walk_rad_per_joint", [0.0] * NUM_JOINTS)
@@ -208,6 +209,9 @@ class ClassicControlNode(Node):
         self.min_transition_sec = float(self.get_parameter("min_transition_sec").value)
         self.max_transition_sec = float(self.get_parameter("max_transition_sec").value)
         self.transition_sec_per_rad = float(self.get_parameter("transition_sec_per_rad").value)
+        self.walk_start_stand_tolerance_rad = float(
+            self.get_parameter("walk_start_stand_tolerance_rad").value
+        )
         self.max_delta_smooth_rad = float(self.get_parameter("max_delta_smooth_rad").value)
         self.max_delta_walk_rad = float(self.get_parameter("max_delta_walk_rad").value)
 
@@ -260,6 +264,8 @@ class ClassicControlNode(Node):
             raise RuntimeError("stride limits must be valid")
         if self.max_delta_walk_rad <= 0.0:
             raise RuntimeError("max_delta_walk_rad must be positive")
+        if self.walk_start_stand_tolerance_rad < 0.0:
+            raise RuntimeError("walk_start_stand_tolerance_rad must be non-negative")
 
         for name, arr, expected in [
             ("leg_origin_x_m", self.leg_origin_x_m, NUM_LEGS),
@@ -497,6 +503,36 @@ class ClassicControlNode(Node):
             f"{self.transition_duration:.2f}s, max_delta={max_delta:.3f}rad"
         )
 
+    def stand_error_rad(self) -> float:
+        source = self.transition_source()
+        return max(
+            abs(float(source[i]) - float(self.stand_target[i]))
+            for i in range(NUM_JOINTS)
+        )
+
+    def start_walking(self, now: float):
+        self.state = self.WALK
+        self.walk_start_time = now
+        self.gait_cycle_count = 0
+        self.gait_phase = 0.0
+        self.get_logger().info("classic trot walking started")
+
+    def walk_target(self, now: float) -> Tuple[List[float], List[float]]:
+        elapsed = now - self.walk_start_time
+        total_phase = elapsed / self.gait_period_sec
+        self.gait_cycle_count = int(math.floor(total_phase))
+        self.gait_phase = total_phase - self.gait_cycle_count
+        self.output_motion_active = True
+        return (
+            self.compute_targets(
+                self.gait_phase,
+                self.filtered_vx,
+                self.filtered_vy,
+                self.filtered_wz,
+            ),
+            self.max_delta_walk_rad_per_joint,
+        )
+
     def transition_target(self) -> Tuple[List[float], bool]:
         elapsed = time.perf_counter() - self.state_start_time
         ratio = clamp(elapsed / self.transition_duration, 0.0, 1.0)
@@ -532,8 +568,12 @@ class ClassicControlNode(Node):
         if self.state == self.STAND:
             self.update_filtered_command(0.0, 0.0, 0.0)
             if moving:
+                if self.stand_error_rad() <= self.walk_start_stand_tolerance_rad:
+                    self.start_walking(now)
+                    self.update_filtered_command(vx, vy, wz)
+                    return self.walk_target(now)
                 self.begin_transition(self.STANDUP, self.stand_target)
-                return self.transition_target()[0], self.max_delta_smooth_rad
+                return self.transition_target()[0], self.max_delta_smooth_rad_per_joint
             return list(self.stand_target), self.max_delta_smooth_rad_per_joint
 
         if self.state == self.STANDUP:
@@ -551,10 +591,7 @@ class ClassicControlNode(Node):
                 self.state = self.STAND
                 return list(self.stand_target), self.max_delta_smooth_rad_per_joint
             if now - self.state_start_time >= self.stand_dwell_sec:
-                self.state = self.WALK
-                self.walk_start_time = now
-                self.gait_cycle_count = 0
-                self.get_logger().info("classic trot walking started")
+                self.start_walking(now)
             return list(self.stand_target), self.max_delta_smooth_rad_per_joint
 
         if self.state == self.WALK:
@@ -569,20 +606,7 @@ class ClassicControlNode(Node):
                 self.begin_transition(self.SETTLE, self.stand_target)
                 return self.transition_target()[0], self.max_delta_smooth_rad_per_joint
 
-            elapsed = now - self.walk_start_time
-            total_phase = elapsed / self.gait_period_sec
-            self.gait_cycle_count = int(math.floor(total_phase))
-            self.gait_phase = total_phase - self.gait_cycle_count
-            self.output_motion_active = True
-            return (
-                self.compute_targets(
-                    self.gait_phase,
-                    self.filtered_vx,
-                    self.filtered_vy,
-                    self.filtered_wz,
-                ),
-                self.max_delta_walk_rad_per_joint,
-            )
+            return self.walk_target(now)
 
         if self.state == self.SETTLE:
             self.update_filtered_command(0.0, 0.0, 0.0)

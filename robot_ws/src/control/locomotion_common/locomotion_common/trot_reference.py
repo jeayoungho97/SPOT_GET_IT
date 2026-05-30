@@ -50,6 +50,7 @@ class SharedTrotReference:
         upper_link_z: float = 0.120,
         lower_link: float = 0.115,
         toe_radius: float = 0.015,
+        shoulder_y_gain: float = 1.0,
         shoulder_limit: float = 0.548,
         joint_min: Optional[Sequence[float]] = None,
         joint_max: Optional[Sequence[float]] = None,
@@ -86,6 +87,7 @@ class SharedTrotReference:
         self.upper_link_z = float(upper_link_z)
         self.lower_link = float(lower_link)
         self.toe_radius = float(toe_radius)
+        self.shoulder_y_gain = float(shoulder_y_gain)
         self.shoulder_limit = float(shoulder_limit)
 
         self.joint_min = list(joint_min) if joint_min is not None else None
@@ -176,6 +178,7 @@ class SharedTrotReference:
         target_angle = math.atan2(z, y)
         leg_plane_angle = math.atan2(sagittal_z, leg_y)
         shoulder_physical = self._wrap_pi(target_angle - leg_plane_angle)
+        shoulder_physical *= self.shoulder_y_gain
         shoulder_physical = clamp(
             shoulder_physical,
             -self.shoulder_limit,

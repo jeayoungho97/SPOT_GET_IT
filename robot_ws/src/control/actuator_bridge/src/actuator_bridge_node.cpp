@@ -175,12 +175,20 @@ public:
   {
     control_rate_hz_ = this->declare_parameter("control_rate_hz", 50.0);
     max_target_age_ms_ = this->declare_parameter("max_target_age_ms", 1000.0);
+    stale_disable_after_ms_ = this->declare_parameter("stale_disable_after_ms", 5000.0);
     freeze_seq_when_stale_ = this->declare_parameter("freeze_seq_when_stale", true);
+    if (stale_disable_after_ms_ < max_target_age_ms_) {
+      throw std::runtime_error("stale_disable_after_ms must be >= max_target_age_ms");
+    }
 
     uart_device_ = this->declare_parameter("uart_device", "/dev/ttyTHS1");
     uart_baudrate_ = this->declare_parameter("uart_baudrate", 921600);
     feedback_timeout_ms_ = this->declare_parameter("feedback_timeout_ms", 100.0);
     max_rx_buffer_size_ = this->declare_parameter("max_rx_buffer_size", 4096);
+    status_transient_fail_limit_ = this->declare_parameter("status_transient_fail_limit", 3);
+    if (status_transient_fail_limit_ < 1) {
+      throw std::runtime_error("status_transient_fail_limit must be >= 1");
+    }
 
     const std::vector<double> default_joint_angles = this->declare_parameter<std::vector<double>>(
       "default_joint_angles",
@@ -381,16 +389,19 @@ private:
     const bool stale = (!have_target_) || (target_age_ms > max_target_age_ms_);
 
     if (stale) {
+      const bool hard_stale = (!have_target_) || (target_age_ms > stale_disable_after_ms_);
       command.seq = freeze_seq_when_stale_ ? last_sent_seq_ : latest_seq_;
-      command.mode = WIRE_MODE_DISABLE;
-      command.flags = 0U;
+      command.mode = hard_stale ?
+        WIRE_MODE_DISABLE :
+        mapRosModeToWireMode(latest_mode_, latest_flags_);
+      command.flags = hard_stale ? 0U : mapRosModeToWireFlags(latest_mode_, latest_flags_);
       command.gait_phase = latest_gait_phase_;
       command.gait_cycle_count = latest_gait_cycle_count_;
       command.motion_state = robot_interfaces::msg::StmMotion::STOP;
 
       for (std::size_t i = 0; i < actuator_bridge::NUM_JOINTS; ++i) {
-        command.target_rad[i] = default_target_rad_[i];
-        command.max_delta_rad[i] = default_max_delta_rad_[i];
+        command.target_rad[i] = hard_stale ? default_target_rad_[i] : latest_target_rad_[i];
+        command.max_delta_rad[i] = hard_stale ? default_max_delta_rad_[i] : latest_max_delta_rad_[i];
       }
     } else {
       command.seq = latest_seq_;
@@ -485,6 +496,30 @@ private:
     const bool in_safe_state = (feedback.status & STM_STATUS_IN_SAFE_STATE) != 0U;
     const bool calibrating = (feedback.status & STM_STATUS_CALIBRATING) != 0U;
     const bool fault_ok = (feedback.fault_code == FAULT_NONE);
+    const bool raw_ok =
+      fault_ok && !in_safe_state && !calibrating && imu_ok && servos_ok && cmd_fresh && torque_on;
+    const bool transient_status_candidate =
+      fault_ok && !in_safe_state && !calibrating && imu_ok && servos_ok &&
+      (!cmd_fresh || !torque_on);
+
+    bool effective_ok = raw_ok;
+    bool effective_torque_on = torque_on;
+    bool suppress_transient_warn = false;
+
+    if (raw_ok) {
+      status_transient_fail_streak_ = 0;
+    } else if (transient_status_candidate) {
+      status_transient_fail_streak_++;
+      if (status_transient_fail_streak_ <
+        static_cast<uint32_t>(status_transient_fail_limit_))
+      {
+        effective_ok = true;
+        effective_torque_on = true;
+        suppress_transient_warn = true;
+      }
+    } else {
+      status_transient_fail_streak_ = status_transient_fail_limit_;
+    }
 
     robot_interfaces::msg::RobotStatus msg;
     msg.header.stamp = this->now();
@@ -498,21 +533,21 @@ private:
       msg.servo_connected = servos_ok;
     } else {
       msg.fault_code = feedback.fault_code;
-      msg.torque_enabled = torque_on;
+      msg.torque_enabled = effective_torque_on;
       msg.servo_connected = servos_ok;
 
       if (!fault_ok) {
         msg.status = STATUS_FAULT;
       } else if (in_safe_state || calibrating) {
         msg.status = STATUS_WARN;
-      } else if (imu_ok && servos_ok && cmd_fresh) {
+      } else if (effective_ok) {
         msg.status = STATUS_OK;
       } else {
         msg.status = STATUS_WARN;
       }
     }
 
-    if (msg.status != STATUS_OK) {
+    if (msg.status != STATUS_OK && !suppress_transient_warn) {
       RCLCPP_WARN_THROTTLE(
         this->get_logger(), *this->get_clock(), 1000,
         "actuator status not OK: ros_status=%u raw_stm_status=0x%02x "
@@ -609,6 +644,7 @@ private:
 private:
   double control_rate_hz_{50.0};
   double max_target_age_ms_{1000.0};
+  double stale_disable_after_ms_{5000.0};
   bool freeze_seq_when_stale_{true};
 
   std::string uart_device_{"/dev/ttyTHS1"};
@@ -616,6 +652,8 @@ private:
   double feedback_timeout_ms_{100.0};
   int max_rx_buffer_size_{4096};
   double motion_state_deadband_{0.05};
+  int status_transient_fail_limit_{3};
+  uint32_t status_transient_fail_streak_{0};
 
   actuator_bridge::UartTransport uart_;
   bool link_open_failed_{false};
