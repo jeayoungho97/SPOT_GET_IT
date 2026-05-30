@@ -76,8 +76,8 @@ class SpotmicroTestCfg(LeggedRobotCfg):
 
     class control(LeggedRobotCfg.control):
         control_type = 'P'
-        stiffness = {'shoulder': 15.0, 'leg': 10.0, 'foot': 10.0}
-        damping = {'shoulder': 0.3, 'leg': 0.3, 'foot': 0.2}
+        stiffness = {'shoulder': 10.0, 'leg': 10.0, 'foot': 10.0}
+        damping = {'shoulder': 0.3, 'leg': 0.3, 'foot': 0.3}
         action_scale = 0.25
         recovery_action_scale = 0.25
         decimation = 4
@@ -110,8 +110,8 @@ class SpotmicroTestCfg(LeggedRobotCfg):
 
     class rewards(LeggedRobotCfg.rewards):
         class scales:
-            tracking_lin_vel = 1.7
-            tracking_ang_vel = 1.3
+            tracking_lin_vel = 1.5
+            tracking_ang_vel = 1.2
             termination = -20.0
             survival = 0.0
             lin_vel_z = -2.0
@@ -121,7 +121,7 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             dof_vel = -0.0005
             dof_acc = -2.5e-7
             action_rate = -0.04
-            base_height = -1.5
+            base_height = -1.0
             feet_air_time = 0.05
             dof_pos_limits = 0.0
             collision = -1.0
@@ -131,7 +131,7 @@ class SpotmicroTestCfg(LeggedRobotCfg):
             feet_clearance = 0.05
             swing_contact = -0.50
             trot_contact = 0.45
-            tracking_ik = 0.55
+            tracking_ik = 0.6
             stand_still = -0.5
             tilt_recovery = 0.0
             ang_vel_xy_recovery = 0.0
@@ -148,8 +148,8 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         recovery_ik_relief_scale = 0.65
         transition_recovery_horizon_s = 0.75
         transition_recovery_initial_tilt_threshold_deg = 12.0
-        tracking_sigma = 0.04
-        tracking_sigma_ang_vel = 0.06
+        tracking_sigma = 0.03
+        tracking_sigma_ang_vel = 0.04
         swing_contact_grace_time = 0.02
         feet_clearance_min = 0.020
         feet_clearance_cap = 0.030
@@ -188,12 +188,12 @@ class SpotmicroTestCfg(LeggedRobotCfg):
 
     class domain_rand(LeggedRobotCfg.domain_rand):
         randomize_friction = True
-        friction_range = [0.75, 1.25]
+        friction_range = [0.5, 1.25]
         randomize_base_mass = True
-        added_mass_range = [-0.05, 0.10]
+        added_mass_range = [-0.2, 0.20]
         randomize_base_com = True
         base_com_offset_x_range = [-0.010, 0.010]
-        base_com_offset_y_range = [-0.006, 0.006]
+        base_com_offset_y_range = [-0.010, 0.010]
         base_com_offset_z_range = [-0.006, 0.010]
         randomize_motor_strength = True
         motor_strength_range = [0.90, 1.10]
@@ -236,10 +236,10 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         learning_rate = 1e-4
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_classic_ik_flat_track_yaw_0p4'
+        run_name = 'spotmicro_v8.0_classic_ik_new'
         experiment_name = 'spotmicro_test'
-        max_iterations = 2000
+        max_iterations = 1500
         save_interval = 100
         resume = False
-        load_run = ""
-        checkpoint = -1
+        #load_run = ""
+        #checkpoint = -1
