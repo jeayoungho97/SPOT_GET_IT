@@ -28,6 +28,9 @@ setup(
         ),
     ],
     install_requires=["setuptools"],
+    scripts=[
+        "tools/analyze_kp_kd_response.py",
+    ],
     zip_safe=True,
     maintainer="jetson",
     maintainer_email="jetson@todo.todo",
@@ -41,6 +44,7 @@ setup(
     entry_points={
         "console_scripts": [
             "rl_locomotion_node = rl_locomotion.rl_locomotion_node:main",
+            "kp_kd_response_recorder = rl_locomotion.kp_kd_response_recorder:main",
         ],
     },
 )

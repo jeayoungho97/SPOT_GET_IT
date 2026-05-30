@@ -4,7 +4,7 @@ rl_locomotion_node:
 
     ik_profile: "shared_v1"
 
-    action_scale: 0.18
+    action_scale: 0.25
     action_clip: 100.0
 
     gait_period: 1.2
@@ -20,8 +20,8 @@ rl_locomotion_node:
     vx_max: 0.15
     vy_min: 0.0
     vy_max: 0.0
-    wz_min: -0.20
-    wz_max: 0.20
+    wz_min: -0.40
+    wz_max: 0.40
 
     max_stride_x: 0.085
     max_stride_y: 0.024
@@ -46,7 +46,7 @@ rl_locomotion_node:
     recovery_gating_enabled: false
     recovery_command_scale: 1.0
     recovery_phase_scale: 1.0
-    recovery_action_scale: 0.18
+    recovery_action_scale: 0.25
 
     default_joint_angles:
       [0.0, -0.9921237899157832, 1.4907337340120823,

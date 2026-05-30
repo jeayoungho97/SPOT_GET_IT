@@ -18,8 +18,8 @@ classic_control_node:
     vx_max_mps: 0.20
     vy_min_mps: -0.05
     vy_max_mps: 0.05
-    wz_min_radps: -0.35
-    wz_max_radps: 0.35
+    wz_min_radps: -0.4
+    wz_max_radps: 0.4
     max_linear_accel_mps2: 0.25
     max_angular_accel_radps2: 0.7
 

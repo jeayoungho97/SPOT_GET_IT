@@ -206,6 +206,7 @@ class SpotmicroTest(LeggedRobot):
             self.num_envs, self.num_bodies, 13)
         self._init_ik_reference()
         self._init_domain_randomization_buffers()
+        self._init_actuator_response_model()
 
         self.gait_phase = torch.zeros(self.num_envs, 1, dtype=torch.float, device=self.device)
         self.commands_scale = torch.tensor(
@@ -306,6 +307,39 @@ class SpotmicroTest(LeggedRobot):
         if getattr(cfg, "randomize_joint_obs_offset", False):
             self._resample_joint_obs_offsets(
                 torch.arange(self.num_envs, device=self.device))
+
+    def _init_actuator_response_model(self):
+        cfg = self.cfg.domain_rand
+        self.use_actuator_lag = bool(getattr(cfg, "actuator_lag", False))
+        self.actuated_dof_target = self.default_dof_pos.repeat(self.num_envs, 1).clone()
+        self.actuator_lag_alpha = torch.ones(
+            self.num_envs, self.num_actions, dtype=torch.float, device=self.device)
+
+        if not self.use_actuator_lag:
+            return
+
+        tau_range = getattr(cfg, "actuator_lag_tau_range", [0.16, 0.26])
+        self._resample_actuator_lag(
+            torch.arange(self.num_envs, device=self.device),
+            tau_range,
+        )
+        print(
+            f"[Actuator Lag] enabled: tau={tau_range[0]:.3f}~{tau_range[1]:.3f}s "
+            f"(measured CLASSIC response was about 0.18~0.24s)")
+
+    def _resample_actuator_lag(self, env_ids, tau_range=None):
+        if not self.use_actuator_lag:
+            return
+        if tau_range is None:
+            tau_range = getattr(self.cfg.domain_rand, "actuator_lag_tau_range", [0.16, 0.26])
+        tau = torch_rand_float(
+            tau_range[0],
+            tau_range[1],
+            (len(env_ids), self.num_actions),
+            device=self.device,
+        )
+        tau = torch.clamp(tau, min=self.sim_params.dt)
+        self.actuator_lag_alpha[env_ids] = 1.0 - torch.exp(-self.sim_params.dt / tau)
 
     def _init_ik_reference(self):
         ik_cfg = self.cfg.ik
@@ -462,6 +496,10 @@ class SpotmicroTest(LeggedRobot):
                 (len(env_ids),),
                 device=self.device,
             )
+
+        if getattr(self, "use_actuator_lag", False):
+            self.actuated_dof_target[env_ids] = self.default_dof_pos.repeat(len(env_ids), 1)
+            self._resample_actuator_lag(env_ids)
 
         if getattr(self.cfg.domain_rand, "randomize_joint_obs_offset", False):
             self._resample_joint_obs_offsets(env_ids)
@@ -974,9 +1012,14 @@ class SpotmicroTest(LeggedRobot):
     def _compute_torques(self, actions):
         actions_scaled = actions * self._get_effective_action_scale()
         ref_dof_pos = self._get_ik_target()
+        desired_dof_pos = actions_scaled + ref_dof_pos
+        if getattr(self, "use_actuator_lag", False):
+            self.actuated_dof_target += (
+                self.actuator_lag_alpha * (desired_dof_pos - self.actuated_dof_target))
+            desired_dof_pos = self.actuated_dof_target
         p_gains = self.p_gains.unsqueeze(0) * self.stiffness_scales
         d_gains = self.d_gains.unsqueeze(0) * self.damping_scales
-        torques = p_gains * (actions_scaled + ref_dof_pos - self.dof_pos) - d_gains * self.dof_vel
+        torques = p_gains * (desired_dof_pos - self.dof_pos) - d_gains * self.dof_vel
         torques = torques * self.motor_strength_scales
         return torch.clip(torques, -self.torque_limits, self.torque_limits)
         
