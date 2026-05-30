@@ -32,21 +32,24 @@ class TorchSharedTrotReference:
         dtype=torch.float,
         gait_period=1.0,
         duty_factor=0.55,
-        body_height=(0.170, 0.170, 0.170, 0.170),
-        step_height=(0.013, 0.013, 0.016, 0.016),
-        default_foot_x=(-0.010, -0.010, -0.010, -0.010),
-        default_foot_y=(0.0, 0.0, 0.0, 0.0),
+        body_height=(0.190, 0.190, 0.190, 0.190),
+        step_height=(0.025, 0.025, 0.025, 0.025),
+        default_foot_x=(-0.040, -0.040, -0.040, -0.040),
+        default_foot_y=(0.052, -0.052, 0.052, -0.052),
         leg_origin_x=(0.093, 0.093, -0.093, -0.093),
         leg_origin_y=(0.036, -0.036, 0.036, -0.036),
         shoulder_sign=(1.0, -1.0, 1.0, -1.0),
+        shoulder_offset_y=(0.052, -0.052, 0.052, -0.052),
         phase_offsets=(0.0, 0.5, 0.5, 0.0),
-        max_stride_x=0.070,
-        max_stride_y=0.035,
-        upper_link_x=0.0,
-        upper_link_z=0.105,
-        lower_link=0.130,
+        max_stride_x=0.085,
+        max_stride_y=0.024,
+        soft_stride_limit=True,
+        upper_link_x=0.010,
+        upper_link_z=0.120,
+        lower_link=0.115,
+        toe_radius=0.015,
         shoulder_y_gain=1.0,
-        shoulder_limit=0.16,
+        shoulder_limit=0.548,
         joint_min=None,
         joint_max=None,
     ):
@@ -56,9 +59,11 @@ class TorchSharedTrotReference:
         self.duty_factor = float(duty_factor)
         self.max_stride_x = float(max_stride_x)
         self.max_stride_y = float(max_stride_y)
+        self.soft_stride_limit = bool(soft_stride_limit)
         self.upper_link_x = float(upper_link_x)
         self.upper_link_z = float(upper_link_z)
         self.lower_link = float(lower_link)
+        self.toe_radius = float(toe_radius)
         self.shoulder_y_gain = float(shoulder_y_gain)
         self.shoulder_limit = float(shoulder_limit)
 
@@ -69,6 +74,7 @@ class TorchSharedTrotReference:
         self.leg_origin_x = self._tensor4(leg_origin_x)
         self.leg_origin_y = self._tensor4(leg_origin_y)
         self.shoulder_sign = self._tensor4(shoulder_sign)
+        self.shoulder_offset_y = self._tensor4(shoulder_offset_y)
         self.phase_offsets = self._tensor4(phase_offsets)
 
         if joint_min is not None and joint_max is not None:
@@ -94,8 +100,8 @@ class TorchSharedTrotReference:
 
         foot_vx = cmd_vx - cmd_wz * self.leg_origin_y
         foot_vy = cmd_vy + cmd_wz * self.leg_origin_x
-        stride_x = torch.clamp(foot_vx * stance_time, -self.max_stride_x, self.max_stride_x)
-        stride_y = torch.clamp(foot_vy * stance_time, -self.max_stride_y, self.max_stride_y)
+        stride_x = self._limit_stride(foot_vx * stance_time, self.max_stride_x)
+        stride_y = self._limit_stride(foot_vy * stance_time, self.max_stride_y)
 
         leg_phase = torch.remainder(phase + self.phase_offsets, 1.0)
         stance = leg_phase < self.duty_factor
@@ -112,23 +118,53 @@ class TorchSharedTrotReference:
         y_stance = stride_y * (0.5 - s_stance)
         x_swing = stride_x * (-0.5 + smooth_swing)
         y_swing = stride_y * (-0.5 + smooth_swing)
-        z_swing = self.step_height * torch.sin(math.pi * s_swing)
+        lift = torch.sin(math.pi * s_swing)
+        z_swing = self.step_height * lift * lift
 
         x = self.default_foot_x + torch.where(stance, x_stance, x_swing)
         y = self.default_foot_y + torch.where(stance, y_stance, y_swing)
-        z = -self.body_height + torch.where(stance, torch.zeros_like(z_swing), z_swing)
+        z_contact = -self.body_height + torch.where(
+            stance,
+            torch.zeros_like(z_swing),
+            z_swing,
+        )
+        z = z_contact + self.toe_radius
 
-        shoulder = self.shoulder_y_gain * torch.atan2(y, -z)
-        shoulder = torch.clamp(shoulder, -self.shoulder_limit, self.shoulder_limit)
-        shoulder = shoulder * self.shoulder_sign
+        shoulder_axis = self.shoulder_sign
+        shoulder_y = self.shoulder_offset_y
+        yz_radius2 = y * y + z * z
+        sagittal_z = -torch.sqrt(torch.clamp(
+            yz_radius2 - shoulder_y * shoulder_y,
+            min=1.0e-9,
+        ))
 
-        z_eff = -torch.sqrt(torch.clamp(z * z + y * y, min=1.0e-9))
-        thigh, knee = self._solve_sagittal_ik(x, z_eff)
+        target_angle = torch.atan2(z, y)
+        leg_plane_angle = torch.atan2(sagittal_z, shoulder_y)
+        shoulder_physical = self._wrap_pi(target_angle - leg_plane_angle)
+        shoulder_physical = shoulder_physical * self.shoulder_y_gain
+        shoulder_physical = torch.clamp(
+            shoulder_physical,
+            -self.shoulder_limit,
+            self.shoulder_limit,
+        )
+        shoulder = shoulder_physical / shoulder_axis
+
+        cos_s = torch.cos(shoulder_physical)
+        sin_s = torch.sin(shoulder_physical)
+        z_in_shoulder = -y * sin_s + z * cos_s
+        thigh, knee = self._solve_sagittal_ik(x, z_in_shoulder)
 
         target = torch.stack((shoulder, thigh, knee), dim=2).reshape(commands.shape[0], 12)
         if self.joint_min is not None:
             target = torch.max(torch.min(target, self.joint_max), self.joint_min)
         return target
+
+    def _limit_stride(self, stride, limit):
+        if limit <= 0.0:
+            return torch.zeros_like(stride)
+        if self.soft_stride_limit:
+            return limit * torch.tanh(stride / limit)
+        return torch.clamp(stride, -limit, limit)
 
     def _solve_sagittal_ik(self, x, z):
         upper_eff = math.sqrt(
@@ -155,6 +191,10 @@ class TorchSharedTrotReference:
         thigh = torch.atan2(sin_thigh, cos_thigh) - upper_alpha
         knee = knee_raw + upper_alpha
         return thigh, knee
+
+    @staticmethod
+    def _wrap_pi(angle):
+        return torch.remainder(angle + math.pi, 2.0 * math.pi) - math.pi
 
 
 class SpotmicroTest(LeggedRobot):
@@ -290,12 +330,15 @@ class SpotmicroTest(LeggedRobot):
             leg_origin_x=ik_cfg.leg_origin_x,
             leg_origin_y=ik_cfg.leg_origin_y,
             shoulder_sign=ik_cfg.shoulder_sign,
+            shoulder_offset_y=ik_cfg.shoulder_offset_y,
             phase_offsets=ik_cfg.phase_offsets,
             max_stride_x=ik_cfg.max_stride_x,
             max_stride_y=ik_cfg.max_stride_y,
+            soft_stride_limit=ik_cfg.soft_stride_limit,
             upper_link_x=ik_cfg.upper_link_x,
             upper_link_z=ik_cfg.upper_link_z,
             lower_link=ik_cfg.lower_link,
+            toe_radius=ik_cfg.toe_radius,
             shoulder_y_gain=ik_cfg.shoulder_y_gain,
             shoulder_limit=ik_cfg.shoulder_limit,
             joint_min=ik_cfg.joint_min,
@@ -380,7 +423,7 @@ class SpotmicroTest(LeggedRobot):
         self.reset_buf |= (self.projected_gravity[:, 2] > max_tilt_gravity_z)
         
     def _reset_dofs(self, env_ids):
-        # recovery 학습 첫 단계에서는 관절은 기본 자세 근처에서 시작
+        # Start each episode near the classic IK stand pose.
         joint_noise = torch_rand_float(
             -0.05, 0.05,
             (len(env_ids), self.num_dof),
@@ -404,7 +447,6 @@ class SpotmicroTest(LeggedRobot):
         if hasattr(self, 'feet_swing_contact_time'):
             self.feet_swing_contact_time[env_ids] = 0.
 
-        # recovery에서는 phase mismatch도 학습해야 하므로 reset마다 랜덤화
         self.gait_phase[env_ids] = torch_rand_float(
             0.0, 1.0,
             (len(env_ids), 1),

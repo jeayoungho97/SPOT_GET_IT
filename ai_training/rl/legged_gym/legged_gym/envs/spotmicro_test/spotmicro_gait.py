@@ -13,8 +13,8 @@ URDF 관절 구조:
 
 기구학 파라미터 (URDF에서 추출):
   - shoulder → leg joint offset:  (0, ±0.052, 0)
-  - leg → foot joint offset:     (0, 0, -0.105)    → L1_eff = 0.105m
-  - foot → toe offset (fixed):   (0, 0, -0.130)    → L2 = 0.130m
+  - leg → foot joint offset:     (0.010, 0, -0.120)
+  - foot → toe offset (fixed):   (0, 0, -0.115)    → L2 = 0.115m
 """
 
 import numpy as np
@@ -24,11 +24,11 @@ import math
 # ============================================================
 # URDF 기구학 상수
 # ============================================================
-L1_X = 0.0       # upper leg X offset (forward lean)
-L1_Z = 0.105     # upper leg Z offset (downward)
-L2   = 0.130     # lower leg length (foot → toe)
+L1_X = 0.010     # upper leg X offset (forward lean)
+L1_Z = 0.120     # upper leg Z offset (downward)
+L2   = 0.115     # lower leg length (foot → toe)
 
-L1_EFF = math.sqrt(L1_X**2 + L1_Z**2)  # 0.105m
+L1_EFF = math.sqrt(L1_X**2 + L1_Z**2)
 ALPHA  = math.atan2(L1_X, L1_Z)         # upper leg offset angle
 
 # 관절 한계 (URDF)
@@ -41,8 +41,8 @@ JOINT_LIMITS = {
 # default standing angles
 DEFAULT_ANGLES = {
     'shoulder': 0.0,
-    'leg':     -0.6,
-    'foot':     1.1,
+    'leg':     -0.9921237899157832,
+    'foot':     1.4907337340120823,
 }
 
 # 다리 배치 (base_link 기준)
@@ -149,12 +149,12 @@ class TrotGaitGenerator:
     
     def __init__(
         self,
-        gait_period=0.6,       # 한 주기 (초)
-        duty_factor=0.5,       # stance 비율 (0.5 = 50% 접지)
+        gait_period=1.2,       # 한 주기 (초)
+        duty_factor=0.58,      # stance 비율
         stride_length=0.04,    # 전후 보폭 (m) — 한 방향 기준
-        step_height=0.03,      # swing 시 발 높이 (m)
-        body_height=0.206,     # 기본 서 있는 높이 (hip→toe, m)
-        x_offset=0.0,          # 발끝 전후 오프셋 (m)
+        step_height=0.025,     # swing 시 발 높이 (m)
+        body_height=0.190,     # 기본 서 있는 높이 (hip→toe contact, m)
+        x_offset=-0.040,       # 발끝 전후 오프셋 (m)
     ):
         self.gait_period = gait_period
         self.duty_factor = duty_factor
