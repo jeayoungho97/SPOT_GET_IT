@@ -16,7 +16,7 @@ class SpotmicroTestCfg(LeggedRobotCfg):
         blend_cmd_norm = 0.04
 
         body_height = [0.190, 0.190, 0.190, 0.190]
-        step_height = [0.025, 0.025, 0.025, 0.025]
+        step_height = [0.018, 0.018, 0.021, 0.021]
         default_foot_x = [-0.040, -0.040, -0.040, -0.040]
         default_foot_y = [0.052, -0.052, 0.052, -0.052]
 
@@ -111,28 +111,28 @@ class SpotmicroTestCfg(LeggedRobotCfg):
     class rewards(LeggedRobotCfg.rewards):
         class scales:
             tracking_lin_vel = 1.5
-            tracking_ang_vel = 1.2
+            tracking_ang_vel = 1.0
             termination = -20.0
             survival = 0.0
-            lin_vel_z = -2.0
-            ang_vel_xy = -1.2
-            orientation = -8.0
-            torques = -0.001
+            lin_vel_z = -1.5
+            ang_vel_xy = -0.7
+            orientation = -5.0
+            torques = -0.0008
             dof_vel = -0.0005
             dof_acc = -2.5e-7
             action_rate = -0.04
-            base_height = -1.0
-            feet_air_time = 0.05
+            base_height = -0.4
+            feet_air_time = 0.08
             dof_pos_limits = 0.0
             collision = -1.0
             trot_symmetry = 0.0
-            no_stuck_feet = -0.25
+            no_stuck_feet = -0.3
             symmetric_gait = 0.0
-            feet_clearance = 0.05
-            swing_contact = -0.50
-            trot_contact = 0.45
+            feet_clearance = 0.20
+            swing_contact = -0.4
+            trot_contact = 0.4
             tracking_ik = 0.6
-            stand_still = -0.5
+            stand_still = -0.3
             tilt_recovery = 0.0
             ang_vel_xy_recovery = 0.0
         soft_dof_pos_limit = 0.9
@@ -236,7 +236,7 @@ class SpotmicroTestCfgPPO(LeggedRobotCfgPPO):
         learning_rate = 1e-4
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'spotmicro_v8.0_classic_ik_new'
+        run_name = 'spotmicro_v8_0_1_newIk_feet_air'
         experiment_name = 'spotmicro_test'
         max_iterations = 1500
         save_interval = 100
