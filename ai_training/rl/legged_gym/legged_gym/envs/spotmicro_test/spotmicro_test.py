@@ -898,22 +898,46 @@ class SpotmicroTest(LeggedRobot):
     def _reward_no_stuck_feet(self):
         contact = self.contact_forces[:, self.feet_indices, 2] > 1.
         contact_filt = torch.logical_or(contact, self.last_contacts)
+
         phases = (self.gait_phase + self.phase_offsets) % 1.0
         desired_air = phases >= self.duty_factor
         swing_contact = desired_air & contact_filt
+
         if not hasattr(self, 'feet_swing_contact_time'):
             self.feet_swing_contact_time = torch.zeros(
-                self.num_envs, len(self.feet_indices), device=self.device)
+                self.num_envs, len(self.feet_indices), device=self.device
+            )
+
         self.feet_swing_contact_time = (
             self.feet_swing_contact_time + self.dt
         ) * swing_contact.float()
-        grace_time = getattr(self.cfg.rewards, "swing_contact_grace_time", 0.03)
-        penalty = torch.sum(
-            torch.clamp(self.feet_swing_contact_time - grace_time, min=0.),
-            dim=1,
+
+        grace_time = getattr(self.cfg.rewards, "swing_contact_grace_time", 0.02)
+
+        weights = torch.tensor(
+            getattr(self.cfg.rewards, "swing_contact_weights", [1.3, 1.3, 1.0, 1.0]),
+            device=self.device,
+            dtype=torch.float,
+        ).view(1, 4)
+
+        over_time = torch.clamp(
+            self.feet_swing_contact_time - grace_time,
+            min=0.0,
+            max=0.20,
         )
-        penalty *= (torch.norm(
-            self._get_effective_commands(), dim=1) > self.blend_cmd_norm).float()
+
+        denom = torch.clamp(
+            (desired_air.float() * weights).sum(dim=1),
+            min=1.0,
+        )
+
+        penalty = torch.sum(over_time * weights, dim=1) / denom
+
+        penalty *= (
+            torch.norm(self._get_effective_commands(), dim=1)
+            > self.blend_cmd_norm
+        ).float()
+
         penalty *= self._recovery_relief_scale("recovery_gait_relief_scale")
         return penalty
 
@@ -969,11 +993,30 @@ class SpotmicroTest(LeggedRobot):
         phases = (self.gait_phase + self.phase_offsets) % 1.0
         desired_air = phases >= self.duty_factor
         actual_contact = self.contact_forces[:, self.feet_indices, 2] > 1.0
-        dragging = (desired_air & actual_contact).float()
+
         cmd_norm = torch.norm(
-            self._get_effective_commands(), dim=1, keepdim=True)
+            self._get_effective_commands(), dim=1, keepdim=True
+        )
         is_moving = (cmd_norm > self.blend_cmd_norm).float()
-        penalty = torch.sum(dragging * is_moving, dim=1) / 4.0
+
+        # 앞발 dragging이 핵심 문제라면 앞다리에 약간 더 가중
+        weights = torch.tensor(
+            getattr(self.cfg.rewards, "swing_contact_weights", [1.3, 1.3, 1.0, 1.0]),
+            device=self.device,
+            dtype=torch.float,
+        ).view(1, 4)
+
+        bad = (desired_air & actual_contact).float() * weights
+
+        # /4 고정이 아니라, 실제 swing이어야 하는 발 기준으로 정규화
+        denom = torch.clamp(
+            (desired_air.float() * weights).sum(dim=1),
+            min=1.0,
+        )
+
+        penalty = bad.sum(dim=1) / denom
+        penalty = penalty * is_moving.squeeze(1)
+
         return penalty * self._recovery_relief_scale("recovery_gait_relief_scale")
         
     
@@ -1024,15 +1067,21 @@ class SpotmicroTest(LeggedRobot):
         return torch.clip(torques, -self.torque_limits, self.torque_limits)
         
     def _reward_tracking_ik(self):
-        # 관절별 페널티 가중치: [Shoulder, Leg, Foot] 순서
-        # 어깨(0.1)는 자유롭게 움직이도록 허용하고, Leg와 Foot(1.0)은 IK를 잘 따르도록 강제함
-        weights = torch.tensor([1.0, 1.0, 1.0] * 4, device=self.device)
-    
-        # action에 가중치를 곱해서 에러 계산
-        weighted_actions = self.actions * weights
-        error = torch.sum(torch.square(weighted_actions), dim=1)
-        sigma = 2.0
+        scale = self._get_effective_action_scale()
+        residual_rad = self.actions * scale
+
+        weights = torch.tensor(
+            [1.0, 1.0, 1.0] * 4,
+            device=self.device,
+            dtype=torch.float,
+        ).view(1, 12)
+
+        error = torch.sum(torch.square(residual_rad * weights), dim=1)
+
+        # rad 단위 기준. 0.15~0.25 사이에서 튜닝
+        sigma = getattr(self.cfg.rewards, "tracking_ik_sigma", 0.20)
         reward = torch.exp(-error / sigma)
+
         return reward * self._recovery_relief_scale("recovery_ik_relief_scale")
 
     def _reward_tracking_lin_vel(self):
