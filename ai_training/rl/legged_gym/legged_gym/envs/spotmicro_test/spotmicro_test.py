@@ -32,21 +32,24 @@ class TorchSharedTrotReference:
         dtype=torch.float,
         gait_period=1.0,
         duty_factor=0.55,
-        body_height=(0.170, 0.170, 0.170, 0.170),
-        step_height=(0.013, 0.013, 0.016, 0.016),
-        default_foot_x=(-0.010, -0.010, -0.010, -0.010),
-        default_foot_y=(0.0, 0.0, 0.0, 0.0),
+        body_height=(0.190, 0.190, 0.190, 0.190),
+        step_height=(0.025, 0.025, 0.025, 0.025),
+        default_foot_x=(-0.040, -0.040, -0.040, -0.040),
+        default_foot_y=(0.052, -0.052, 0.052, -0.052),
         leg_origin_x=(0.093, 0.093, -0.093, -0.093),
         leg_origin_y=(0.036, -0.036, 0.036, -0.036),
         shoulder_sign=(1.0, -1.0, 1.0, -1.0),
+        shoulder_offset_y=(0.052, -0.052, 0.052, -0.052),
         phase_offsets=(0.0, 0.5, 0.5, 0.0),
-        max_stride_x=0.070,
-        max_stride_y=0.035,
-        upper_link_x=0.0,
-        upper_link_z=0.105,
-        lower_link=0.130,
+        max_stride_x=0.085,
+        max_stride_y=0.024,
+        soft_stride_limit=True,
+        upper_link_x=0.010,
+        upper_link_z=0.120,
+        lower_link=0.115,
+        toe_radius=0.015,
         shoulder_y_gain=1.0,
-        shoulder_limit=0.16,
+        shoulder_limit=0.548,
         joint_min=None,
         joint_max=None,
     ):
@@ -56,9 +59,11 @@ class TorchSharedTrotReference:
         self.duty_factor = float(duty_factor)
         self.max_stride_x = float(max_stride_x)
         self.max_stride_y = float(max_stride_y)
+        self.soft_stride_limit = bool(soft_stride_limit)
         self.upper_link_x = float(upper_link_x)
         self.upper_link_z = float(upper_link_z)
         self.lower_link = float(lower_link)
+        self.toe_radius = float(toe_radius)
         self.shoulder_y_gain = float(shoulder_y_gain)
         self.shoulder_limit = float(shoulder_limit)
 
@@ -69,6 +74,7 @@ class TorchSharedTrotReference:
         self.leg_origin_x = self._tensor4(leg_origin_x)
         self.leg_origin_y = self._tensor4(leg_origin_y)
         self.shoulder_sign = self._tensor4(shoulder_sign)
+        self.shoulder_offset_y = self._tensor4(shoulder_offset_y)
         self.phase_offsets = self._tensor4(phase_offsets)
 
         if joint_min is not None and joint_max is not None:
@@ -94,8 +100,8 @@ class TorchSharedTrotReference:
 
         foot_vx = cmd_vx - cmd_wz * self.leg_origin_y
         foot_vy = cmd_vy + cmd_wz * self.leg_origin_x
-        stride_x = torch.clamp(foot_vx * stance_time, -self.max_stride_x, self.max_stride_x)
-        stride_y = torch.clamp(foot_vy * stance_time, -self.max_stride_y, self.max_stride_y)
+        stride_x = self._limit_stride(foot_vx * stance_time, self.max_stride_x)
+        stride_y = self._limit_stride(foot_vy * stance_time, self.max_stride_y)
 
         leg_phase = torch.remainder(phase + self.phase_offsets, 1.0)
         stance = leg_phase < self.duty_factor
@@ -112,23 +118,53 @@ class TorchSharedTrotReference:
         y_stance = stride_y * (0.5 - s_stance)
         x_swing = stride_x * (-0.5 + smooth_swing)
         y_swing = stride_y * (-0.5 + smooth_swing)
-        z_swing = self.step_height * torch.sin(math.pi * s_swing)
+        lift = torch.sin(math.pi * s_swing)
+        z_swing = self.step_height * lift * lift
 
         x = self.default_foot_x + torch.where(stance, x_stance, x_swing)
         y = self.default_foot_y + torch.where(stance, y_stance, y_swing)
-        z = -self.body_height + torch.where(stance, torch.zeros_like(z_swing), z_swing)
+        z_contact = -self.body_height + torch.where(
+            stance,
+            torch.zeros_like(z_swing),
+            z_swing,
+        )
+        z = z_contact + self.toe_radius
 
-        shoulder = self.shoulder_y_gain * torch.atan2(y, -z)
-        shoulder = torch.clamp(shoulder, -self.shoulder_limit, self.shoulder_limit)
-        shoulder = shoulder * self.shoulder_sign
+        shoulder_axis = self.shoulder_sign
+        shoulder_y = self.shoulder_offset_y
+        yz_radius2 = y * y + z * z
+        sagittal_z = -torch.sqrt(torch.clamp(
+            yz_radius2 - shoulder_y * shoulder_y,
+            min=1.0e-9,
+        ))
 
-        z_eff = -torch.sqrt(torch.clamp(z * z + y * y, min=1.0e-9))
-        thigh, knee = self._solve_sagittal_ik(x, z_eff)
+        target_angle = torch.atan2(z, y)
+        leg_plane_angle = torch.atan2(sagittal_z, shoulder_y)
+        shoulder_physical = self._wrap_pi(target_angle - leg_plane_angle)
+        shoulder_physical = shoulder_physical * self.shoulder_y_gain
+        shoulder_physical = torch.clamp(
+            shoulder_physical,
+            -self.shoulder_limit,
+            self.shoulder_limit,
+        )
+        shoulder = shoulder_physical / shoulder_axis
+
+        cos_s = torch.cos(shoulder_physical)
+        sin_s = torch.sin(shoulder_physical)
+        z_in_shoulder = -y * sin_s + z * cos_s
+        thigh, knee = self._solve_sagittal_ik(x, z_in_shoulder)
 
         target = torch.stack((shoulder, thigh, knee), dim=2).reshape(commands.shape[0], 12)
         if self.joint_min is not None:
             target = torch.max(torch.min(target, self.joint_max), self.joint_min)
         return target
+
+    def _limit_stride(self, stride, limit):
+        if limit <= 0.0:
+            return torch.zeros_like(stride)
+        if self.soft_stride_limit:
+            return limit * torch.tanh(stride / limit)
+        return torch.clamp(stride, -limit, limit)
 
     def _solve_sagittal_ik(self, x, z):
         upper_eff = math.sqrt(
@@ -156,6 +192,10 @@ class TorchSharedTrotReference:
         knee = knee_raw + upper_alpha
         return thigh, knee
 
+    @staticmethod
+    def _wrap_pi(angle):
+        return torch.remainder(angle + math.pi, 2.0 * math.pi) - math.pi
+
 
 class SpotmicroTest(LeggedRobot):
     def _init_buffers(self):
@@ -166,6 +206,7 @@ class SpotmicroTest(LeggedRobot):
             self.num_envs, self.num_bodies, 13)
         self._init_ik_reference()
         self._init_domain_randomization_buffers()
+        self._init_actuator_response_model()
 
         self.gait_phase = torch.zeros(self.num_envs, 1, dtype=torch.float, device=self.device)
         self.commands_scale = torch.tensor(
@@ -267,6 +308,39 @@ class SpotmicroTest(LeggedRobot):
             self._resample_joint_obs_offsets(
                 torch.arange(self.num_envs, device=self.device))
 
+    def _init_actuator_response_model(self):
+        cfg = self.cfg.domain_rand
+        self.use_actuator_lag = bool(getattr(cfg, "actuator_lag", False))
+        self.actuated_dof_target = self.default_dof_pos.repeat(self.num_envs, 1).clone()
+        self.actuator_lag_alpha = torch.ones(
+            self.num_envs, self.num_actions, dtype=torch.float, device=self.device)
+
+        if not self.use_actuator_lag:
+            return
+
+        tau_range = getattr(cfg, "actuator_lag_tau_range", [0.16, 0.26])
+        self._resample_actuator_lag(
+            torch.arange(self.num_envs, device=self.device),
+            tau_range,
+        )
+        print(
+            f"[Actuator Lag] enabled: tau={tau_range[0]:.3f}~{tau_range[1]:.3f}s "
+            f"(measured CLASSIC response was about 0.18~0.24s)")
+
+    def _resample_actuator_lag(self, env_ids, tau_range=None):
+        if not self.use_actuator_lag:
+            return
+        if tau_range is None:
+            tau_range = getattr(self.cfg.domain_rand, "actuator_lag_tau_range", [0.16, 0.26])
+        tau = torch_rand_float(
+            tau_range[0],
+            tau_range[1],
+            (len(env_ids), self.num_actions),
+            device=self.device,
+        )
+        tau = torch.clamp(tau, min=self.sim_params.dt)
+        self.actuator_lag_alpha[env_ids] = 1.0 - torch.exp(-self.sim_params.dt / tau)
+
     def _init_ik_reference(self):
         ik_cfg = self.cfg.ik
         self.gait_period = float(ik_cfg.gait_period)
@@ -290,12 +364,15 @@ class SpotmicroTest(LeggedRobot):
             leg_origin_x=ik_cfg.leg_origin_x,
             leg_origin_y=ik_cfg.leg_origin_y,
             shoulder_sign=ik_cfg.shoulder_sign,
+            shoulder_offset_y=ik_cfg.shoulder_offset_y,
             phase_offsets=ik_cfg.phase_offsets,
             max_stride_x=ik_cfg.max_stride_x,
             max_stride_y=ik_cfg.max_stride_y,
+            soft_stride_limit=ik_cfg.soft_stride_limit,
             upper_link_x=ik_cfg.upper_link_x,
             upper_link_z=ik_cfg.upper_link_z,
             lower_link=ik_cfg.lower_link,
+            toe_radius=ik_cfg.toe_radius,
             shoulder_y_gain=ik_cfg.shoulder_y_gain,
             shoulder_limit=ik_cfg.shoulder_limit,
             joint_min=ik_cfg.joint_min,
@@ -380,7 +457,7 @@ class SpotmicroTest(LeggedRobot):
         self.reset_buf |= (self.projected_gravity[:, 2] > max_tilt_gravity_z)
         
     def _reset_dofs(self, env_ids):
-        # recovery 학습 첫 단계에서는 관절은 기본 자세 근처에서 시작
+        # Start each episode near the classic IK stand pose.
         joint_noise = torch_rand_float(
             -0.05, 0.05,
             (len(env_ids), self.num_dof),
@@ -404,7 +481,6 @@ class SpotmicroTest(LeggedRobot):
         if hasattr(self, 'feet_swing_contact_time'):
             self.feet_swing_contact_time[env_ids] = 0.
 
-        # recovery에서는 phase mismatch도 학습해야 하므로 reset마다 랜덤화
         self.gait_phase[env_ids] = torch_rand_float(
             0.0, 1.0,
             (len(env_ids), 1),
@@ -420,6 +496,10 @@ class SpotmicroTest(LeggedRobot):
                 (len(env_ids),),
                 device=self.device,
             )
+
+        if getattr(self, "use_actuator_lag", False):
+            self.actuated_dof_target[env_ids] = self.default_dof_pos.repeat(len(env_ids), 1)
+            self._resample_actuator_lag(env_ids)
 
         if getattr(self.cfg.domain_rand, "randomize_joint_obs_offset", False):
             self._resample_joint_obs_offsets(env_ids)
@@ -818,22 +898,46 @@ class SpotmicroTest(LeggedRobot):
     def _reward_no_stuck_feet(self):
         contact = self.contact_forces[:, self.feet_indices, 2] > 1.
         contact_filt = torch.logical_or(contact, self.last_contacts)
+
         phases = (self.gait_phase + self.phase_offsets) % 1.0
         desired_air = phases >= self.duty_factor
         swing_contact = desired_air & contact_filt
+
         if not hasattr(self, 'feet_swing_contact_time'):
             self.feet_swing_contact_time = torch.zeros(
-                self.num_envs, len(self.feet_indices), device=self.device)
+                self.num_envs, len(self.feet_indices), device=self.device
+            )
+
         self.feet_swing_contact_time = (
             self.feet_swing_contact_time + self.dt
         ) * swing_contact.float()
-        grace_time = getattr(self.cfg.rewards, "swing_contact_grace_time", 0.03)
-        penalty = torch.sum(
-            torch.clamp(self.feet_swing_contact_time - grace_time, min=0.),
-            dim=1,
+
+        grace_time = getattr(self.cfg.rewards, "swing_contact_grace_time", 0.02)
+
+        weights = torch.tensor(
+            getattr(self.cfg.rewards, "swing_contact_weights", [1.3, 1.3, 1.0, 1.0]),
+            device=self.device,
+            dtype=torch.float,
+        ).view(1, 4)
+
+        over_time = torch.clamp(
+            self.feet_swing_contact_time - grace_time,
+            min=0.0,
+            max=0.20,
         )
-        penalty *= (torch.norm(
-            self._get_effective_commands(), dim=1) > self.blend_cmd_norm).float()
+
+        denom = torch.clamp(
+            (desired_air.float() * weights).sum(dim=1),
+            min=1.0,
+        )
+
+        penalty = torch.sum(over_time * weights, dim=1) / denom
+
+        penalty *= (
+            torch.norm(self._get_effective_commands(), dim=1)
+            > self.blend_cmd_norm
+        ).float()
+
         penalty *= self._recovery_relief_scale("recovery_gait_relief_scale")
         return penalty
 
@@ -889,11 +993,30 @@ class SpotmicroTest(LeggedRobot):
         phases = (self.gait_phase + self.phase_offsets) % 1.0
         desired_air = phases >= self.duty_factor
         actual_contact = self.contact_forces[:, self.feet_indices, 2] > 1.0
-        dragging = (desired_air & actual_contact).float()
+
         cmd_norm = torch.norm(
-            self._get_effective_commands(), dim=1, keepdim=True)
+            self._get_effective_commands(), dim=1, keepdim=True
+        )
         is_moving = (cmd_norm > self.blend_cmd_norm).float()
-        penalty = torch.sum(dragging * is_moving, dim=1) / 4.0
+
+        # 앞발 dragging이 핵심 문제라면 앞다리에 약간 더 가중
+        weights = torch.tensor(
+            getattr(self.cfg.rewards, "swing_contact_weights", [1.3, 1.3, 1.0, 1.0]),
+            device=self.device,
+            dtype=torch.float,
+        ).view(1, 4)
+
+        bad = (desired_air & actual_contact).float() * weights
+
+        # /4 고정이 아니라, 실제 swing이어야 하는 발 기준으로 정규화
+        denom = torch.clamp(
+            (desired_air.float() * weights).sum(dim=1),
+            min=1.0,
+        )
+
+        penalty = bad.sum(dim=1) / denom
+        penalty = penalty * is_moving.squeeze(1)
+
         return penalty * self._recovery_relief_scale("recovery_gait_relief_scale")
         
     
@@ -932,22 +1055,33 @@ class SpotmicroTest(LeggedRobot):
     def _compute_torques(self, actions):
         actions_scaled = actions * self._get_effective_action_scale()
         ref_dof_pos = self._get_ik_target()
+        desired_dof_pos = actions_scaled + ref_dof_pos
+        if getattr(self, "use_actuator_lag", False):
+            self.actuated_dof_target += (
+                self.actuator_lag_alpha * (desired_dof_pos - self.actuated_dof_target))
+            desired_dof_pos = self.actuated_dof_target
         p_gains = self.p_gains.unsqueeze(0) * self.stiffness_scales
         d_gains = self.d_gains.unsqueeze(0) * self.damping_scales
-        torques = p_gains * (actions_scaled + ref_dof_pos - self.dof_pos) - d_gains * self.dof_vel
+        torques = p_gains * (desired_dof_pos - self.dof_pos) - d_gains * self.dof_vel
         torques = torques * self.motor_strength_scales
         return torch.clip(torques, -self.torque_limits, self.torque_limits)
         
     def _reward_tracking_ik(self):
-        # 관절별 페널티 가중치: [Shoulder, Leg, Foot] 순서
-        # 어깨(0.1)는 자유롭게 움직이도록 허용하고, Leg와 Foot(1.0)은 IK를 잘 따르도록 강제함
-        weights = torch.tensor([1.0, 1.0, 1.0] * 4, device=self.device)
-    
-        # action에 가중치를 곱해서 에러 계산
-        weighted_actions = self.actions * weights
-        error = torch.sum(torch.square(weighted_actions), dim=1)
-        sigma = 2.0
+        scale = self._get_effective_action_scale()
+        residual_rad = self.actions * scale
+
+        weights = torch.tensor(
+            [1.0, 1.0, 1.0] * 4,
+            device=self.device,
+            dtype=torch.float,
+        ).view(1, 12)
+
+        error = torch.sum(torch.square(residual_rad * weights), dim=1)
+
+        # rad 단위 기준. 0.15~0.25 사이에서 튜닝
+        sigma = getattr(self.cfg.rewards, "tracking_ik_sigma", 0.20)
         reward = torch.exp(-error / sigma)
+
         return reward * self._recovery_relief_scale("recovery_ik_relief_scale")
 
     def _reward_tracking_lin_vel(self):

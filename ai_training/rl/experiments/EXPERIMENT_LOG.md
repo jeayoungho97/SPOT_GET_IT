@@ -93,3 +93,8 @@
 | 090 | 05/26 | spotmicro_v7_1_1_slope_terrain_walk_refine | v7.1.1: 과도한 tilt transition 끄고 학습 | 73.7% | 0.020 | 11.9% | ❌ |
 | 091 | 05/26 | spotmicro_v7_1_2_slope_terrain_walk_margin | v7.1.2: termination 보완 되어야함 | 75.7% | 0.022 | 13.3% | ❌ |
 | 092 | 05/26 | spotmicro_v7_1_3_slope_terrain_survival_margin | v7.1.3: timeout 비율 보완 | 75.1% | 0.025 | 13.9% | ❌ |
+| 093 | 05/30 | spotmicro_v8.0_classic_ik_new | v8.0: 새 IK로 학습 | 93.6% | 0.030 | 1.8% | ✅ |
+| 094 | 05/30 | spotmicro_v8_0_1_newIk_feet_air | v8.0.1: 새 IK로 학습, 발 들 수 있게 | 90.9% | 0.037 | 2.7% | ✅ |
+| 095 | 05/31 | spotmicro_v8_0_2_new_IK_train | v8.0.2: 새 IK로 학습, 발 들 수 있게 | 94.8% | 0.047 | 7.6% | ✅ |
+| 096 | 05/31 | spotmicro_v8_1_new_IK_lin_only | v8.1: 우선 직진부터 학습 | 77.5% | 0.139 | 19.2% | ❌ |
+| 097 | 05/31 | spotmicro_v8_2_phase_period_change | v8.2: phase 1초 실험 | 80.9% | 0.112 | 19.1% | ✅ |

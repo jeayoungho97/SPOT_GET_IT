@@ -69,35 +69,38 @@ class RlLocomotionNode(Node):
         self.declare_parameter("action_clip", 100.0)
 
         self.declare_parameter("policy_backend", "onnx")
-        self.declare_parameter("model_path", "models/exp043_policy.onnx")
+        self.declare_parameter("model_path", "models/spotmicro_classic_ik_flat.onnx")
         self.declare_parameter("require_model", True)
         self.declare_parameter("obs_clip", 100.0)
 
-        self.declare_parameter("gait_period", 0.6)
-        self.declare_parameter("duty_factor", 0.5)
-        self.declare_parameter("step_height", 0.03)
-        self.declare_parameter("body_height", 0.206)
+        self.declare_parameter("gait_period", 1.2)
+        self.declare_parameter("duty_factor", 0.58)
+        self.declare_parameter("step_height", 0.025)
+        self.declare_parameter("body_height", 0.190)
         self.declare_parameter("robot_width", 0.15)
         self.declare_parameter("phase_cmd_norm", 0.1)
         self.declare_parameter("blend_cmd_norm", 0.1)
 
-        self.declare_parameter("ik_profile", "exp043")
+        self.declare_parameter("ik_profile", "shared_v1")
 
-        self.declare_parameter("max_stride_x", 0.12)
-        self.declare_parameter("max_stride_y", 0.03)
+        self.declare_parameter("max_stride_x", 0.085)
+        self.declare_parameter("max_stride_y", 0.024)
+        self.declare_parameter("soft_stride_limit", True)
         self.declare_parameter("shoulder_y_gain", 1.0)
-        self.declare_parameter("shoulder_ref_limit", 0.1)
-        self.declare_parameter("shared_step_height", [0.013, 0.013, 0.016, 0.016])
-        self.declare_parameter("shared_default_foot_x", [-0.010, -0.010, -0.010, -0.010])
-        self.declare_parameter("shared_default_foot_y", [0.0, 0.0, 0.0, 0.0])
+        self.declare_parameter("shoulder_ref_limit", 0.548)
+        self.declare_parameter("shared_step_height", [0.025, 0.025, 0.025, 0.025])
+        self.declare_parameter("shared_default_foot_x", [-0.040, -0.040, -0.040, -0.040])
+        self.declare_parameter("shared_default_foot_y", [0.052, -0.052, 0.052, -0.052])
         self.declare_parameter("shared_phase_offsets", [0.0, 0.5, 0.5, 0.0])
-        self.declare_parameter("upper_link_x", 0.0)
-        self.declare_parameter("upper_link_z", 0.105)
-        self.declare_parameter("lower_link", 0.130)
+        self.declare_parameter("upper_link_x", 0.010)
+        self.declare_parameter("upper_link_z", 0.120)
+        self.declare_parameter("lower_link", 0.115)
+        self.declare_parameter("toe_radius", 0.015)
 
         self.declare_parameter("leg_origin_x", [0.093, 0.093, -0.093, -0.093])
         self.declare_parameter("leg_origin_y", [0.036, -0.036, 0.036, -0.036])
         self.declare_parameter("shoulder_sign", [1.0, -1.0, 1.0, -1.0])
+        self.declare_parameter("shoulder_offset_y", [0.052, -0.052, 0.052, -0.052])
 
         self.declare_parameter("debug_publish_rate_hz", 2.0)
 
@@ -130,10 +133,10 @@ class RlLocomotionNode(Node):
         self.declare_parameter(
             "default_joint_angles",
             [
-                0.0, -0.6, 1.1,
-                0.0, -0.6, 1.1,
-                0.0, -0.6, 1.1,
-                0.0, -0.6, 1.1,
+                0.0, -0.9921237899157832, 1.4907337340120823,
+                0.0, -0.9921237899157832, 1.4907337340120823,
+                0.0, -0.9921237899157832, 1.4907337340120823,
+                0.0, -0.9921237899157832, 1.4907337340120823,
             ],
         )
 
@@ -198,6 +201,7 @@ class RlLocomotionNode(Node):
 
         self.max_stride_x = float(self.get_parameter("max_stride_x").value)
         self.max_stride_y = float(self.get_parameter("max_stride_y").value)
+        self.soft_stride_limit = bool(self.get_parameter("soft_stride_limit").value)
         self.shoulder_y_gain = float(self.get_parameter("shoulder_y_gain").value)
         self.shoulder_ref_limit = float(self.get_parameter("shoulder_ref_limit").value)
         self.shared_step_height = [
@@ -215,10 +219,14 @@ class RlLocomotionNode(Node):
         self.upper_link_x = float(self.get_parameter("upper_link_x").value)
         self.upper_link_z = float(self.get_parameter("upper_link_z").value)
         self.lower_link = float(self.get_parameter("lower_link").value)
+        self.toe_radius = float(self.get_parameter("toe_radius").value)
 
         self.leg_origin_x = [float(x) for x in self.get_parameter("leg_origin_x").value]
         self.leg_origin_y = [float(x) for x in self.get_parameter("leg_origin_y").value]
         self.shoulder_sign = [float(x) for x in self.get_parameter("shoulder_sign").value]
+        self.shoulder_offset_y = [
+            float(x) for x in self.get_parameter("shoulder_offset_y").value
+        ]
 
         self.debug_publish_rate_hz = float(self.get_parameter("debug_publish_rate_hz").value)
 
@@ -293,8 +301,10 @@ class RlLocomotionNode(Node):
             leg_origin_x=self.leg_origin_x,
             leg_origin_y=self.leg_origin_y,
             shoulder_sign=self.shoulder_sign,
+            shoulder_offset_y=self.shoulder_offset_y,
             max_stride_x=self.max_stride_x,
             max_stride_y=self.max_stride_y,
+            soft_stride_limit=self.soft_stride_limit,
             shoulder_y_gain=self.shoulder_y_gain,
             shoulder_ref_limit=self.shoulder_ref_limit,
             shared_step_height=self.shared_step_height,
@@ -304,6 +314,7 @@ class RlLocomotionNode(Node):
             upper_link_x=self.upper_link_x,
             upper_link_z=self.upper_link_z,
             lower_link=self.lower_link,
+            toe_radius=self.toe_radius,
         )
 
         self.obs_builder = ObsBuilder(obs_dim=self.obs_dim)
@@ -480,6 +491,7 @@ class RlLocomotionNode(Node):
             ("leg_origin_x", self.leg_origin_x),
             ("leg_origin_y", self.leg_origin_y),
             ("shoulder_sign", self.shoulder_sign),
+            ("shoulder_offset_y", self.shoulder_offset_y),
             ("shared_step_height", self.shared_step_height),
             ("shared_default_foot_x", self.shared_default_foot_x),
             ("shared_default_foot_y", self.shared_default_foot_y),
@@ -496,6 +508,8 @@ class RlLocomotionNode(Node):
             raise RuntimeError("shoulder_ref_limit must be non-negative")
         if self.upper_link_z <= 0.0 or self.lower_link <= 0.0:
             raise RuntimeError("shared IK link lengths must be positive")
+        if self.toe_radius < 0.0:
+            raise RuntimeError("toe_radius must be non-negative")
         if self.walk_start_cmd_norm < 0.0:
             raise RuntimeError("walk_start_cmd_norm must be non-negative")
         if self.walk_start_ramp_s < 0.0:

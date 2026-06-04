@@ -23,32 +23,35 @@ def expand_leg_values(value, default: float, name: str) -> List[float]:
 
 class SharedTrotReference:
     """
-    Shared diagonal-trot foot reference and offset-link IK.
+    Shared diagonal-trot foot reference and URDF-based IK.
 
-    This is intended to be the single reference used by both classic control
-    and future RL retraining. Classic publishes this output directly; RL can
-    use it as ik_ref and add policy residuals.
+    The reference target is the toe contact point in the shoulder frame.
+    The IK solves the URDF chain:
+    shoulder -> leg joint, leg -> foot joint, foot -> toe sphere center.
     """
 
     def __init__(
         self,
         gait_period: float = 1.0,
         duty_factor: float = 0.55,
-        body_height: float = 0.170,
-        step_height: Sequence[float] = (0.013, 0.013, 0.016, 0.016),
-        default_foot_x: Sequence[float] = (-0.010, -0.010, -0.010, -0.010),
-        default_foot_y: Sequence[float] = (0.0, 0.0, 0.0, 0.0),
+        body_height: float = 0.210,
+        step_height: Sequence[float] = (0.022, 0.022, 0.022, 0.022),
+        default_foot_x: Sequence[float] = (0.0, 0.0, 0.0, 0.0),
+        default_foot_y: Sequence[float] = (0.052, -0.052, 0.052, -0.052),
         leg_origin_x: Sequence[float] = (0.093, 0.093, -0.093, -0.093),
         leg_origin_y: Sequence[float] = (0.036, -0.036, 0.036, -0.036),
         shoulder_sign: Sequence[float] = (1.0, -1.0, 1.0, -1.0),
+        shoulder_offset_y: Sequence[float] = (0.052, -0.052, 0.052, -0.052),
         phase_offsets: Sequence[float] = (0.0, 0.5, 0.5, 0.0),
-        max_stride_x: float = 0.07,
-        max_stride_y: float = 0.03,
-        upper_link_x: float = 0.0,
-        upper_link_z: float = 0.105,
-        lower_link: float = 0.130,
+        max_stride_x: float = 0.085,
+        max_stride_y: float = 0.024,
+        soft_stride_limit: bool = True,
+        upper_link_x: float = 0.010,
+        upper_link_z: float = 0.120,
+        lower_link: float = 0.115,
+        toe_radius: float = 0.015,
         shoulder_y_gain: float = 1.0,
-        shoulder_limit: float = 0.16,
+        shoulder_limit: float = 0.548,
         joint_min: Optional[Sequence[float]] = None,
         joint_max: Optional[Sequence[float]] = None,
     ):
@@ -58,6 +61,8 @@ class SharedTrotReference:
             raise ValueError("duty_factor must be in (0, 1)")
         if upper_link_z <= 0.0 or lower_link <= 0.0:
             raise ValueError("link lengths must be positive")
+        if toe_radius < 0.0:
+            raise ValueError("toe_radius must be non-negative")
 
         self.gait_period = float(gait_period)
         self.duty_factor = float(duty_factor)
@@ -68,13 +73,20 @@ class SharedTrotReference:
         self.leg_origin_x = expand_leg_values(leg_origin_x, 0.0, "leg_origin_x")
         self.leg_origin_y = expand_leg_values(leg_origin_y, 0.0, "leg_origin_y")
         self.shoulder_sign = expand_leg_values(shoulder_sign, 1.0, "shoulder_sign")
+        self.shoulder_offset_y = expand_leg_values(
+            shoulder_offset_y,
+            0.0,
+            "shoulder_offset_y",
+        )
         self.phase_offsets = expand_leg_values(phase_offsets, 0.0, "phase_offsets")
 
         self.max_stride_x = float(max_stride_x)
         self.max_stride_y = float(max_stride_y)
+        self.soft_stride_limit = bool(soft_stride_limit)
         self.upper_link_x = float(upper_link_x)
         self.upper_link_z = float(upper_link_z)
         self.lower_link = float(lower_link)
+        self.toe_radius = float(toe_radius)
         self.shoulder_y_gain = float(shoulder_y_gain)
         self.shoulder_limit = float(shoulder_limit)
 
@@ -100,16 +112,8 @@ class SharedTrotReference:
             foot_vx = cmd_vx - cmd_wz * self.leg_origin_y[leg]
             foot_vy = cmd_vy + cmd_wz * self.leg_origin_x[leg]
 
-            stride_x = clamp(
-                foot_vx * stance_time,
-                -self.max_stride_x,
-                self.max_stride_x,
-            )
-            stride_y = clamp(
-                foot_vy * stance_time,
-                -self.max_stride_y,
-                self.max_stride_y,
-            )
+            stride_x = self._limit_stride(foot_vx * stance_time, self.max_stride_x)
+            stride_y = self._limit_stride(foot_vy * stance_time, self.max_stride_y)
 
             local_phase = (phase + self.phase_offsets[leg]) % 1.0
             x_off, y_off, z_off = self._foot_offset(
@@ -121,7 +125,8 @@ class SharedTrotReference:
 
             x = self.default_foot_x[leg] + x_off
             y = self.default_foot_y[leg] + y_off
-            z = -self.body_height[leg] + z_off
+            z_contact = -self.body_height[leg] + z_off
+            z = z_contact + self.toe_radius
 
             shoulder, thigh, knee = self._leg_ik(leg, x, y, z)
             base = leg * 3
@@ -145,27 +150,53 @@ class SharedTrotReference:
             return x, y, 0.0
 
         s = (leg_phase - self.duty_factor) / (1.0 - self.duty_factor)
-        # Smooth x/y endpoints, but use a sine lift to avoid low mid-swing clearance.
+        # Smooth x/y endpoints. Use sin^2 lift so liftoff/touchdown vertical
+        # velocity starts and ends at zero, which is easier for small servos.
         ss = s * s * (3.0 - 2.0 * s)
         x = stride_x * (-0.5 + ss)
         y = stride_y * (-0.5 + ss)
-        z = step_height * math.sin(math.pi * s)
+        lift = math.sin(math.pi * s)
+        z = step_height * lift * lift
         return x, y, z
 
-    def _leg_ik(self, leg: int, x: float, y: float, z: float):
-        shoulder_raw = self.shoulder_y_gain * math.atan2(y, -z)
-        shoulder = clamp(shoulder_raw, -self.shoulder_limit, self.shoulder_limit)
-        shoulder *= self.shoulder_sign[leg]
+    def _limit_stride(self, stride: float, limit: float) -> float:
+        if limit <= 0.0:
+            return 0.0
+        if self.soft_stride_limit:
+            return limit * math.tanh(stride / limit)
+        return clamp(stride, -limit, limit)
 
-        z_eff = -math.sqrt(max(z * z + y * y, 1.0e-9))
-        thigh, knee = self._solve_sagittal_ik(x, z_eff)
+    def _leg_ik(self, leg: int, x: float, y: float, z: float):
+        shoulder_axis = self.shoulder_sign[leg]
+        if abs(shoulder_axis) < 1.0e-9:
+            raise ValueError("shoulder axis sign must be non-zero")
+
+        leg_y = self.shoulder_offset_y[leg]
+        yz_radius2 = y * y + z * z
+        sagittal_z = -math.sqrt(max(yz_radius2 - leg_y * leg_y, 1.0e-9))
+
+        target_angle = math.atan2(z, y)
+        leg_plane_angle = math.atan2(sagittal_z, leg_y)
+        shoulder_physical = self._wrap_pi(target_angle - leg_plane_angle)
+        shoulder_physical *= self.shoulder_y_gain
+        shoulder_physical = clamp(
+            shoulder_physical,
+            -self.shoulder_limit,
+            self.shoulder_limit,
+        )
+        shoulder = shoulder_physical / shoulder_axis
+
+        cos_s = math.cos(shoulder_physical)
+        sin_s = math.sin(shoulder_physical)
+        z_in_shoulder = -y * sin_s + z * cos_s
+
+        thigh, knee = self._solve_sagittal_ik(x, z_in_shoulder)
         return shoulder, thigh, knee
 
     def _solve_sagittal_ik(self, x: float, z: float):
-        # If upper_link_x is zero, this is the original classic 2-link solver.
-        # A non-zero upper_link_x is supported by folding it into an effective
-        # upper link and angle offset, but the default intentionally matches
-        # the classic controller because it is the hardware baseline.
+        # URDF geometry:
+        # leg -> foot joint: (upper_link_x, 0, -upper_link_z)
+        # foot -> toe fixed joint: (0, 0, -lower_link)
         upper_eff = math.sqrt(
             self.upper_link_x * self.upper_link_x
             + self.upper_link_z * self.upper_link_z
@@ -191,6 +222,10 @@ class SharedTrotReference:
         knee = knee_raw + upper_alpha
 
         return thigh, knee
+
+    @staticmethod
+    def _wrap_pi(angle: float) -> float:
+        return (angle + math.pi) % (2.0 * math.pi) - math.pi
 
     def _clamp_joints(self, target: Sequence[float]) -> List[float]:
         if self.joint_min is None:

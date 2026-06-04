@@ -56,7 +56,9 @@ class ClassicControlNode(Node):
             f"feedback={self.feedback_topic}, rate={self.rate_hz:.1f}Hz, "
             f"period={self.gait_period_sec:.2f}s, "
             f"upper=({self.upper_link_x_mm:.1f},{self.upper_link_z_mm:.1f})mm, "
-            f"lower={self.lower_link_mm:.1f}mm"
+            f"lower={self.lower_link_mm:.1f}mm, "
+            f"body_height={self.body_height_mm_per_leg}mm, "
+            f"foot_x={self.default_foot_x_mm_per_leg}mm"
         )
 
     def declare_node_parameters(self):
@@ -80,36 +82,41 @@ class ClassicControlNode(Node):
         self.declare_parameter("max_linear_accel_mps2", 0.25)
         self.declare_parameter("max_angular_accel_radps2", 0.7)
 
-        self.declare_parameter("upper_link_x_mm", 0.0)
-        self.declare_parameter("upper_link_z_mm", 105.0)
-        self.declare_parameter("lower_link_mm", 130.0)
-        self.declare_parameter("body_height_mm", 170.0)
-        self.declare_parameter("body_height_mm_per_leg", [170.0, 170.0, 170.0, 170.0])
-        self.declare_parameter("default_foot_x_mm", -10.0)
-        self.declare_parameter("default_foot_x_mm_per_leg", [-10.0, -10.0, -10.0, -10.0])
-        self.declare_parameter("default_foot_y_mm", 0.0)
-        self.declare_parameter("default_foot_y_mm_per_leg", [0.0, 0.0, 0.0, 0.0])
+        self.declare_parameter("upper_link_x_mm", 10.0)
+        self.declare_parameter("upper_link_z_mm", 120.0)
+        self.declare_parameter("lower_link_mm", 115.0)
+        self.declare_parameter("body_height_mm", 210.0)
+        self.declare_parameter("body_height_mm_per_leg", [210.0, 210.0, 210.0, 210.0])
+        self.declare_parameter("default_foot_x_mm", 0.0)
+        self.declare_parameter("default_foot_x_mm_per_leg", [0.0, 0.0, 0.0, 0.0])
+        self.declare_parameter("default_foot_y_mm", 52.0)
+        self.declare_parameter("default_foot_y_mm_per_leg", [52.0, -52.0, 52.0, -52.0])
+        self.declare_parameter("toe_radius_mm", 15.0)
 
         self.declare_parameter("leg_origin_x_m", [0.093, 0.093, -0.093, -0.093])
         self.declare_parameter("leg_origin_y_m", [0.036, -0.036, 0.036, -0.036])
         self.declare_parameter("shoulder_sign", [1.0, -1.0, 1.0, -1.0])
-        self.declare_parameter("shoulder_y_gain", 1.0)
-        self.declare_parameter("shoulder_limit_rad", 0.16)
+        self.declare_parameter("shoulder_offset_y_m", [0.052, -0.052, 0.052, -0.052])
+        self.declare_parameter("shoulder_limit_rad", 0.548)
         self.declare_parameter("phase_offsets", [0.0, 0.5, 0.5, 0.0])
 
         self.declare_parameter("gait_period_sec", 1.2)
         self.declare_parameter("duty_factor", 0.58)
-        self.declare_parameter("lift_z_mm", 13.0)
-        self.declare_parameter("lift_z_mm_per_leg", [13.0, 13.0, 16.0, 16.0])
-        self.declare_parameter("max_stride_x_mm", 70.0)
-        self.declare_parameter("max_stride_y_mm", 35.0)
+        self.declare_parameter("lift_z_mm", 22.0)
+        self.declare_parameter("lift_z_mm_per_leg", [22.0, 22.0, 22.0, 22.0])
+        self.declare_parameter("max_stride_x_mm", 85.0)
+        self.declare_parameter("max_stride_y_mm", 24.0)
+        self.declare_parameter("soft_stride_limit", True)
 
         self.declare_parameter("stand_dwell_sec", 1.0)
         self.declare_parameter("min_transition_sec", 2.0)
         self.declare_parameter("max_transition_sec", 3.0)
         self.declare_parameter("transition_sec_per_rad", 1.0)
+        self.declare_parameter("walk_start_stand_tolerance_rad", 0.08)
         self.declare_parameter("max_delta_smooth_rad", 0.02)
         self.declare_parameter("max_delta_walk_rad", 0.06)
+        self.declare_parameter("max_delta_walk_rad_per_joint", [0.0] * NUM_JOINTS)
+        self.declare_parameter("max_delta_smooth_rad_per_joint", [0.0] * NUM_JOINTS)
 
         self.declare_parameter(
             "joint_min_rad",
@@ -176,11 +183,14 @@ class ClassicControlNode(Node):
             "default_foot_y_mm_per_leg",
             self.default_foot_y_mm,
         )
+        self.toe_radius_mm = float(self.get_parameter("toe_radius_mm").value)
 
         self.leg_origin_x_m = [float(x) for x in self.get_parameter("leg_origin_x_m").value]
         self.leg_origin_y_m = [float(y) for y in self.get_parameter("leg_origin_y_m").value]
         self.shoulder_sign = [float(s) for s in self.get_parameter("shoulder_sign").value]
-        self.shoulder_y_gain = float(self.get_parameter("shoulder_y_gain").value)
+        self.shoulder_offset_y_m = [
+            float(y) for y in self.get_parameter("shoulder_offset_y_m").value
+        ]
         self.shoulder_limit_rad = float(self.get_parameter("shoulder_limit_rad").value)
         self.phase_offsets = [float(x) for x in self.get_parameter("phase_offsets").value]
 
@@ -193,22 +203,49 @@ class ClassicControlNode(Node):
         )
         self.max_stride_x_mm = float(self.get_parameter("max_stride_x_mm").value)
         self.max_stride_y_mm = float(self.get_parameter("max_stride_y_mm").value)
+        self.soft_stride_limit = bool(self.get_parameter("soft_stride_limit").value)
 
         self.stand_dwell_sec = float(self.get_parameter("stand_dwell_sec").value)
         self.min_transition_sec = float(self.get_parameter("min_transition_sec").value)
         self.max_transition_sec = float(self.get_parameter("max_transition_sec").value)
         self.transition_sec_per_rad = float(self.get_parameter("transition_sec_per_rad").value)
+        self.walk_start_stand_tolerance_rad = float(
+            self.get_parameter("walk_start_stand_tolerance_rad").value
+        )
         self.max_delta_smooth_rad = float(self.get_parameter("max_delta_smooth_rad").value)
         self.max_delta_walk_rad = float(self.get_parameter("max_delta_walk_rad").value)
 
+        self.max_delta_smooth_rad_per_joint = self._load_joint_values_rad(
+                "max_delta_smooth_rad_per_joint",
+                self.max_delta_smooth_rad,
+)
+
+        self.max_delta_walk_rad_per_joint = self._load_joint_values_rad(
+                "max_delta_walk_rad_per_joint",
+                self.max_delta_walk_rad,
+)
         self.joint_min_rad = [float(x) for x in self.get_parameter("joint_min_rad").value]
         self.joint_max_rad = [float(x) for x in self.get_parameter("joint_max_rad").value]
 
     def _load_leg_values_mm(self, name: str, fallback: float) -> List[float]:
+        if name not in getattr(self, "_parameter_overrides", {}):
+            return [float(fallback)] * NUM_LEGS
         values = [float(x) for x in self.get_parameter(name).value]
+        if not values:
+            return [float(fallback)] * NUM_LEGS
         if len(values) != NUM_LEGS:
             raise RuntimeError(f"{name} must have {NUM_LEGS} elements")
-        return values or [float(fallback)] * NUM_LEGS
+        return values
+
+    def _load_joint_values_rad(self, name: str, fallback: float) -> List[float]:
+        if name not in getattr(self, "_parameter_overrides", {}):
+            return [float(fallback)] * NUM_JOINTS
+
+        values = [float(x) for x in self.get_parameter(name).value]
+        if len(values) != NUM_JOINTS:
+            raise RuntimeError(f"{name} must have {NUM_JOINTS} elements")
+
+        return values
 
     def validate_config(self):
         if not 0.0 < self.duty_factor < 1.0:
@@ -219,15 +256,22 @@ class ClassicControlNode(Node):
             raise RuntimeError("leg link lengths must be positive")
         if self.body_height_mm <= 0.0:
             raise RuntimeError("body_height_mm must be positive")
+        if self.toe_radius_mm < 0.0:
+            raise RuntimeError("toe_radius_mm must be non-negative")
+        if self.body_height_mm <= self.toe_radius_mm:
+            raise RuntimeError("body_height_mm must be larger than toe_radius_mm")
         if self.max_stride_x_mm <= 0.0 or self.max_stride_y_mm < 0.0:
             raise RuntimeError("stride limits must be valid")
         if self.max_delta_walk_rad <= 0.0:
             raise RuntimeError("max_delta_walk_rad must be positive")
+        if self.walk_start_stand_tolerance_rad < 0.0:
+            raise RuntimeError("walk_start_stand_tolerance_rad must be non-negative")
 
         for name, arr, expected in [
             ("leg_origin_x_m", self.leg_origin_x_m, NUM_LEGS),
             ("leg_origin_y_m", self.leg_origin_y_m, NUM_LEGS),
             ("shoulder_sign", self.shoulder_sign, NUM_LEGS),
+            ("shoulder_offset_y_m", self.shoulder_offset_y_m, NUM_LEGS),
             ("phase_offsets", self.phase_offsets, NUM_LEGS),
             ("body_height_mm_per_leg", self.body_height_mm_per_leg, NUM_LEGS),
             ("default_foot_x_mm_per_leg", self.default_foot_x_mm_per_leg, NUM_LEGS),
@@ -243,6 +287,16 @@ class ClassicControlNode(Node):
             if self.joint_min_rad[i] >= self.joint_max_rad[i]:
                 raise RuntimeError(f"invalid joint limit at index {i}")
 
+        for name, arr in [
+                ("max_delta_smooth_rad_per_joint", self.max_delta_smooth_rad_per_joint),
+                ("max_delta_walk_rad_per_joint", self.max_delta_walk_rad_per_joint),
+]:
+            if len(arr) != NUM_JOINTS:
+                raise RuntimeError(f"{name} must have {NUM_JOINTS} elements")
+        for v in arr:
+            if v <= 0.0:
+                raise RuntimeError(f"{name} values must be positive")
+
     def configure_motion_model(self):
         self.gait = SharedTrotReference(
             gait_period=self.gait_period_sec,
@@ -254,13 +308,15 @@ class ClassicControlNode(Node):
             leg_origin_x=self.leg_origin_x_m,
             leg_origin_y=self.leg_origin_y_m,
             shoulder_sign=self.shoulder_sign,
+            shoulder_offset_y=self.shoulder_offset_y_m,
             phase_offsets=self.phase_offsets,
             max_stride_x=self.max_stride_x_mm * 0.001,
             max_stride_y=self.max_stride_y_mm * 0.001,
+            soft_stride_limit=self.soft_stride_limit,
             upper_link_x=self.upper_link_x_mm * 0.001,
             upper_link_z=self.upper_link_z_mm * 0.001,
             lower_link=self.lower_link_mm * 0.001,
-            shoulder_y_gain=self.shoulder_y_gain,
+            toe_radius=self.toe_radius_mm * 0.001,
             shoulder_limit=self.shoulder_limit_rad,
             joint_min=self.joint_min_rad,
             joint_max=self.joint_max_rad,
@@ -447,6 +503,36 @@ class ClassicControlNode(Node):
             f"{self.transition_duration:.2f}s, max_delta={max_delta:.3f}rad"
         )
 
+    def stand_error_rad(self) -> float:
+        source = self.transition_source()
+        return max(
+            abs(float(source[i]) - float(self.stand_target[i]))
+            for i in range(NUM_JOINTS)
+        )
+
+    def start_walking(self, now: float):
+        self.state = self.WALK
+        self.walk_start_time = now
+        self.gait_cycle_count = 0
+        self.gait_phase = 0.0
+        self.get_logger().info("classic trot walking started")
+
+    def walk_target(self, now: float) -> Tuple[List[float], List[float]]:
+        elapsed = now - self.walk_start_time
+        total_phase = elapsed / self.gait_period_sec
+        self.gait_cycle_count = int(math.floor(total_phase))
+        self.gait_phase = total_phase - self.gait_cycle_count
+        self.output_motion_active = True
+        return (
+            self.compute_targets(
+                self.gait_phase,
+                self.filtered_vx,
+                self.filtered_vy,
+                self.filtered_wz,
+            ),
+            self.max_delta_walk_rad_per_joint,
+        )
+
     def transition_target(self) -> Tuple[List[float], bool]:
         elapsed = time.perf_counter() - self.state_start_time
         ratio = clamp(elapsed / self.transition_duration, 0.0, 1.0)
@@ -472,19 +558,23 @@ class ClassicControlNode(Node):
             self.activation_pending = False
             self.state = self.STAND
             self.update_filtered_command(0.0, 0.0, 0.0)
-            return self.transition_source(), self.max_delta_smooth_rad
+            return self.transition_source(), self.max_delta_smooth_rad_per_joint
 
         if self.activation_pending:
             self.activation_pending = False
             self.begin_transition(self.STANDUP, self.stand_target)
-            return self.transition_target()[0], self.max_delta_smooth_rad
+            return self.transition_target()[0], self.max_delta_smooth_rad_per_joint
 
         if self.state == self.STAND:
             self.update_filtered_command(0.0, 0.0, 0.0)
             if moving:
+                if self.stand_error_rad() <= self.walk_start_stand_tolerance_rad:
+                    self.start_walking(now)
+                    self.update_filtered_command(vx, vy, wz)
+                    return self.walk_target(now)
                 self.begin_transition(self.STANDUP, self.stand_target)
-                return self.transition_target()[0], self.max_delta_smooth_rad
-            return list(self.stand_target), self.max_delta_smooth_rad
+                return self.transition_target()[0], self.max_delta_smooth_rad_per_joint
+            return list(self.stand_target), self.max_delta_smooth_rad_per_joint
 
         if self.state == self.STANDUP:
             self.update_filtered_command(0.0, 0.0, 0.0)
@@ -493,19 +583,16 @@ class ClassicControlNode(Node):
                 self.state = self.DWELL
                 self.state_start_time = now
                 self.get_logger().info("standing dwell started")
-            return target, self.max_delta_smooth_rad
+            return target, self.max_delta_smooth_rad_per_joint
 
         if self.state == self.DWELL:
             self.update_filtered_command(0.0, 0.0, 0.0)
             if not moving:
                 self.state = self.STAND
-                return list(self.stand_target), self.max_delta_smooth_rad
+                return list(self.stand_target), self.max_delta_smooth_rad_per_joint
             if now - self.state_start_time >= self.stand_dwell_sec:
-                self.state = self.WALK
-                self.walk_start_time = now
-                self.gait_cycle_count = 0
-                self.get_logger().info("classic trot walking started")
-            return list(self.stand_target), self.max_delta_smooth_rad
+                self.start_walking(now)
+            return list(self.stand_target), self.max_delta_smooth_rad_per_joint
 
         if self.state == self.WALK:
             self.update_filtered_command(vx, vy, wz)
@@ -517,22 +604,9 @@ class ClassicControlNode(Node):
 
             if not moving and not filtered_moving:
                 self.begin_transition(self.SETTLE, self.stand_target)
-                return self.transition_target()[0], self.max_delta_smooth_rad
+                return self.transition_target()[0], self.max_delta_smooth_rad_per_joint
 
-            elapsed = now - self.walk_start_time
-            total_phase = elapsed / self.gait_period_sec
-            self.gait_cycle_count = int(math.floor(total_phase))
-            self.gait_phase = total_phase - self.gait_cycle_count
-            self.output_motion_active = True
-            return (
-                self.compute_targets(
-                    self.gait_phase,
-                    self.filtered_vx,
-                    self.filtered_vy,
-                    self.filtered_wz,
-                ),
-                self.max_delta_walk_rad,
-            )
+            return self.walk_target(now)
 
         if self.state == self.SETTLE:
             self.update_filtered_command(0.0, 0.0, 0.0)
@@ -541,10 +615,10 @@ class ClassicControlNode(Node):
                 self.state = self.STAND
                 self.gait_phase = 0.0
                 self.get_logger().info("settled to standing")
-            return target, self.max_delta_smooth_rad
+            return target, self.max_delta_smooth_rad_per_joint
 
         self.state = self.STAND
-        return list(self.stand_target), self.max_delta_smooth_rad
+        return list(self.stand_target), self.max_delta_smooth_rad_per_joint
 
     def publish_target(
         self,
@@ -560,7 +634,10 @@ class ClassicControlNode(Node):
         )
         msg.flags = 0
         msg.target_rad = list(target)
-        msg.max_delta_rad = [float(max_delta_rad)] * NUM_JOINTS
+        if isinstance(max_delta_rad, (float, int)):
+            msg.max_delta_rad = [float(max_delta_rad)] * NUM_JOINTS
+        else:
+            msg.max_delta_rad = [float(x) for x in max_delta_rad]
         msg.gait_phase = float(self.gait_phase)
         msg.gait_cycle_count = int(self.gait_cycle_count)
         self.target_pub.publish(msg)

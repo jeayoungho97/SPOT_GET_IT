@@ -48,6 +48,7 @@ def run_diagnostic(
     flat_eval=False,
     terrain_curriculum_eval=False,
     walk_eval=False,
+    ik_only=False,
 ):
     # ============ 환경 설정 ============
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
@@ -90,29 +91,41 @@ def run_diagnostic(
  
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     obs = env.get_observations()
- 
-    # --- Checkpoint 로드 (항목 1-A) ---
-    train_cfg.runner.resume = True
-    explicit_load_run = getattr(args, "load_run", None) is not None
-    explicit_checkpoint = getattr(args, "checkpoint", None) is not None
-    if not checkpoint_path and not explicit_load_run and not explicit_checkpoint:
-        train_cfg.runner.load_run = -1
-        train_cfg.runner.checkpoint = -1
-    if checkpoint_path:
-        # checkpoint 경로에서 run 디렉토리와 모델 번호 추출
-        ck_dir = os.path.dirname(checkpoint_path)
-        ck_basename = os.path.basename(checkpoint_path)  # e.g. model_500.pt
-        train_cfg.runner.load_run = ck_dir
-        # 모델 번호 추출 (model_500.pt → 500)
-        m = re.search(r'model_(\d+)\.pt', ck_basename)
-        if m:
-            train_cfg.runner.checkpoint = int(m.group(1))
+    
+    if ik_only:
+        print("[진단] IK-only: policy 미사용, action=0으로 평가합니다.")
 
-    ppo_runner, train_cfg = task_registry.make_alg_runner(
-        env=env, name=args.task, args=args, train_cfg=train_cfg
-    )
-    policy = ppo_runner.get_inference_policy(device=env.device)
+        def policy(obs_tensor):
+            return torch.zeros(
+                (env.num_envs, env.num_actions),
+                device=env.device,
+                dtype=torch.float,
+        )
+
+    else:
  
+        # --- Checkpoint 로드 (항목 1-A) ---
+        train_cfg.runner.resume = True
+        explicit_load_run = getattr(args, "load_run", None) is not None
+        explicit_checkpoint = getattr(args, "checkpoint", None) is not None
+        if not checkpoint_path and not explicit_load_run and not explicit_checkpoint:
+            train_cfg.runner.load_run = -1
+            train_cfg.runner.checkpoint = -1
+        if checkpoint_path:
+            # checkpoint 경로에서 run 디렉토리와 모델 번호 추출
+            ck_dir = os.path.dirname(checkpoint_path)
+            ck_basename = os.path.basename(checkpoint_path)  # e.g. model_500.pt
+            train_cfg.runner.load_run = ck_dir
+            # 모델 번호 추출 (model_500.pt → 500)
+            m = re.search(r'model_(\d+)\.pt', ck_basename)
+            if m:
+                train_cfg.runner.checkpoint = int(m.group(1))
+
+        ppo_runner, train_cfg = task_registry.make_alg_runner(
+            env=env, name=args.task, args=args, train_cfg=train_cfg
+        )
+        policy = ppo_runner.get_inference_policy(device=env.device)
+     
     # ============ 출력 폴더 (logs 바깥) ============
     diag_dir = os.path.join(
         LEGGED_GYM_ROOT_DIR, 'diagnostics',
@@ -1718,6 +1731,10 @@ if __name__ == '__main__':
     walk_eval = '--walk-eval' in sys.argv
     if walk_eval:
         sys.argv.remove('--walk-eval')
+        
+    ik_only = '--ik-only' in sys.argv
+    if ik_only:
+        sys.argv.remove('--ik-only')
 
     recovery_range_deg = 30.0 if prefall_eval else None
     i = 1
@@ -1764,4 +1781,5 @@ if __name__ == '__main__':
         flat_eval=flat_eval,
         terrain_curriculum_eval=terrain_curriculum_eval,
         walk_eval=walk_eval,
+        ik_only=ik_only,
     )

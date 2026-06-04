@@ -41,11 +41,25 @@ STM command의 `motion_state`를 만들고, STM feedback 기반
 
 - command 제한과 deadband: `vx_*`, `vy_*`, `wz_*`, `*_deadband_*`
 - 로봇 기구 치수: `upper_link_x_mm`, `upper_link_z_mm`, `lower_link_mm`,
-  `body_height_mm_per_leg`, `leg_origin_x_m`, `leg_origin_y_m`, `shoulder_sign`
+  `toe_radius_mm`, `body_height_mm_per_leg`, `leg_origin_x_m`,
+  `leg_origin_y_m`, `shoulder_sign`, `shoulder_offset_y_m`
 - gait 형태: `gait_period_sec`, `duty_factor`, `lift_z_mm_per_leg`,
   `default_foot_x_mm_per_leg`, `max_stride_x_mm`, `max_stride_y_mm`
 - transition과 관절 안전 제한: `stand_dwell_sec`, `min_transition_sec`,
   `max_transition_sec`, `joint_min_rad`, `joint_max_rad`
+
+현재 기본 기구값은 `spotmicro_test.urdf` 기준이다. URDF 이름 기준으로
+`leg` 링크/조인트가 허벅지, `foot` 링크/조인트가 종아리, `toe` fixed
+joint가 발끝 sphere 중심이다. IK 링크는 `shoulder -> leg = (0, +/-52, 0)mm`,
+`leg -> foot = (10, 0, -120)mm`, `foot -> toe = (0, 0, -115)mm`이고
+toe collision sphere 반지름 `15mm`를 지면 접점 높이에 반영한다. 기본 서기
+목표는 지면 접점 기준 shoulder frame `x=-20mm`, `y=+/-52mm`, `z=-200mm`이다.
+기본 발 들기 높이는 작은 STS 서보가 따라가기 쉽도록 앞다리 `12mm`,
+뒷다리 `15mm`로 낮게 둔다.
+최대 보폭 제한은 전후 `85mm`, 좌우 `24mm`이며, hard clipping 대신
+`tanh` 기반 soft stride limit을 사용해 큰 속도 명령 근처에서 보폭이
+급격히 포화되지 않게 한다. Swing foot lift는 `sin^2` profile을 써서
+liftoff/touchdown의 수직 속도가 0에서 시작하고 0으로 끝난다.
 
 ## 실행
 
