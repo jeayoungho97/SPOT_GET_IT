@@ -10,6 +10,7 @@
 #include <QListWidget>
 #include <QPoint>
 #include <QPointF>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QWidget>
 
@@ -18,8 +19,37 @@ class PointCloud3DView;
 class QPaintEvent;
 class QMouseEvent;
 class QResizeEvent;
-class QProgressBar;
+class QShowEvent;
+class QHideEvent;
+class QPropertyAnimation;
 class QStackedWidget;
+
+class AnimatedProgressBar : public QProgressBar
+{
+    Q_OBJECT
+
+public:
+    explicit AnimatedProgressBar(QWidget *parent = nullptr);
+    void animateToValue(int value);
+
+protected:
+    void paintEvent(QPaintEvent *event) override;
+    void showEvent(QShowEvent *event) override;
+    void hideEvent(QHideEvent *event) override;
+    void timerEvent(QTimerEvent *event) override;
+
+private:
+    QColor chunkColor() const;
+    QColor trackColor() const;
+    qreal cornerRadius() const;
+    void ensureMotionTimer();
+
+    QPropertyAnimation *m_valueAnimation = nullptr;
+    int m_motionTimerId = 0;
+    qreal m_phase = 0.0;
+};
+
+void setProgressBarValueAnimated(QProgressBar *bar, int value);
 
 class VideoTile : public QFrame
 {
@@ -93,6 +123,10 @@ public:
     explicit RobotStatusCard(int robotId, QWidget *parent = nullptr);
     void setSnapshot(const RobotSnapshot &snapshot);
 
+protected:
+    void paintEvent(QPaintEvent *event) override;
+    void timerEvent(QTimerEvent *event) override;
+
 private:
     QLabel *makeValueLabel(const QString &objectName = QStringLiteral("robotCardValue"));
     QFrame *makeInfoCell(const QString &title, QLabel *value, const QString &detail = QString());
@@ -122,6 +156,7 @@ private:
     QLabel *m_temp = nullptr;
     QLabel *m_camera = nullptr;
     QWidget *m_robotView = nullptr;
+    QWidget *m_connectionWarningIcon = nullptr;
     QVector<QFrame *> m_sensorCards;
     QVector<QLabel *> m_sensorChips;
     RobotSnapshot m_snapshot;
@@ -136,6 +171,9 @@ private:
     float m_lastPoseTheta = 0.0f;
     bool m_haveLastPose = false;
     QElapsedTimer m_lastPoseChangeTimer;
+    bool m_connectionWarningActive = false;
+    qint64 m_connectionWarningStartMs = -1;
+    int m_connectionWarningTimerId = 0;
 };
 
 class MapWidget : public QWidget
@@ -152,6 +190,7 @@ public:
     void setGlobalPathsVisible(bool visible);
     void setGlobalPathRobotIds(const QVector<int> &robotIds);
     void addGlobalPathRobotIds(const QVector<int> &robotIds);
+    void showVictimDetection(int robotId);
     void fitToAvailableSize(float targetScale = 0.0f);
 
 signals:
@@ -174,6 +213,7 @@ private:
     QPushButton *m_routeButton = nullptr;
     QVector<int> m_globalPathRobotIds;
     bool m_routeGenerationPending = false;
+    bool m_mapLoaded = false;
 };
 
 QFrame *makePanel(const QString &title, QWidget *body);

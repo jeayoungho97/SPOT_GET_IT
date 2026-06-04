@@ -47,6 +47,9 @@ static const char *cmd_name(uint8_t type) {
     case CMD_TYPE_PAUSE_MISSION: return "pause_mission";
     case CMD_TYPE_CANCEL_MISSION: return "cancel_mission";
     case CMD_TYPE_SENSOR_CTRL: return "sensor_ctrl";
+    case CMD_TYPE_MANUAL_MOVE: return "manual_move";
+    case CMD_TYPE_SET_AUTO: return "set_auto";
+    case CMD_TYPE_BODY_ACTION: return "body_action";
     default: return "unknown";
     }
 }

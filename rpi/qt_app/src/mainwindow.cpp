@@ -1,6 +1,8 @@
 #include "mainwindow.h"
 
 #include <QAbstractItemView>
+#include <QAbstractButton>
+#include <QApplication>
 #include <QByteArray>
 #include <QDateTime>
 #include <QCoreApplication>
@@ -11,23 +13,33 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QGraphicsDropShadowEffect>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QIcon>
+#include <QImage>
 #include <QInputMethod>
 #include <QLineEdit>
 #include <QListView>
 #include <QMessageBox>
+#include <QMouseEvent>
+#include <QMovie>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
+#include <QPointer>
+#include <QPolygonF>
+#include <QPropertyAnimation>
+#include <QGradient>
+#include <QRegion>
 #include <QResizeEvent>
 #include <QScreen>
 #include <QScrollArea>
 #include <QShortcut>
 #include <QSizePolicy>
 #include <QSpinBox>
+#include <QStyleOptionButton>
 #include <QTableWidget>
 #include <QTimer>
 #include <QToolButton>
@@ -35,6 +47,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 
 extern "C" {
 #include "proto.h"
@@ -48,6 +61,14 @@ static QString robotName(int id)
 static constexpr int kAllRobotsSelection = -1;
 static constexpr int kDisplaySwapA = 0;
 static constexpr int kDisplaySwapB = 4;
+static constexpr float kDashboardMapStartupScale = 1.2f;
+static constexpr float kManualMaxForwardMps = 0.10f;
+static constexpr float kManualMaxReverseMps = 0.10f;
+static constexpr float kManualMaxYawRadps = 0.40f;
+static constexpr float kManualCommandDeadband = 0.06f;
+static constexpr int kManualActionStand = 1;
+static constexpr int kManualActionSit = 2;
+static constexpr int kManualActionGreet = 1;
 
 static int swappedRobotId(int robotId)
 {
@@ -76,8 +97,16 @@ static bool isHardcodedDisplayRobot(int displayRobotId)
     return false;
 }
 
+static bool showsPathOnDeploy(int displayRobotId)
+{
+    return displayRobotId == 4;
+}
+
 static int featuredVideoRobotForSelection(int selectedRobot, int robotCount)
 {
+    if (robotCount <= 0) {
+        return -1;
+    }
     const int clamped = qBound(1, robotCount, kMaxRobots);
     if (selectedRobot == kAllRobotsSelection) {
         return clamped == 5 ? 4 : 0;
@@ -167,7 +196,7 @@ static int displayBatteryPercent(int robotId, float snapshotBattery)
     return qBound(0, qRound(snapshotBattery), 100);
 }
 
-static constexpr int kDefaultRobotCount = 4;
+static constexpr int kDefaultRobotCount = 0;
 static constexpr int kRobotCardGridColumns = 2;
 static constexpr int kVideoLayoutBaseRows = 4;
 static constexpr int kVideoLayoutBaseColumns = 4;
@@ -198,17 +227,19 @@ struct VideoLayoutSpec {
 
 static GridSpec statusGridSpec(int count)
 {
-    const int clamped = qBound(1, count, kMaxRobots);
-    if (clamped <= 5) {
-        return {1, clamped};
+    const int clamped = qBound(0, count, kMaxRobots);
+    if (clamped <= 0) {
+        return {1, 1};
     }
-    return {clamped, 1};
+    return {1, clamped};
 }
 
 static VideoLayoutSpec videoLayoutSpec(int count)
 {
-    const int clamped = qBound(1, count, kMaxRobots);
+    const int clamped = qBound(0, count, kMaxRobots);
     switch (clamped) {
+    case 0:
+        return {0, 0, {}, {}, {}, false};
     case 1:
         return {4, 4, {1, 1, 1, 1}, {1, 1, 1, 1}, {{0, 0, 4, 4}}, false};
     case 2:
@@ -667,6 +698,88 @@ protected:
     }
 };
 
+class NavBrandWidget : public QWidget
+{
+public:
+    explicit NavBrandWidget(QWidget *parent = nullptr)
+        : QWidget(parent)
+    {
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setAttribute(Qt::WA_TranslucentBackground);
+        setAutoFillBackground(false);
+        setObjectName(QStringLiteral("navBrand"));
+        setStyleSheet(QStringLiteral("background:transparent; border:0;"));
+        setFixedSize(98, 104);
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        loadLogo();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        if (!m_logo.isNull()) {
+            const QRectF target(0.0, 0.0, 98.0, 102.0);
+            QImage softened(target.size().toSize(), QImage::Format_ARGB32_Premultiplied);
+            softened.fill(Qt::transparent);
+            QPainter imgPainter(&softened);
+            imgPainter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+            imgPainter.drawImage(QRectF(QPointF(0.0, 0.0), QSizeF(softened.size())),
+                                 m_logo,
+                                 QRectF(QPointF(0.0, 0.0), QSizeF(m_logo.size())));
+
+            QLinearGradient leftFade(0.0, 0.0, 7.0, 0.0);
+            leftFade.setColorAt(0.0, QColor(0, 0, 0, 0));
+            leftFade.setColorAt(1.0, QColor(0, 0, 0, 255));
+            QLinearGradient rightFade(softened.width(), 0.0, softened.width() - 3.0, 0.0);
+            rightFade.setColorAt(0.0, QColor(0, 0, 0, 0));
+            rightFade.setColorAt(1.0, QColor(0, 0, 0, 255));
+            QLinearGradient topFade(0.0, 0.0, 0.0, 6.0);
+            topFade.setColorAt(0.0, QColor(0, 0, 0, 0));
+            topFade.setColorAt(1.0, QColor(0, 0, 0, 255));
+            QLinearGradient bottomFade(0.0, softened.height(), 0.0, softened.height() - 15.0);
+            bottomFade.setColorAt(0.0, QColor(0, 0, 0, 0));
+            bottomFade.setColorAt(1.0, QColor(0, 0, 0, 255));
+            imgPainter.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+            imgPainter.fillRect(QRectF(0.0, 0.0, 7.0, softened.height()), leftFade);
+            imgPainter.fillRect(QRectF(softened.width() - 3.0, 0.0, 3.0, softened.height()), rightFade);
+            imgPainter.fillRect(QRectF(0.0, 0.0, softened.width(), 6.0), topFade);
+            imgPainter.fillRect(QRectF(0.0, softened.height() - 15.0, softened.width(), 15.0), bottomFade);
+            imgPainter.end();
+
+            p.drawImage(target.topLeft(), softened);
+        }
+    }
+
+private:
+    void loadLogo()
+    {
+        const QString appDir = QCoreApplication::applicationDirPath();
+        const QString cwd = QDir::currentPath();
+        const QString fileName = QStringLiteral("nav_logo.png");
+        const QStringList candidates = {
+            QDir(appDir).absoluteFilePath("../image_data/" + fileName),
+            QDir(appDir).absoluteFilePath("../../image_data/" + fileName),
+            QDir(appDir).absoluteFilePath("../../../image_data/" + fileName),
+            QDir(cwd).absoluteFilePath("image_data/" + fileName),
+            QDir(cwd).absoluteFilePath("../image_data/" + fileName),
+            QDir(cwd).absoluteFilePath("../../image_data/" + fileName),
+            QStringLiteral("/home/pi/robot_project/image_data/") + fileName
+        };
+        for (const QString &path : candidates) {
+            QFileInfo info(path);
+            if (info.exists() && info.isFile()) {
+                m_logo.load(info.canonicalFilePath());
+                return;
+            }
+        }
+    }
+
+    QImage m_logo;
+};
+
 class SideNavButton : public QPushButton
 {
 public:
@@ -780,6 +893,26 @@ private:
             p->drawRect(QRectF(c.x() - 5.0, c.y() + 10.0, 4.0, 3.2));
             p->drawRect(QRectF(c.x() + 5.0, c.y() + 10.0, 4.0, 3.2));
             p->drawEllipse(QPointF(c.x() + 15.0, c.y() + 11.5), 1.7, 1.7);
+        } else if (label == QStringLiteral("드론")) {
+            const QPointF rotorOffsets[] = {
+                QPointF(-16.0, -12.0), QPointF(16.0, -12.0),
+                QPointF(-16.0, 12.0), QPointF(16.0, 12.0)
+            };
+            p->setPen(glow);
+            p->drawLine(QPointF(c.x() - 12.0, c.y() - 8.0), QPointF(c.x() + 12.0, c.y() + 8.0));
+            p->drawLine(QPointF(c.x() + 12.0, c.y() - 8.0), QPointF(c.x() - 12.0, c.y() + 8.0));
+            for (const QPointF &offset : rotorOffsets) {
+                p->drawEllipse(c + offset, 6.0, 6.0);
+            }
+            p->setPen(pen);
+            p->drawLine(QPointF(c.x() - 12.0, c.y() - 8.0), QPointF(c.x() + 12.0, c.y() + 8.0));
+            p->drawLine(QPointF(c.x() + 12.0, c.y() - 8.0), QPointF(c.x() - 12.0, c.y() + 8.0));
+            for (const QPointF &offset : rotorOffsets) {
+                p->drawEllipse(c + offset, 6.0, 6.0);
+            }
+            p->setBrush(color);
+            p->drawRoundedRect(QRectF(c.x() - 7.5, c.y() - 5.5, 15.0, 11.0), 3.0, 3.0);
+            p->drawEllipse(c, 2.0, 2.0);
         } else if (label == QStringLiteral("로그")) {
             QPainterPath doc;
             doc.moveTo(c.x() - 14.0, c.y() - 20.0);
@@ -813,6 +946,454 @@ private:
         }
         p->restore();
     }
+};
+
+class CommandButton : public QPushButton
+{
+public:
+    explicit CommandButton(const QString &text, QWidget *parent = nullptr)
+        : QPushButton(text, parent)
+    {
+    }
+
+protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setRenderHint(QPainter::TextAntialiasing, true);
+
+        QStyleOptionButton option;
+        initStyleOption(&option);
+        const QString label = option.text;
+        option.text.clear();
+        style()->drawControl(QStyle::CE_PushButton, &option, &p, this);
+
+        if (property("striped").toBool()) {
+            drawStripes(&p);
+        }
+
+        const QString kind = property("commandKind").toString();
+        if (kind.isEmpty()) {
+            drawLabel(&p, label, rect().adjusted(8, 0, -8, 0), Qt::AlignCenter);
+            return;
+        }
+        if (kind == QStringLiteral("auto")) {
+            drawLabel(&p, label, rect().adjusted(8, 0, -8, 0), Qt::AlignCenter | Qt::TextWordWrap);
+            return;
+        }
+
+        const QRectF iconRect(width() * 0.5 - 24.0, height() * 0.20, 48.0, 48.0);
+        drawCommandIcon(&p, iconRect, kind);
+        drawLabel(&p, label, rect().adjusted(8, qRound(height() * 0.54), -8, 8),
+                  Qt::AlignHCenter | Qt::AlignTop | Qt::TextWordWrap);
+    }
+
+private:
+    void drawStripes(QPainter *p)
+    {
+        p->save();
+        QPainterPath clip;
+        clip.addRoundedRect(rect().adjusted(2, 2, -2, -2), 7, 7);
+        p->setClipPath(clip);
+
+        const QColor stripeColor = objectName() == QStringLiteral("redCommand")
+            ? QColor(255, 120, 120, isEnabled() ? 38 : 18)
+            : QColor(255, 241, 166, isEnabled() ? 32 : 14);
+        p->setPen(QPen(stripeColor, 1.2, Qt::SolidLine, Qt::FlatCap));
+        const int spacing = 16;
+        for (int x = -height(); x < width() + height(); x += spacing) {
+            p->drawLine(QPointF(x, height()), QPointF(x + height(), 0));
+        }
+        p->restore();
+    }
+
+    void drawLabel(QPainter *p, const QString &text, const QRect &textRect, int flags)
+    {
+        QFont f = font();
+        f.setBold(true);
+        p->setFont(f);
+        QColor color = isEnabled() ? palette().color(QPalette::ButtonText)
+                                   : QColor("#596978");
+        p->setPen(color);
+        p->drawText(textRect, flags, text);
+    }
+
+    void drawCommandIcon(QPainter *p, const QRectF &r, const QString &kind)
+    {
+        const bool red = kind == QStringLiteral("estop");
+        const QColor stroke = isEnabled()
+            ? (red ? QColor("#ff6b6b") : QColor("#ffd21a"))
+            : QColor("#596978");
+        QColor glow(stroke);
+        glow.setAlpha(isEnabled() ? 58 : 24);
+        const QPointF c = r.center();
+        const qreal s = qMin(r.width(), r.height()) / 48.0;
+
+        p->save();
+        p->setBrush(Qt::NoBrush);
+        p->setPen(QPen(glow, 6.0 * s, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        drawIconPath(p, c, s, kind);
+        p->setPen(QPen(stroke, 2.2 * s, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        drawIconPath(p, c, s, kind);
+        p->restore();
+    }
+
+    void drawIconPath(QPainter *p, const QPointF &c, qreal s, const QString &kind)
+    {
+        if (kind == QStringLiteral("move")) {
+            p->drawEllipse(c, 17 * s, 17 * s);
+            p->drawEllipse(c, 7 * s, 7 * s);
+            p->drawLine(QPointF(c.x() - 22 * s, c.y()), QPointF(c.x() - 11 * s, c.y()));
+            p->drawLine(QPointF(c.x() + 11 * s, c.y()), QPointF(c.x() + 22 * s, c.y()));
+            p->drawLine(QPointF(c.x(), c.y() - 22 * s), QPointF(c.x(), c.y() - 11 * s));
+            p->drawLine(QPointF(c.x(), c.y() + 11 * s), QPointF(c.x(), c.y() + 22 * s));
+            p->drawPoint(c);
+        } else if (kind == QStringLiteral("manual")) {
+            const QRectF pad(c.x() - 18 * s, c.y() - 10 * s, 36 * s, 22 * s);
+            p->drawRoundedRect(pad, 8 * s, 8 * s);
+            p->drawLine(QPointF(c.x() - 7 * s, c.y() - 16 * s), QPointF(c.x() - 7 * s, c.y() - 10 * s));
+            p->drawLine(QPointF(c.x() + 7 * s, c.y() - 16 * s), QPointF(c.x() + 7 * s, c.y() - 10 * s));
+            p->drawLine(QPointF(c.x() - 11 * s, c.y() + 1 * s), QPointF(c.x() - 3 * s, c.y() + 1 * s));
+            p->drawLine(QPointF(c.x() - 7 * s, c.y() - 3 * s), QPointF(c.x() - 7 * s, c.y() + 5 * s));
+            p->drawEllipse(QPointF(c.x() + 8 * s, c.y()), 2.8 * s, 2.8 * s);
+            p->drawEllipse(QPointF(c.x() + 15 * s, c.y() - 4 * s), 2.2 * s, 2.2 * s);
+        } else if (kind == QStringLiteral("auto")) {
+            p->drawArc(QRectF(c.x() - 17 * s, c.y() - 17 * s, 34 * s, 34 * s), 30 * 16, 290 * 16);
+            p->drawLine(QPointF(c.x() + 13 * s, c.y() - 10 * s), QPointF(c.x() + 18 * s, c.y() - 17 * s));
+            p->drawLine(QPointF(c.x() + 13 * s, c.y() - 10 * s), QPointF(c.x() + 5 * s, c.y() - 12 * s));
+            p->drawEllipse(c, 5 * s, 5 * s);
+        } else if (kind == QStringLiteral("deploy")) {
+            const QRectF body(c.x() - 12 * s, c.y() - 7 * s, 24 * s, 16 * s);
+            p->drawRoundedRect(body, 5 * s, 5 * s);
+            p->drawEllipse(QPointF(c.x() - 5 * s, c.y()), 1.8 * s, 1.8 * s);
+            p->drawEllipse(QPointF(c.x() + 5 * s, c.y()), 1.8 * s, 1.8 * s);
+            p->drawLine(QPointF(c.x(), c.y() - 7 * s), QPointF(c.x(), c.y() - 15 * s));
+            p->drawEllipse(QPointF(c.x(), c.y() - 17 * s), 2.2 * s, 2.2 * s);
+            p->drawLine(QPointF(c.x() - 8 * s, c.y() + 9 * s), QPointF(c.x() - 13 * s, c.y() + 16 * s));
+            p->drawLine(QPointF(c.x() + 8 * s, c.y() + 9 * s), QPointF(c.x() + 13 * s, c.y() + 16 * s));
+            p->drawLine(QPointF(c.x() + 17 * s, c.y()), QPointF(c.x() + 24 * s, c.y()));
+            p->drawLine(QPointF(c.x() + 19 * s, c.y() - 5 * s), QPointF(c.x() + 24 * s, c.y()));
+            p->drawLine(QPointF(c.x() + 19 * s, c.y() + 5 * s), QPointF(c.x() + 24 * s, c.y()));
+        } else if (kind == QStringLiteral("estop")) {
+            QPolygonF oct;
+            for (int i = 0; i < 8; ++i) {
+                const qreal a = (-22.5 + i * 45.0) * M_PI / 180.0;
+                oct << QPointF(c.x() + std::cos(a) * 18 * s,
+                               c.y() + std::sin(a) * 18 * s);
+            }
+            p->drawPolygon(oct);
+            p->drawLine(QPointF(c.x(), c.y() - 9 * s), QPointF(c.x(), c.y() + 4 * s));
+            p->drawPoint(QPointF(c.x(), c.y() + 10 * s));
+        }
+    }
+};
+
+class DashboardEmptyState : public QWidget
+{
+public:
+    enum class Kind {
+        Video,
+        RobotStatus
+    };
+
+    explicit DashboardEmptyState(Kind kind, QWidget *parent = nullptr)
+        : QWidget(parent)
+        , m_kind(kind)
+    {
+        setObjectName(kind == Kind::Video ? QStringLiteral("videoEmptyState")
+                                          : QStringLiteral("robotEmptyState"));
+        if (kind == Kind::RobotStatus) {
+            setAttribute(Qt::WA_TranslucentBackground, true);
+            setAutoFillBackground(false);
+        }
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        setMinimumHeight(kind == Kind::Video ? 250 : 170);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        Q_UNUSED(event);
+
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setRenderHint(QPainter::TextAntialiasing, true);
+
+        const QRectF outer = rect().adjusted(10, 10, -10, -10);
+        if (!outer.isValid()) {
+            return;
+        }
+
+        if (m_kind == Kind::Video) {
+            drawBackdrop(&p, outer);
+            drawVideoState(&p, outer);
+        } else {
+            drawRobotState(&p, outer);
+        }
+    }
+
+private:
+    void drawBackdrop(QPainter *p, const QRectF &r)
+    {
+        p->save();
+
+        QPainterPath clip;
+        clip.addRoundedRect(r, 8, 8);
+        p->setClipPath(clip);
+
+        QLinearGradient bg(r.topLeft(), r.bottomRight());
+        bg.setColorAt(0.0, QColor(7, 18, 30, 225));
+        bg.setColorAt(0.55, QColor(9, 29, 48, 205));
+        bg.setColorAt(1.0, QColor(4, 12, 20, 230));
+        p->fillPath(clip, bg);
+
+        const QColor gridMajor(63, 132, 190, m_kind == Kind::Video ? 18 : 38);
+        const QColor gridMinor(63, 132, 190, m_kind == Kind::Video ? 8 : 20);
+        const qreal step = m_kind == Kind::Video ? 56.0 : 28.0;
+        for (qreal x = r.left(); x <= r.right(); x += step) {
+            const bool major = qRound((x - r.left()) / step) % 3 == 0;
+            p->setPen(QPen(major ? gridMajor : gridMinor, major ? 1.0 : 0.7));
+            p->drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
+        }
+        for (qreal y = r.top(); y <= r.bottom(); y += step) {
+            const bool major = qRound((y - r.top()) / step) % 3 == 0;
+            p->setPen(QPen(major ? gridMajor : gridMinor, major ? 1.0 : 0.7));
+            p->drawLine(QPointF(r.left(), y), QPointF(r.right(), y));
+        }
+
+        QColor scan(255, 210, 26, m_kind == Kind::Video ? 7 : 14);
+        p->setPen(QPen(scan, 1.0));
+        for (qreal y = r.top() + 24.0; y < r.bottom(); y += (m_kind == Kind::Video ? 72.0 : 36.0)) {
+            p->drawLine(QPointF(r.left() + 12.0, y), QPointF(r.right() - 12.0, y));
+        }
+
+        p->setClipping(false);
+        p->setBrush(Qt::NoBrush);
+        p->setPen(QPen(QColor(0, 216, 255, 78), 1.0));
+        p->drawRoundedRect(r, 8, 8);
+
+        const qreal corner = qMin<qreal>(34.0, qMin(r.width(), r.height()) * 0.13);
+        p->setPen(QPen(QColor(156, 210, 255, 130), 1.2));
+        p->drawLine(r.topLeft() + QPointF(10, 0), r.topLeft() + QPointF(corner, 0));
+        p->drawLine(r.topLeft() + QPointF(0, 10), r.topLeft() + QPointF(0, corner));
+        p->drawLine(r.topRight() + QPointF(-10, 0), r.topRight() + QPointF(-corner, 0));
+        p->drawLine(r.topRight() + QPointF(0, 10), r.topRight() + QPointF(0, corner));
+        p->drawLine(r.bottomLeft() + QPointF(10, 0), r.bottomLeft() + QPointF(corner, 0));
+        p->drawLine(r.bottomLeft() + QPointF(0, -10), r.bottomLeft() + QPointF(0, -corner));
+        p->drawLine(r.bottomRight() + QPointF(-10, 0), r.bottomRight() + QPointF(-corner, 0));
+        p->drawLine(r.bottomRight() + QPointF(0, -10), r.bottomRight() + QPointF(0, -corner));
+
+        p->restore();
+    }
+
+    void drawVideoState(QPainter *p, const QRectF &r)
+    {
+        p->save();
+
+        const QPointF c = r.center() + QPointF(0, -38);
+        const qreal iconSize = qMin<qreal>(54.0, qMin(r.width(), r.height()) * 0.18);
+        const QRectF glowRect(c.x() - iconSize * 0.64, c.y() - iconSize * 0.48,
+                              iconSize * 1.28, iconSize * 0.96);
+        QRadialGradient glow(c, iconSize * 0.72);
+        glow.setColorAt(0.0, QColor(255, 210, 26, 44));
+        glow.setColorAt(0.68, QColor(0, 202, 255, 18));
+        glow.setColorAt(1.0, QColor(0, 0, 0, 0));
+        p->setPen(Qt::NoPen);
+        p->setBrush(glow);
+        p->drawRoundedRect(glowRect, 18, 18);
+
+        p->setBrush(Qt::NoBrush);
+        p->setPen(QPen(QColor("#ffd21a"), 2.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        const qreal s = iconSize / 64.0;
+        const QRectF body(c.x() - 18 * s, c.y() - 11 * s, 30 * s, 22 * s);
+        p->drawRoundedRect(body, 3.5 * s, 3.5 * s);
+        p->drawLine(QPointF(c.x() - 10 * s, c.y() - 15 * s),
+                    QPointF(c.x() + 3 * s, c.y() - 15 * s));
+        p->drawLine(QPointF(c.x() - 4 * s, c.y() + 15 * s),
+                    QPointF(c.x() + 14 * s, c.y() + 15 * s));
+        p->drawEllipse(QPointF(c.x() - 4 * s, c.y()), 5.5 * s, 5.5 * s);
+        QPainterPath lens;
+        lens.moveTo(c.x() + 12 * s, c.y() - 5 * s);
+        lens.lineTo(c.x() + 26 * s, c.y() - 12 * s);
+        lens.lineTo(c.x() + 26 * s, c.y() + 12 * s);
+        lens.lineTo(c.x() + 12 * s, c.y() + 5 * s);
+        p->drawPath(lens);
+
+        drawCenteredText(p, QRectF(r.left() + 24, c.y() + iconSize * 0.62,
+                                   r.width() - 48, 34),
+                         QStringLiteral("영상 스트리밍 대기"),
+                         QColor("#f3f7fc"), 14, QFont::Black);
+        drawCenteredText(p, QRectF(r.left() + 28, c.y() + iconSize * 0.62 + 35,
+                                   r.width() - 56, 30),
+                         QStringLiteral("로봇 투입 후 카메라 피드가 표시됩니다."),
+                         QColor(173, 194, 214), 10, QFont::DemiBold);
+
+        p->restore();
+    }
+
+    void drawRobotState(QPainter *p, const QRectF &r)
+    {
+        p->save();
+
+        const qreal iconSide = qMin<qreal>(44.0, qMin(r.width(), r.height()) * 0.27);
+        const QPointF c(r.center().x(), r.center().y() - 36.0);
+        p->setBrush(Qt::NoBrush);
+        p->setPen(QPen(QColor("#ffd21a"), 2.1, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        const qreal s = iconSide / 64.0;
+        const QRectF body(c.x() - 17 * s, c.y() - 7 * s, 34 * s, 23 * s);
+        p->drawRoundedRect(body, 6 * s, 6 * s);
+        p->drawEllipse(QPointF(c.x() - 7 * s, c.y() + 3 * s), 2.0 * s, 2.0 * s);
+        p->drawEllipse(QPointF(c.x() + 7 * s, c.y() + 3 * s), 2.0 * s, 2.0 * s);
+        p->drawLine(QPointF(c.x(), c.y() - 7 * s), QPointF(c.x(), c.y() - 16 * s));
+        p->drawEllipse(QPointF(c.x(), c.y() - 18 * s), 2.1 * s, 2.1 * s);
+        p->drawLine(QPointF(c.x() - 11 * s, c.y() + 16 * s),
+                    QPointF(c.x() - 17 * s, c.y() + 24 * s));
+        p->drawLine(QPointF(c.x() + 11 * s, c.y() + 16 * s),
+                    QPointF(c.x() + 17 * s, c.y() + 24 * s));
+        p->drawArc(QRectF(c.x() - 16 * s, c.y() - 33 * s, 32 * s, 22 * s), 35 * 16, 110 * 16);
+        p->drawArc(QRectF(c.x() - 24 * s, c.y() - 41 * s, 48 * s, 34 * s), 35 * 16, 110 * 16);
+
+        drawCenteredText(p, QRectF(r.left() + 24, c.y() + iconSide * 0.68,
+                                   r.width() - 48, 32),
+                         QStringLiteral("로봇 상태 대기"),
+                         QColor("#f3f7fc"), 14, QFont::Black);
+        drawCenteredText(p, QRectF(r.left() + 28, c.y() + iconSide * 0.68 + 34,
+                                   r.width() - 56, 30),
+                         QStringLiteral("로봇 투입 후 상태 정보와 위치가 표시됩니다."),
+                         QColor(173, 194, 214), 10, QFont::DemiBold);
+
+        p->restore();
+    }
+
+    void drawCenteredText(QPainter *p, const QRectF &rect, const QString &text,
+                          const QColor &color, int pointSize, QFont::Weight weight)
+    {
+        QFont f(QStringLiteral("Noto Sans"));
+        f.setPointSize(pointSize);
+        f.setWeight(weight);
+        p->setFont(f);
+        p->setPen(color);
+        p->drawText(rect, Qt::AlignCenter | Qt::TextWordWrap, text);
+    }
+
+    void drawLeftText(QPainter *p, const QRectF &rect, const QString &text,
+                      const QColor &color, int pointSize, QFont::Weight weight)
+    {
+        QFont f(QStringLiteral("Noto Sans"));
+        f.setPointSize(pointSize);
+        f.setWeight(weight);
+        p->setFont(f);
+        p->setPen(color);
+        p->drawText(rect, Qt::AlignVCenter | Qt::AlignLeft | Qt::TextWordWrap, text);
+    }
+
+    Kind m_kind;
+};
+
+class ButtonGlowFilter : public QObject
+{
+public:
+    explicit ButtonGlowFilter(QObject *parent = nullptr)
+        : QObject(parent)
+    {
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        QAbstractButton *button = qobject_cast<QAbstractButton *>(watched);
+        if (!button) {
+            return QObject::eventFilter(watched, event);
+        }
+
+        switch (event->type()) {
+        case QEvent::Enter:
+            animateGlow(button, true);
+            break;
+        case QEvent::Leave:
+        case QEvent::Hide:
+        case QEvent::EnabledChange:
+            animateGlow(button, false);
+            break;
+        case QEvent::Destroy:
+            m_effects.remove(button);
+            m_animations.remove(button);
+            break;
+        default:
+            break;
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    QGraphicsDropShadowEffect *glowEffectFor(QAbstractButton *button)
+    {
+        if (button->graphicsEffect()) {
+            if (button->graphicsEffect()->property("codexHoverGlow").toBool()) {
+                return qobject_cast<QGraphicsDropShadowEffect *>(button->graphicsEffect());
+            }
+            return nullptr;
+        }
+
+        auto *effect = new QGraphicsDropShadowEffect(button);
+        effect->setProperty("codexHoverGlow", true);
+        effect->setColor(QColor(255, 210, 26, 185));
+        effect->setOffset(0, 0);
+        effect->setBlurRadius(0.0);
+        effect->setEnabled(false);
+        button->setGraphicsEffect(effect);
+        m_effects.insert(button, effect);
+        return effect;
+    }
+
+    static qreal targetBlurRadius(const QAbstractButton *button)
+    {
+        return qBound<qreal>(12.0, qMin(button->width(), button->height()) * 0.36, 24.0);
+    }
+
+    void animateGlow(QAbstractButton *button, bool visible)
+    {
+        if (visible && !button->isEnabled()) {
+            return;
+        }
+
+        QGraphicsDropShadowEffect *effect = glowEffectFor(button);
+        if (!effect) {
+            return;
+        }
+
+        if (QPointer<QPropertyAnimation> existing = m_animations.value(button)) {
+            existing->stop();
+            existing->deleteLater();
+        }
+
+        if (visible) {
+            effect->setEnabled(true);
+        }
+
+        auto *animation = new QPropertyAnimation(effect, "blurRadius", this);
+        animation->setDuration(visible ? 170 : 230);
+        animation->setEasingCurve(visible ? QEasingCurve::OutCubic : QEasingCurve::InOutCubic);
+        animation->setStartValue(effect->blurRadius());
+        animation->setEndValue(visible ? targetBlurRadius(button) : 0.0);
+        m_animations.insert(button, animation);
+
+        QPointer<QAbstractButton> guardedButton(button);
+        connect(animation, &QPropertyAnimation::finished, this, [this, guardedButton, effect, animation, visible]() {
+            if (!visible && guardedButton && !guardedButton->underMouse()) {
+                effect->setEnabled(false);
+            }
+            if (guardedButton && m_animations.value(guardedButton) == animation) {
+                m_animations.remove(guardedButton);
+            }
+            animation->deleteLater();
+        });
+        animation->start();
+    }
+
+    QHash<QObject *, QPointer<QGraphicsDropShadowEffect>> m_effects;
+    QHash<QObject *, QPointer<QPropertyAnimation>> m_animations;
 };
 
 class BorderlessComboBox : public QComboBox
@@ -932,11 +1513,169 @@ private:
     QListWidget *m_popupList = nullptr;
 };
 
+class ManualJoystickWidget : public QWidget
+{
+public:
+    explicit ManualJoystickWidget(QWidget *parent = nullptr)
+        : QWidget(parent)
+    {
+        setMinimumSize(230, 230);
+        setCursor(Qt::PointingHandCursor);
+        m_sendTimer.setInterval(100);
+        connect(&m_sendTimer, &QTimer::timeout, this, [this]() {
+            emitVelocity(false);
+        });
+    }
+
+    void setVelocityCallback(std::function<void(float, float, float, bool)> callback)
+    {
+        m_velocityCallback = std::move(callback);
+    }
+
+    void resetStick()
+    {
+        m_knob = QPointF(0.0, 0.0);
+        m_dragging = false;
+        m_sendTimer.stop();
+        update();
+        emitVelocity(true);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        const QRectF bounds = rect().adjusted(8.0, 8.0, -8.0, -8.0);
+        const QPointF c = bounds.center();
+        const qreal radius = qMin(bounds.width(), bounds.height()) * 0.39;
+
+        QRadialGradient bg(c, radius * 1.28);
+        bg.setColorAt(0.0, QColor(24, 31, 37));
+        bg.setColorAt(0.72, QColor(10, 15, 21));
+        bg.setColorAt(1.0, QColor(5, 9, 13, 0));
+        p.setPen(Qt::NoPen);
+        p.setBrush(bg);
+        p.drawEllipse(c, radius * 1.34, radius * 1.34);
+
+        p.setPen(QPen(QColor(255, 210, 26, 220), 2.1));
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(c, radius, radius);
+
+        QRadialGradient well(c, radius * 0.72);
+        well.setColorAt(0.0, QColor(52, 58, 64));
+        well.setColorAt(0.52, QColor(18, 21, 25));
+        well.setColorAt(1.0, QColor(3, 6, 9));
+        p.setPen(QPen(QColor(68, 78, 86), 1.4));
+        p.setBrush(well);
+        p.drawEllipse(c, radius * 0.70, radius * 0.70);
+
+        const QPointF knobCenter = c + QPointF(m_knob.x() * radius * 0.46,
+                                               m_knob.y() * radius * 0.46);
+        QRadialGradient knob(knobCenter - QPointF(radius * 0.15, radius * 0.18),
+                             radius * 0.40);
+        knob.setColorAt(0.0, QColor(115, 119, 123));
+        knob.setColorAt(0.48, QColor(60, 63, 67));
+        knob.setColorAt(1.0, QColor(18, 20, 23));
+        p.setPen(QPen(QColor(16, 18, 21), 2.0));
+        p.setBrush(knob);
+        p.drawEllipse(knobCenter, radius * 0.34, radius * 0.34);
+
+        p.setPen(QPen(QColor(255, 210, 26, 225), 2.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        const qreal arrow = radius * 0.12;
+        p.drawPolyline(QPolygonF{QPointF(c.x(), c.y() - radius - arrow * 2.6),
+                                 QPointF(c.x() - arrow, c.y() - radius - arrow * 1.7),
+                                 QPointF(c.x(), c.y() - radius - arrow * 2.6),
+                                 QPointF(c.x() + arrow, c.y() - radius - arrow * 1.7)});
+        p.drawPolyline(QPolygonF{QPointF(c.x() - radius - arrow * 2.6, c.y()),
+                                 QPointF(c.x() - radius - arrow * 1.7, c.y() - arrow),
+                                 QPointF(c.x() - radius - arrow * 2.6, c.y()),
+                                 QPointF(c.x() - radius - arrow * 1.7, c.y() + arrow)});
+        p.drawPolyline(QPolygonF{QPointF(c.x() + radius + arrow * 2.6, c.y()),
+                                 QPointF(c.x() + radius + arrow * 1.7, c.y() - arrow),
+                                 QPointF(c.x() + radius + arrow * 2.6, c.y()),
+                                 QPointF(c.x() + radius + arrow * 1.7, c.y() + arrow)});
+    }
+
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        m_dragging = true;
+        updateStick(event->position());
+        emitVelocity(true);
+        m_sendTimer.start();
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        if (!m_dragging) {
+            return;
+        }
+        updateStick(event->position());
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        Q_UNUSED(event);
+        resetStick();
+    }
+
+    void leaveEvent(QEvent *event) override
+    {
+        QWidget::leaveEvent(event);
+        if (m_dragging && !(QGuiApplication::mouseButtons() & Qt::LeftButton)) {
+            resetStick();
+        }
+    }
+
+private:
+    void updateStick(const QPointF &pos)
+    {
+        const QRectF bounds = rect().adjusted(8.0, 8.0, -8.0, -8.0);
+        const QPointF c = bounds.center();
+        const qreal radius = qMin(bounds.width(), bounds.height()) * 0.39;
+        QPointF delta((pos.x() - c.x()) / qMax(radius, 1.0),
+                      (pos.y() - c.y()) / qMax(radius, 1.0));
+        const qreal len = std::hypot(delta.x(), delta.y());
+        if (len > 1.0) {
+            delta /= len;
+        }
+        m_knob = delta;
+        update();
+    }
+
+    void emitVelocity(bool force)
+    {
+        if (!m_velocityCallback) {
+            return;
+        }
+        const float x = static_cast<float>(m_knob.x());
+        const float y = static_cast<float>(m_knob.y());
+        const float forward = -y;
+        const float vx = forward >= 0.0f
+            ? forward * kManualMaxForwardMps
+            : forward * kManualMaxReverseMps;
+        const float omega = -x * kManualMaxYawRadps;
+        m_velocityCallback(vx, 0.0f, omega, force);
+    }
+
+    QPointF m_knob {0.0, 0.0};
+    bool m_dragging = false;
+    QTimer m_sendTimer;
+    std::function<void(float, float, float, bool)> m_velocityCallback;
+};
+
 static QString findMapYaml()
 {
     const QString appDir = QCoreApplication::applicationDirPath();
     const QString cwd = QDir::currentPath();
     const QStringList candidates = {
+        QDir(appDir).absoluteFilePath("../map_data/map_final.yaml"),
+        QDir(appDir).absoluteFilePath("../../map_data/map_final.yaml"),
+        QDir(appDir).absoluteFilePath("../../../map_data/map_final.yaml"),
+        QDir(cwd).absoluteFilePath("map_data/map_final.yaml"),
+        QDir(cwd).absoluteFilePath("../map_data/map_final.yaml"),
+        QStringLiteral("/home/pi/robot_project/map_data/map_final.yaml"),
         QDir(appDir).absoluteFilePath("../map_data/new_map.yaml"),
         QDir(appDir).absoluteFilePath("../../map_data/new_map.yaml"),
         QDir(appDir).absoluteFilePath("../../../map_data/new_map.yaml"),
@@ -958,6 +1697,110 @@ static QString findMapYaml()
         }
     }
     return QString();
+}
+
+static QString findDroneCaptureImagePath()
+{
+    const QString appDir = QCoreApplication::applicationDirPath();
+    const QString cwd = QDir::currentPath();
+    const QStringList fileNames = {
+        QStringLiteral("폐허진.png"),
+        QStringLiteral("폐허.png"),
+        QStringLiteral("map_final_scene.png"),
+        QStringLiteral("drone_capture.png")
+    };
+
+    for (const QString &fileName : fileNames) {
+        const QStringList candidates = {
+            QDir(appDir).absoluteFilePath("../image_data/" + fileName),
+            QDir(appDir).absoluteFilePath("../../image_data/" + fileName),
+            QDir(appDir).absoluteFilePath("../../../image_data/" + fileName),
+            QDir(cwd).absoluteFilePath("image_data/" + fileName),
+            QDir(cwd).absoluteFilePath("../image_data/" + fileName),
+            QDir(cwd).absoluteFilePath("../../image_data/" + fileName),
+            QStringLiteral("/home/pi/robot_project/image_data/") + fileName
+        };
+
+        for (const QString &path : candidates) {
+            QFileInfo info(path);
+            if (info.exists() && info.isFile()) {
+                return info.canonicalFilePath();
+            }
+        }
+    }
+    return QString();
+}
+
+static QString findDroneCameraLoopPath()
+{
+    const QString appDir = QCoreApplication::applicationDirPath();
+    const QString cwd = QDir::currentPath();
+    const QString fileName = QStringLiteral("폐허드론_loop.gif");
+    const QStringList candidates = {
+        QDir(appDir).absoluteFilePath("../image_data/" + fileName),
+        QDir(appDir).absoluteFilePath("../../image_data/" + fileName),
+        QDir(appDir).absoluteFilePath("../../../image_data/" + fileName),
+        QDir(cwd).absoluteFilePath("image_data/" + fileName),
+        QDir(cwd).absoluteFilePath("../image_data/" + fileName),
+        QDir(cwd).absoluteFilePath("../../image_data/" + fileName),
+        QStringLiteral("/home/pi/robot_project/image_data/") + fileName
+    };
+
+    for (const QString &path : candidates) {
+        QFileInfo info(path);
+        if (info.exists() && info.isFile()) {
+            return info.canonicalFilePath();
+        }
+    }
+    return QString();
+}
+
+static QString findSpotStartFramePath(int displayRobotId)
+{
+    const int physicalRobotId = displayToPhysicalRobotId(displayRobotId);
+    if (physicalRobotId < 0) {
+        return QString();
+    }
+
+    const QString fileName = QString("spot_%1_start.png")
+                                 .arg(physicalRobotId + 1, 2, 10, QLatin1Char('0'));
+    const QString appDir = QCoreApplication::applicationDirPath();
+    const QString cwd = QDir::currentPath();
+    const QStringList candidates = {
+        QDir(appDir).absoluteFilePath("../image_data/" + fileName),
+        QDir(appDir).absoluteFilePath("../../image_data/" + fileName),
+        QDir(appDir).absoluteFilePath("../../../image_data/" + fileName),
+        QDir(cwd).absoluteFilePath("image_data/" + fileName),
+        QDir(cwd).absoluteFilePath("../image_data/" + fileName),
+        QDir(cwd).absoluteFilePath("../../image_data/" + fileName),
+        QStringLiteral("/home/pi/robot_project/image_data/") + fileName
+    };
+
+    for (const QString &path : candidates) {
+        QFileInfo info(path);
+        if (info.exists() && info.isFile()) {
+            return info.canonicalFilePath();
+        }
+    }
+    return QString();
+}
+
+static QImage spotStartFrameForDisplayRobot(int displayRobotId)
+{
+    if (displayRobotId < 0 || displayRobotId >= kMaxRobots) {
+        return QImage();
+    }
+
+    static QVector<QImage> cache(kMaxRobots);
+    static QVector<bool> attempted(kMaxRobots, false);
+    if (!attempted[displayRobotId]) {
+        attempted[displayRobotId] = true;
+        const QString path = findSpotStartFramePath(displayRobotId);
+        if (!path.isEmpty()) {
+            cache[displayRobotId].load(path);
+        }
+    }
+    return cache[displayRobotId];
 }
 
 static QString logSeverityText(const QString &code)
@@ -992,6 +1835,12 @@ static QString commandTypeText(uint8_t commandType)
         return "경로 시작점";
     case CMD_TYPE_SET_ROUTE:
         return "경로 생성";
+    case CMD_TYPE_MANUAL_MOVE:
+        return "수동 조작";
+    case CMD_TYPE_SET_AUTO:
+        return "자동 제어";
+    case CMD_TYPE_BODY_ACTION:
+        return "자세 동작";
     default:
         return QString("알 수 없는 명령(%1)").arg(commandType);
     }
@@ -1096,6 +1945,1255 @@ protected:
     }
 };
 
+class DroneCameraWidget : public QWidget
+{
+public:
+    explicit DroneCameraWidget(QWidget *parent = nullptr)
+        : QWidget(parent)
+    {
+        setMinimumSize(420, 260);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        loadLoopMovie();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        const QRectF r = rect().adjusted(4, 4, -4, -4);
+        QLinearGradient sky(r.topLeft(), r.bottomRight());
+        sky.setColorAt(0.0, QColor("#28323a"));
+        sky.setColorAt(0.55, QColor("#151b20"));
+        sky.setColorAt(1.0, QColor("#0a0f14"));
+        p.setPen(QPen(QColor("#1e3445"), 1.0));
+        p.setBrush(sky);
+        p.drawRoundedRect(r, 7, 7);
+
+        p.setClipPath([r]() {
+            QPainterPath path;
+            path.addRoundedRect(r, 7, 7);
+            return path;
+        }());
+
+        if (m_movie && m_movie->isValid() && !m_movie->currentImage().isNull()) {
+            drawMovieFrame(p, r);
+            drawCameraHud(p, r);
+            return;
+        }
+
+        p.setPen(QPen(QColor(255, 255, 255, 24), 1));
+        for (int x = -120; x < r.width() + 160; x += 54) {
+            p.drawLine(QPointF(r.left() + x, r.top()),
+                       QPointF(r.left() + x + 165, r.bottom()));
+        }
+        auto drawBuilding = [&p](const QRectF &b, const QColor &color) {
+            p.setPen(QPen(QColor(255, 255, 255, 24), 1));
+            p.setBrush(color);
+            p.drawPolygon(QPolygonF{b.topLeft(), b.topRight() + QPointF(16, 12),
+                                    b.bottomRight(), b.bottomLeft() - QPointF(16, 12)});
+            p.setBrush(QColor(color.red() + 10, color.green() + 10, color.blue() + 10, 190));
+            p.drawPolygon(QPolygonF{b.topLeft(), b.topRight() + QPointF(16, 12),
+                                    b.topRight() + QPointF(16, 32), b.topLeft() + QPointF(0, 20)});
+        };
+
+        drawBuilding(QRectF(r.left() + r.width() * 0.09, r.top() + r.height() * 0.08,
+                            r.width() * 0.22, r.height() * 0.24), QColor(42, 50, 56, 210));
+        drawBuilding(QRectF(r.left() + r.width() * 0.61, r.top() + r.height() * 0.05,
+                            r.width() * 0.30, r.height() * 0.30), QColor(72, 76, 78, 220));
+        drawBuilding(QRectF(r.left() + r.width() * 0.72, r.top() + r.height() * 0.50,
+                            r.width() * 0.24, r.height() * 0.34), QColor(50, 57, 61, 220));
+
+        QPainterPath road;
+        road.moveTo(r.left() + r.width() * 0.22, r.bottom());
+        road.cubicTo(r.left() + r.width() * 0.30, r.top() + r.height() * 0.62,
+                     r.left() + r.width() * 0.45, r.top() + r.height() * 0.52,
+                     r.left() + r.width() * 0.55, r.top());
+        road.lineTo(r.left() + r.width() * 0.72, r.top());
+        road.cubicTo(r.left() + r.width() * 0.62, r.top() + r.height() * 0.46,
+                     r.left() + r.width() * 0.52, r.top() + r.height() * 0.68,
+                     r.left() + r.width() * 0.46, r.bottom());
+        road.closeSubpath();
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(85, 87, 83, 155));
+        p.drawPath(road);
+
+        p.setPen(QPen(QColor(200, 205, 210, 180), 2.0));
+        const QPointF cc = r.center();
+        p.drawLine(QPointF(cc.x() - 16, cc.y()), QPointF(cc.x() + 16, cc.y()));
+        p.drawLine(QPointF(cc.x(), cc.y() - 16), QPointF(cc.x(), cc.y() + 16));
+
+        drawCameraHud(p, r);
+    }
+
+private:
+    void loadLoopMovie()
+    {
+        const QString path = findDroneCameraLoopPath();
+        if (path.isEmpty()) {
+            qWarning() << "DroneCameraWidget: drone loop asset not found";
+            return;
+        }
+
+        m_movie = new QMovie(path, QByteArray(), this);
+        m_movie->setCacheMode(QMovie::CacheNone);
+        if (!m_movie->isValid()) {
+            qWarning() << "DroneCameraWidget: failed to open drone loop asset" << path;
+            return;
+        }
+
+        connect(m_movie, &QMovie::frameChanged, this, [this]() {
+            update();
+        });
+        connect(m_movie, &QMovie::finished, this, [this]() {
+            if (m_movie) {
+                m_movie->start();
+            }
+        });
+        m_movie->start();
+    }
+
+    void drawMovieFrame(QPainter &p, const QRectF &r)
+    {
+        const QImage frame = m_movie->currentImage();
+        if (frame.isNull()) {
+            return;
+        }
+
+        const qreal sourceAspect = static_cast<qreal>(frame.width()) / qMax(1, frame.height());
+        const qreal targetAspect = r.width() / qMax<qreal>(1.0, r.height());
+        QRectF source(QPointF(0.0, 0.0), QSizeF(frame.size()));
+        if (sourceAspect > targetAspect) {
+            const qreal cropWidth = frame.height() * targetAspect;
+            source.setLeft((frame.width() - cropWidth) * 0.5);
+            source.setWidth(cropWidth);
+        } else if (sourceAspect < targetAspect) {
+            const qreal cropHeight = frame.width() / targetAspect;
+            source.setTop((frame.height() - cropHeight) * 0.5);
+            source.setHeight(cropHeight);
+        }
+
+        p.drawImage(r, frame, source);
+
+        QLinearGradient shade(r.topLeft(), r.bottomLeft());
+        shade.setColorAt(0.0, QColor(0, 0, 0, 34));
+        shade.setColorAt(0.42, QColor(0, 0, 0, 0));
+        shade.setColorAt(1.0, QColor(0, 0, 0, 30));
+        p.setPen(Qt::NoPen);
+        p.setBrush(shade);
+        p.drawRect(r);
+    }
+
+    void drawCameraHud(QPainter &p, const QRectF &r)
+    {
+        const qreal corner = 32.0;
+        p.setPen(QPen(QColor("#ffffff"), 2.2, Qt::SolidLine, Qt::SquareCap));
+        p.drawLine(r.topLeft() + QPointF(18, 18), r.topLeft() + QPointF(18 + corner, 18));
+        p.drawLine(r.topLeft() + QPointF(18, 18), r.topLeft() + QPointF(18, 18 + corner));
+        p.drawLine(r.topRight() + QPointF(-18, 18), r.topRight() + QPointF(-18 - corner, 18));
+        p.drawLine(r.topRight() + QPointF(-18, 18), r.topRight() + QPointF(-18, 18 + corner));
+        p.drawLine(r.bottomLeft() + QPointF(18, -18), r.bottomLeft() + QPointF(18 + corner, -18));
+        p.drawLine(r.bottomLeft() + QPointF(18, -18), r.bottomLeft() + QPointF(18, -18 - corner));
+        p.drawLine(r.bottomRight() + QPointF(-18, -18), r.bottomRight() + QPointF(-18 - corner, -18));
+        p.drawLine(r.bottomRight() + QPointF(-18, -18), r.bottomRight() + QPointF(-18, -18 - corner));
+
+        QRectF badge(r.left() + 20, r.top() + 18, 118, 62);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(2, 7, 12, 195));
+        p.drawRoundedRect(badge, 6, 6);
+        p.setPen(QColor("#ffffff"));
+        QFont idFont = p.font();
+        idFont.setPointSize(13);
+        idFont.setBold(true);
+        p.setFont(idFont);
+        p.drawText(badge.adjusted(12, 8, -8, -30), Qt::AlignLeft | Qt::AlignVCenter, "DRONE-01");
+        p.setPen(QColor("#24f36a"));
+        p.drawEllipse(QPointF(badge.left() + 18, badge.bottom() - 17), 4, 4);
+        p.drawText(badge.adjusted(28, 31, -8, -8), Qt::AlignLeft | Qt::AlignVCenter, "LIVE");
+    }
+
+    QMovie *m_movie = nullptr;
+};
+
+class DroneMapWidget : public QWidget
+{
+public:
+    enum Tool {
+        OriginTool = 0,
+        XAxisTool,
+        ObstacleTool
+    };
+
+    explicit DroneMapWidget(QWidget *parent = nullptr)
+        : QWidget(parent)
+    {
+        setMinimumSize(360, 260);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        setMouseTracking(true);
+        setCursor(Qt::CrossCursor);
+    }
+
+    void setTool(Tool tool)
+    {
+        m_tool = tool;
+        m_autoYamlPreview = false;
+        m_previewMode = false;
+        update();
+        notifyChanged();
+    }
+
+    Tool tool() const
+    {
+        return m_tool;
+    }
+
+    void setChangedCallback(std::function<void()> callback)
+    {
+        m_changed = std::move(callback);
+    }
+
+    int obstacleCount() const
+    {
+        if (m_autoYamlPreview) {
+            return m_autoObstacles.size();
+        }
+        return m_obstacles.size();
+    }
+
+    bool axesReady() const
+    {
+        return m_hasOrigin && m_hasXAxis;
+    }
+
+    bool previewMode() const
+    {
+        return m_previewMode;
+    }
+
+    bool hasCapturedImage() const
+    {
+        return m_hasCapturedImage;
+    }
+
+    void loadCapturedImage()
+    {
+        m_hasCapturedImage = true;
+        ensureCapturedImageLoaded();
+        m_hasOrigin = false;
+        m_hasXAxis = false;
+        m_obstacles.clear();
+        clearAutoYamlPreview();
+        m_dragging = false;
+        m_previewMode = false;
+        m_tool = OriginTool;
+        update();
+        notifyChanged();
+    }
+
+    QString statusText() const
+    {
+        if (!m_hasCapturedImage) {
+            return QStringLiteral("이미지 캡쳐 대기");
+        }
+        if (!m_hasOrigin) {
+            return QStringLiteral("원점 지정 대기");
+        }
+        if (!m_hasXAxis) {
+            return QStringLiteral("+X 방향 지정 대기");
+        }
+        if (m_previewMode) {
+            return QStringLiteral("디지털 맵 미리보기");
+        }
+        return m_tool == ObstacleTool ? QStringLiteral("장애물 그리기")
+                                      : QStringLiteral("좌표축 보정");
+    }
+
+    QString detailText() const
+    {
+        if (!m_hasCapturedImage) {
+            return QStringLiteral("드론 카메라에서 이미지 캡쳐 후 맵 빌더를 시작합니다.");
+        }
+        if (m_autoYamlPreview && m_autoMapBounds.isValid()) {
+            return QString("YAML 맵 자동 생성  |  장애물 %1개  |  영역 %2 x %3 m")
+                .arg(m_autoObstacles.size())
+                .arg(m_autoMapBounds.width(), 0, 'f', 1)
+                .arg(m_autoMapBounds.height(), 0, 'f', 1);
+        }
+        const QRectF field = fieldBoundsMeters();
+        return QString("고도 12.0 m  |  FOV 84°  |  축척 %1 m/px  |  장애물 %2개  |  영역 %3 x %4 m")
+            .arg(metersPerPixel(), 0, 'f', 4)
+            .arg(m_obstacles.size())
+            .arg(field.width(), 0, 'f', 1)
+            .arg(field.height(), 0, 'f', 1);
+    }
+
+    void undo()
+    {
+        if (!m_hasCapturedImage) {
+            return;
+        }
+        if (m_dragging) {
+            m_dragging = false;
+        } else if (!m_obstacles.isEmpty()) {
+            m_obstacles.removeLast();
+        } else if (m_hasXAxis) {
+            m_hasXAxis = false;
+            m_tool = XAxisTool;
+        } else if (m_hasOrigin) {
+            m_hasOrigin = false;
+            m_tool = OriginTool;
+        }
+        m_previewMode = false;
+        update();
+        notifyChanged();
+    }
+
+    void clearAll()
+    {
+        if (!m_hasCapturedImage) {
+            return;
+        }
+        m_hasOrigin = false;
+        m_hasXAxis = false;
+        m_obstacles.clear();
+        clearAutoYamlPreview();
+        m_dragging = false;
+        m_previewMode = false;
+        m_tool = OriginTool;
+        update();
+        notifyChanged();
+    }
+
+    void generatePreview()
+    {
+        if (!m_hasCapturedImage || !axesReady()) {
+            return;
+        }
+        m_autoYamlPreview = false;
+        m_previewMode = true;
+        update();
+        notifyChanged();
+    }
+
+    bool generateAutoPreviewFromYaml(const QString &path)
+    {
+        MapConfig config;
+        QString error;
+        if (path.isEmpty() || !config.loadFromYaml(path, &error)) {
+            qWarning() << "DroneMapWidget:" << (error.isEmpty()
+                                                ? QStringLiteral("map yaml path is empty")
+                                                : error);
+            return false;
+        }
+
+        QVector<QRectF> areas;
+        areas.reserve(config.areas().size());
+        for (const MapRect &area : config.areas()) {
+            areas.append(QRectF(QPointF(area.xMin, area.yMin),
+                                QPointF(area.xMax, area.yMax)).normalized());
+        }
+
+        QVector<QRectF> obstacles;
+        for (const MapRect &obstacle : config.obstacles()) {
+            obstacles.append(QRectF(QPointF(obstacle.xMin, obstacle.yMin),
+                                    QPointF(obstacle.xMax, obstacle.yMax)).normalized());
+        }
+
+        m_hasCapturedImage = true;
+        ensureCapturedImageLoaded();
+        m_hasOrigin = true;
+        m_hasXAxis = true;
+        m_dragging = false;
+        m_previewMode = true;
+        m_autoYamlPreview = true;
+        m_hasCursor = false;
+        m_tool = ObstacleTool;
+        m_originNorm = QPointF(0.18, 0.78);
+        m_xAxisNorm = QPointF(0.44, 0.78);
+        m_obstacles.clear();
+        m_autoAreas = areas;
+        m_autoObstacles = obstacles;
+        m_autoStarts.clear();
+        m_autoStarts.reserve(config.starts().size());
+        for (const MapPoint &start : config.starts()) {
+            m_autoStarts.append(QPointF(start.x, start.y));
+        }
+        m_hasAutoEnd = config.hasEndPoint();
+        const MapPoint end = config.endPoint();
+        m_autoEnd = QPointF(end.x, end.y);
+        m_autoMapBounds = QRectF(QPointF(config.minX(), config.minY()),
+                                 QPointF(config.maxX(), config.maxY())).normalized();
+        update();
+        notifyChanged();
+        return true;
+    }
+
+    void generateAutoPreview()
+    {
+        m_hasCapturedImage = true;
+        ensureCapturedImageLoaded();
+        m_hasOrigin = true;
+        m_hasXAxis = true;
+        m_dragging = false;
+        m_previewMode = true;
+        clearAutoYamlPreview();
+        m_hasCursor = false;
+        m_tool = ObstacleTool;
+        m_originNorm = QPointF(0.18, 0.78);
+        m_xAxisNorm = QPointF(0.44, 0.78);
+        m_obstacles = {
+            QRectF(2.0, 1.3, 1.9, 1.1),
+            QRectF(6.4, -1.9, 2.4, 1.5),
+            QRectF(10.3, 2.1, 1.7, 2.2)
+        };
+        update();
+        notifyChanged();
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::RightButton) {
+            if (!m_obstacles.isEmpty()) {
+                m_obstacles.removeLast();
+                m_autoYamlPreview = false;
+                m_previewMode = false;
+                update();
+                notifyChanged();
+            }
+            return;
+        }
+
+        if (event->button() != Qt::LeftButton) {
+            return;
+        }
+        if (!m_hasCapturedImage) {
+            return;
+        }
+        const QPointF norm = widgetToNorm(event->pos());
+        if (!isNormInside(norm)) {
+            return;
+        }
+
+        if (m_tool == OriginTool) {
+            clearAutoYamlPreview();
+            m_originNorm = norm;
+            m_hasOrigin = true;
+            m_hasXAxis = false;
+            m_obstacles.clear();
+            m_tool = XAxisTool;
+            m_previewMode = false;
+            update();
+            notifyChanged();
+            return;
+        }
+
+        if (m_tool == XAxisTool && m_hasOrigin) {
+            if (QLineF(norm, m_originNorm).length() < 0.04) {
+                return;
+            }
+            clearAutoYamlPreview();
+            m_xAxisNorm = norm;
+            m_hasXAxis = true;
+            m_tool = ObstacleTool;
+            m_previewMode = false;
+            update();
+            notifyChanged();
+            return;
+        }
+
+        if (m_tool == ObstacleTool && axesReady()) {
+            m_autoYamlPreview = false;
+            m_dragStartMeters = normToMeters(norm);
+            m_dragCurrentMeters = m_dragStartMeters;
+            m_dragging = true;
+            m_previewMode = false;
+            update();
+        }
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        const QPointF norm = widgetToNorm(event->pos());
+        if (m_hasCapturedImage && isNormInside(norm)) {
+            m_cursorNorm = norm;
+            m_hasCursor = true;
+            if (m_dragging) {
+                m_dragCurrentMeters = normToMeters(norm);
+            }
+        } else {
+            m_hasCursor = false;
+        }
+        update();
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event->button() != Qt::LeftButton || !m_hasCapturedImage || !m_dragging || !axesReady()) {
+            return;
+        }
+        const QPointF norm = widgetToNorm(event->pos());
+        if (isNormInside(norm)) {
+            m_dragCurrentMeters = normToMeters(norm);
+            QRectF rect = normalizedMeterRect(m_dragStartMeters, m_dragCurrentMeters);
+            if (rect.width() >= 0.08 && rect.height() >= 0.08) {
+                m_obstacles.append(rect);
+            }
+        }
+        m_dragging = false;
+        update();
+        notifyChanged();
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        const QRectF r = rect().adjusted(4, 4, -4, -4);
+        p.setPen(Qt::NoPen);
+        p.setBrush(m_previewMode ? QColor("#0b151d") : QColor("#07131a"));
+        p.drawRoundedRect(r, 6, 6);
+
+        p.setClipPath([r]() {
+            QPainterPath path;
+            path.addRoundedRect(r, 6, 6);
+            return path;
+        }());
+
+        if (!m_hasCapturedImage) {
+            drawCapturePlaceholder(p, r);
+            drawHud(p, r);
+            return;
+        }
+
+        drawDroneImage(p);
+        if (m_autoYamlPreview) {
+            drawAutoYamlMap(p);
+            drawAutoYamlOriginFrame(p);
+            drawHud(p, r);
+            return;
+        }
+        if (m_hasOrigin) {
+            drawCoordinateFrame(p);
+        }
+        drawObstacles(p);
+        drawDragPreview(p);
+        drawHud(p, r);
+    }
+
+private:
+    static constexpr qreal kAltitudeM = 12.0;
+    static constexpr qreal kFovDeg = 84.0;
+    static constexpr qreal kImageWidthPx = 1280.0;
+    static constexpr qreal kImageHeightPx = 720.0;
+
+    QRectF imageRect() const
+    {
+        QRectF area = rect().adjusted(14, 14, -14, -14);
+        const qreal target = capturedImageAspectRatio();
+        qreal w = area.width();
+        qreal h = w / target;
+        if (h > area.height()) {
+            h = area.height();
+            w = h * target;
+        }
+        return QRectF(area.center().x() - w / 2.0,
+                      area.center().y() - h / 2.0,
+                      w,
+                      h);
+    }
+
+    QPointF widgetToNorm(const QPointF &point) const
+    {
+        const QRectF img = imageRect();
+        return QPointF((point.x() - img.left()) / img.width(),
+                       (point.y() - img.top()) / img.height());
+    }
+
+    QPointF normToWidget(const QPointF &norm) const
+    {
+        const QRectF img = imageRect();
+        return QPointF(img.left() + norm.x() * img.width(),
+                       img.top() + norm.y() * img.height());
+    }
+
+    bool isNormInside(const QPointF &norm) const
+    {
+        return norm.x() >= 0.0 && norm.x() <= 1.0
+            && norm.y() >= 0.0 && norm.y() <= 1.0;
+    }
+
+    qreal metersPerPixel() const
+    {
+        return (2.0 * kAltitudeM * std::tan(qDegreesToRadians(kFovDeg) / 2.0)) / kImageWidthPx;
+    }
+
+    QPointF xHat() const
+    {
+        const QPointF a(m_originNorm.x() * kImageWidthPx, m_originNorm.y() * kImageHeightPx);
+        const QPointF b(m_xAxisNorm.x() * kImageWidthPx, m_xAxisNorm.y() * kImageHeightPx);
+        const qreal dx = b.x() - a.x();
+        const qreal dy = b.y() - a.y();
+        const qreal len = std::hypot(dx, dy);
+        if (len < 1e-6) {
+            return QPointF(1.0, 0.0);
+        }
+        return QPointF(dx / len, dy / len);
+    }
+
+    QPointF yHat() const
+    {
+        const QPointF x = xHat();
+        return QPointF(x.y(), -x.x());
+    }
+
+    QPointF normToMeters(const QPointF &norm) const
+    {
+        if (!m_hasOrigin || !m_hasXAxis) {
+            return QPointF();
+        }
+        const qreal scale = metersPerPixel();
+        const QPointF x = xHat();
+        const QPointF y = yHat();
+        const qreal du = norm.x() * kImageWidthPx - m_originNorm.x() * kImageWidthPx;
+        const qreal dv = norm.y() * kImageHeightPx - m_originNorm.y() * kImageHeightPx;
+        return QPointF((du * x.x() + dv * x.y()) * scale,
+                       (du * y.x() + dv * y.y()) * scale);
+    }
+
+    QPointF metersToNorm(const QPointF &meters) const
+    {
+        const qreal scale = metersPerPixel();
+        const QPointF x = xHat();
+        const QPointF y = yHat();
+        const qreal xPx = meters.x() / scale;
+        const qreal yPx = meters.y() / scale;
+        const qreal du = xPx * x.x() + yPx * y.x();
+        const qreal dv = xPx * x.y() + yPx * y.y();
+        return QPointF((m_originNorm.x() * kImageWidthPx + du) / kImageWidthPx,
+                       (m_originNorm.y() * kImageHeightPx + dv) / kImageHeightPx);
+    }
+
+    QRectF normalizedMeterRect(const QPointF &a, const QPointF &b) const
+    {
+        return QRectF(QPointF(qMin(a.x(), b.x()), qMin(a.y(), b.y())),
+                      QPointF(qMax(a.x(), b.x()), qMax(a.y(), b.y())));
+    }
+
+    QPolygonF obstaclePolygon(const QRectF &obstacle) const
+    {
+        return QPolygonF{
+            normToWidget(metersToNorm(obstacle.topLeft())),
+            normToWidget(metersToNorm(obstacle.topRight())),
+            normToWidget(metersToNorm(obstacle.bottomRight())),
+            normToWidget(metersToNorm(obstacle.bottomLeft()))
+        };
+    }
+
+    QRectF fieldBoundsMeters() const
+    {
+        if (!axesReady()) {
+            const qreal w = kImageWidthPx * metersPerPixel();
+            const qreal h = kImageHeightPx * metersPerPixel();
+            return QRectF(0, 0, w, h);
+        }
+        QVector<QPointF> corners = {
+            normToMeters(QPointF(0, 0)),
+            normToMeters(QPointF(1, 0)),
+            normToMeters(QPointF(1, 1)),
+            normToMeters(QPointF(0, 1))
+        };
+        qreal minX = corners.first().x();
+        qreal maxX = minX;
+        qreal minY = corners.first().y();
+        qreal maxY = minY;
+        for (const QPointF &corner : corners) {
+            minX = qMin(minX, corner.x());
+            maxX = qMax(maxX, corner.x());
+            minY = qMin(minY, corner.y());
+            maxY = qMax(maxY, corner.y());
+        }
+        return QRectF(QPointF(minX, minY), QPointF(maxX, maxY));
+    }
+
+    QRectF autoMapDrawRect() const
+    {
+        const QRectF img = imageRect();
+        if (!m_autoMapBounds.isValid()
+            || m_autoMapBounds.width() <= 0.0
+            || m_autoMapBounds.height() <= 0.0) {
+            return img;
+        }
+
+        const qreal scale = qMin(img.width() / m_autoMapBounds.width(),
+                                 img.height() / m_autoMapBounds.height());
+        const qreal w = m_autoMapBounds.width() * scale;
+        const qreal h = m_autoMapBounds.height() * scale;
+        return QRectF(img.center().x() - w * 0.5,
+                      img.center().y() - h * 0.5,
+                      w,
+                      h);
+    }
+
+    QPointF autoWorldToWidget(const QPointF &world) const
+    {
+        const QRectF draw = autoMapDrawRect();
+        if (!m_autoMapBounds.isValid()
+            || m_autoMapBounds.width() <= 0.0
+            || m_autoMapBounds.height() <= 0.0) {
+            return draw.center();
+        }
+
+        const qreal x = draw.left()
+            + (world.x() - m_autoMapBounds.left()) / m_autoMapBounds.width() * draw.width();
+        const qreal y = draw.bottom()
+            - (world.y() - m_autoMapBounds.top()) / m_autoMapBounds.height() * draw.height();
+        return QPointF(x, y);
+    }
+
+    QRectF autoWorldRectToWidget(const QRectF &rect) const
+    {
+        return QRectF(autoWorldToWidget(rect.topLeft()),
+                      autoWorldToWidget(rect.bottomRight())).normalized();
+    }
+
+    void drawAutoYamlMap(QPainter &p)
+    {
+        if (!m_autoMapBounds.isValid()) {
+            return;
+        }
+
+        p.save();
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        const QRectF draw = autoMapDrawRect();
+        p.setPen(QPen(QColor("#35e878"), 1.4, Qt::DashLine));
+        p.setBrush(QColor(53, 232, 120, 10));
+        p.drawRoundedRect(draw, 4, 4);
+
+        QPainterPath floorPath;
+        if (m_autoAreas.isEmpty()) {
+            floorPath.addRect(draw);
+        } else {
+            for (const QRectF &area : m_autoAreas) {
+                QPainterPath areaPath;
+                areaPath.addRect(autoWorldRectToWidget(area));
+                floorPath = floorPath.isEmpty() ? areaPath : floorPath.united(areaPath);
+            }
+        }
+        p.setPen(QPen(QColor(96, 171, 228, 210), 2.0));
+        p.setBrush(QColor(28, 52, 72, 40));
+        p.drawPath(floorPath);
+
+        int index = 1;
+        for (const QRectF &obstacle : m_autoObstacles) {
+            const QRectF r = autoWorldRectToWidget(obstacle);
+            const bool wall = r.width() < 3.0 || r.height() < 3.0;
+            p.setPen(QPen(wall ? QColor("#d6e1ef") : QColor("#ff8a4a"), wall ? 1.4 : 2.0));
+            p.setBrush(wall ? QColor(136, 168, 189, 64) : QColor(18, 19, 24, 96));
+            p.drawRect(r);
+            if (!wall) {
+                QFont font = p.font();
+                font.setPointSize(9);
+                font.setBold(true);
+                p.setFont(font);
+                p.setPen(QColor("#ffffff"));
+                p.drawText(r.topLeft() + QPointF(8, 18),
+                           QString("obs_%1").arg(index++, 2, 10, QLatin1Char('0')));
+            }
+        }
+
+        p.restore();
+    }
+
+    void drawAutoYamlOriginFrame(QPainter &p)
+    {
+        if (!m_autoMapBounds.isValid()) {
+            return;
+        }
+
+        const QRectF draw = autoMapDrawRect();
+        QPointF origin = autoWorldToWidget(QPointF(0.0, 0.0));
+        origin.setX(qBound(draw.left(), origin.x(), draw.right()));
+        origin.setY(qBound(draw.top(), origin.y(), draw.bottom()));
+
+        const qreal axisLen = qMin(draw.width(), draw.height()) * 0.34;
+        const QPointF xEnd(qMin(draw.right(), origin.x() + axisLen), origin.y());
+        const QPointF yEnd(origin.x(), qMax(draw.top(), origin.y() - axisLen));
+
+        QFont font = p.font();
+        font.setPointSize(10);
+        font.setBold(true);
+        p.setFont(font);
+
+        p.setBrush(QColor("#35e878"));
+        p.setPen(QPen(QColor("#35e878"), 2.4));
+        p.drawEllipse(origin, 5.5, 5.5);
+        p.drawText(origin + QPointF(9, -8), QStringLiteral("0,0"));
+
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(QColor("#ff5b57"), 2.4, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(origin, xEnd);
+        p.drawLine(xEnd, xEnd - QPointF(12, -5));
+        p.drawLine(xEnd, xEnd - QPointF(12, 5));
+        p.drawText(xEnd + QPointF(8, -8), "+X");
+
+        p.setPen(QPen(QColor("#68a7ff"), 2.4, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(origin, yEnd);
+        p.drawLine(yEnd, yEnd + QPointF(-5, 12));
+        p.drawLine(yEnd, yEnd + QPointF(5, 12));
+        p.drawText(yEnd + QPointF(8, -8), "+Y");
+    }
+
+    void drawDroneImage(QPainter &p)
+    {
+        const QRectF img = imageRect();
+        p.setPen(Qt::NoPen);
+        p.setBrush(m_previewMode ? QColor("#0a1218") : QColor("#081017"));
+        p.drawRoundedRect(img, 4, 4);
+
+        const QRectF target = m_autoYamlPreview ? autoMapDrawRect() : img;
+        if (!m_capturedImage.isNull()) {
+            p.drawImage(target, m_capturedImage, QRectF(QPointF(0, 0), QSizeF(m_capturedImage.size())));
+        } else {
+            QLinearGradient fallback(target.topLeft(), target.bottomRight());
+            fallback.setColorAt(0.0, QColor("#202a30"));
+            fallback.setColorAt(0.55, QColor("#111820"));
+            fallback.setColorAt(1.0, QColor("#060a0d"));
+            p.setBrush(fallback);
+            p.drawRect(target);
+        }
+
+        p.setPen(QPen(QColor(0, 0, 0, 110), 1.0));
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(target);
+
+        if (m_previewMode) {
+            p.setPen(QPen(QColor("#35e878"), 2.0, Qt::DashLine));
+            p.setBrush(Qt::NoBrush);
+            p.drawRoundedRect(target.adjusted(1, 1, -1, -1), 4, 4);
+        }
+    }
+
+    void drawCapturePlaceholder(QPainter &p, const QRectF &r)
+    {
+        QFont font = p.font();
+        font.setPointSize(14);
+        font.setBold(true);
+        p.setFont(font);
+        p.setPen(QColor("#607384"));
+        p.drawText(r.adjusted(18, 18, -18, -18), Qt::AlignCenter, QStringLiteral("CAPTURE WAITING"));
+    }
+
+    void drawCoordinateFrame(QPainter &p)
+    {
+        const QPointF origin = normToWidget(m_originNorm);
+        p.setPen(QPen(QColor("#35e878"), 2.4));
+        p.setBrush(QColor("#35e878"));
+        p.drawEllipse(origin, 5.5, 5.5);
+
+        QFont font = p.font();
+        font.setPointSize(10);
+        font.setBold(true);
+        p.setFont(font);
+        p.drawText(origin + QPointF(9, -8), "O");
+
+        if (!m_hasXAxis) {
+            return;
+        }
+
+        const QPointF xEnd = normToWidget(m_xAxisNorm);
+        const QPointF x = xHat();
+        const QPointF y = yHat();
+        const qreal len = qMax(92.0, imageRect().width() * 0.28);
+        const QPointF yEnd = origin + QPointF(y.x() * len, y.y() * len);
+
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(QColor("#ff5b57"), 2.4, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(origin, xEnd);
+        p.drawLine(xEnd, xEnd - QPointF(x.x() * 12 - x.y() * 5, x.y() * 12 + x.x() * 5));
+        p.drawLine(xEnd, xEnd - QPointF(x.x() * 12 + x.y() * 5, x.y() * 12 - x.x() * 5));
+        p.drawText(xEnd + QPointF(8, -8), "+X");
+
+        p.setPen(QPen(QColor("#68a7ff"), 2.4, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(origin, yEnd);
+        p.drawLine(yEnd, yEnd - QPointF(y.x() * 12 - y.y() * 5, y.y() * 12 + y.x() * 5));
+        p.drawLine(yEnd, yEnd - QPointF(y.x() * 12 + y.y() * 5, y.y() * 12 - y.x() * 5));
+        p.drawText(yEnd + QPointF(8, -8), "+Y");
+    }
+
+    void drawObstacles(QPainter &p)
+    {
+        if (!axesReady()) {
+            return;
+        }
+        int index = 1;
+        for (const QRectF &obstacle : m_obstacles) {
+            const QPolygonF poly = obstaclePolygon(obstacle);
+            p.setPen(QPen(m_previewMode ? QColor("#b88cff") : QColor("#48b6ff"), 2.0));
+            p.setBrush(m_previewMode ? QColor(184, 140, 255, 110) : QColor(40, 150, 255, 82));
+            p.drawPolygon(poly);
+
+            QFont font = p.font();
+            font.setPointSize(9);
+            font.setBold(true);
+            p.setFont(font);
+            p.setPen(QColor("#ffffff"));
+            p.drawText(poly.boundingRect().topLeft() + QPointF(8, 18),
+                       QString("obs_%1").arg(index++, 2, 10, QLatin1Char('0')));
+        }
+    }
+
+    void drawDragPreview(QPainter &p)
+    {
+        if (!m_dragging || !axesReady()) {
+            return;
+        }
+        const QRectF rect = normalizedMeterRect(m_dragStartMeters, m_dragCurrentMeters);
+        const QPolygonF poly = obstaclePolygon(rect);
+        p.setPen(QPen(QColor("#ffd21a"), 2.0, Qt::DashLine));
+        p.setBrush(QColor(255, 210, 26, 52));
+        p.drawPolygon(poly);
+    }
+
+    void drawHud(QPainter &p, const QRectF &r)
+    {
+        QFont font = p.font();
+        font.setPointSize(11);
+        font.setBold(true);
+        p.setFont(font);
+
+        const QString title = QStringLiteral("IMAGE MAP BUILDER");
+        const QString status = statusText();
+        const int textWidth = qMax(p.fontMetrics().horizontalAdvance(title),
+                                   p.fontMetrics().horizontalAdvance(status));
+        QRectF badge(r.left() + 14,
+                     r.top() + 12,
+                     qMin<qreal>(r.width() - 28, qMax(210, textWidth + 32)),
+                     58);
+        p.setPen(QPen(QColor(43, 73, 94, 185), 1.0));
+        p.setBrush(QColor(3, 8, 13, 178));
+        p.drawRoundedRect(badge, 6, 6);
+
+        p.setPen(QColor("#ffffff"));
+        p.drawText(badge.adjusted(12, 7, -10, -30), Qt::AlignLeft | Qt::AlignVCenter,
+                   title);
+        p.setPen(axesReady() ? QColor("#35e878") : QColor("#ffd21a"));
+        p.drawText(badge.adjusted(12, 29, -10, -7), Qt::AlignLeft | Qt::AlignVCenter,
+                   status);
+
+        if (m_hasCursor && axesReady()) {
+            const QPointF m = normToMeters(m_cursorNorm);
+            QRectF coord(r.right() - 182, r.bottom() - 44, 166, 28);
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(0, 0, 0, 150));
+            p.drawRoundedRect(coord, 5, 5);
+            p.setPen(QColor("#dce7f3"));
+            p.drawText(coord, Qt::AlignCenter,
+                       QString("x %1  y %2").arg(m.x(), 0, 'f', 1).arg(m.y(), 0, 'f', 1));
+        }
+    }
+
+    void clearAutoYamlPreview()
+    {
+        m_autoYamlPreview = false;
+        m_autoAreas.clear();
+        m_autoObstacles.clear();
+        m_autoStarts.clear();
+        m_autoMapBounds = QRectF();
+        m_autoEnd = QPointF();
+        m_hasAutoEnd = false;
+    }
+
+    void notifyChanged()
+    {
+        if (m_changed) {
+            m_changed();
+        }
+    }
+
+    void ensureCapturedImageLoaded()
+    {
+        if (m_captureImageLoadAttempted) {
+            return;
+        }
+        m_captureImageLoadAttempted = true;
+        const QString path = findDroneCaptureImagePath();
+        if (!path.isEmpty() && !m_capturedImage.load(path)) {
+            qWarning() << "DroneMapWidget: failed to load capture image" << path;
+        }
+    }
+
+    qreal capturedImageAspectRatio() const
+    {
+        if (!m_capturedImage.isNull() && m_capturedImage.height() > 0) {
+            return static_cast<qreal>(m_capturedImage.width()) / static_cast<qreal>(m_capturedImage.height());
+        }
+        return 16.0 / 9.0;
+    }
+
+    Tool m_tool = OriginTool;
+    bool m_hasOrigin = false;
+    bool m_hasXAxis = false;
+    bool m_hasCapturedImage = false;
+    bool m_dragging = false;
+    bool m_previewMode = false;
+    bool m_hasCursor = false;
+    QPointF m_originNorm;
+    QPointF m_xAxisNorm;
+    QPointF m_cursorNorm;
+    QPointF m_dragStartMeters;
+    QPointF m_dragCurrentMeters;
+    QVector<QRectF> m_obstacles;
+    QImage m_capturedImage;
+    bool m_captureImageLoadAttempted = false;
+    bool m_autoYamlPreview = false;
+    bool m_hasAutoEnd = false;
+    QRectF m_autoMapBounds;
+    QPointF m_autoEnd;
+    QVector<QRectF> m_autoAreas;
+    QVector<QRectF> m_autoObstacles;
+    QVector<QPointF> m_autoStarts;
+    std::function<void()> m_changed;
+};
+
+class DroneStatusIcon : public QWidget
+{
+public:
+    explicit DroneStatusIcon(const QString &kind, QWidget *parent = nullptr)
+        : QWidget(parent), m_kind(kind)
+    {
+        setObjectName("droneStatusIcon");
+        setFixedSize(58, 58);
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setAttribute(Qt::WA_TranslucentBackground, true);
+        setAttribute(Qt::WA_NoSystemBackground, true);
+        setAutoFillBackground(false);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        const QRectF r = rect().adjusted(7, 7, -7, -7);
+        const QColor blue("#4fb0ff");
+        const QColor green("#35e878");
+        const QColor color = (m_kind == QStringLiteral("battery")
+                              || m_kind == QStringLiteral("signal")) ? green : blue;
+        p.setPen(QPen(QColor(color.red(), color.green(), color.blue(), 46), 5.0,
+                      Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        drawIcon(p, r, color, true);
+        p.setPen(QPen(color, 2.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        drawIcon(p, r, color, false);
+    }
+
+private:
+    void drawIcon(QPainter &p, const QRectF &r, const QColor &color, bool glow)
+    {
+        Q_UNUSED(color);
+        if (m_kind == QStringLiteral("battery")) {
+            const QRectF body(r.left() + 8, r.top() + 3, r.width() - 16, r.height() - 6);
+            p.setBrush(Qt::NoBrush);
+            p.drawRoundedRect(body, 4, 4);
+            p.drawLine(QPointF(body.center().x() - 5, body.top() - 4),
+                       QPointF(body.center().x() + 5, body.top() - 4));
+            p.drawLine(QPointF(body.center().x() - 5, body.top() - 4),
+                       QPointF(body.center().x() - 5, body.top() + 1));
+            p.drawLine(QPointF(body.center().x() + 5, body.top() - 4),
+                       QPointF(body.center().x() + 5, body.top() + 1));
+            if (!glow) {
+                p.setBrush(QColor("#35e878"));
+                p.setPen(Qt::NoPen);
+                const qreal gap = 3.5;
+                const qreal h = (body.height() - gap * 5) / 4.0;
+                for (int i = 0; i < 4; ++i) {
+                    const qreal y = body.bottom() - gap - (i + 1) * h - i * gap;
+                    p.drawRoundedRect(QRectF(body.left() + 5, y, body.width() - 10, h), 2.0, 2.0);
+                }
+            }
+        } else if (m_kind == QStringLiteral("altitude")) {
+            const qreal cx = r.center().x();
+            const qreal top = r.top() + 6.0;
+            const qreal gap = 11.0;
+            const qreal half = 13.0;
+            for (int i = 0; i < 3; ++i) {
+                const qreal y = top + i * gap;
+                p.drawLine(QPointF(cx - half, y + 10.0), QPointF(cx, y));
+                p.drawLine(QPointF(cx, y), QPointF(cx + half, y + 10.0));
+            }
+        } else if (m_kind == QStringLiteral("speed")) {
+            const QPointF c = r.center() + QPointF(0, 7);
+            const qreal rad = r.width() * 0.46;
+            p.drawArc(QRectF(c.x() - rad, c.y() - rad, rad * 2, rad * 2), 28 * 16, 124 * 16);
+            p.drawLine(c, c + QPointF(rad * 0.48, -rad * 0.50));
+            p.drawEllipse(c, 2.4, 2.4);
+        } else {
+            const qreal base = r.bottom() - 4;
+            const QVector<qreal> heights = {10, 18, 27, 36};
+            for (int i = 0; i < heights.size(); ++i) {
+                const qreal x = r.left() + 8 + i * 10;
+                const QRectF bar(x, base - heights[i], 5.0, heights[i]);
+                p.setPen(Qt::NoPen);
+                p.setBrush(glow
+                               ? QColor(53, 232, 120, 48)
+                               : QColor("#35e878"));
+                p.drawRoundedRect(bar, 2.3, 2.3);
+            }
+        }
+    }
+
+    QString m_kind;
+};
+
+class HeaderMetricIcon : public QWidget
+{
+public:
+    explicit HeaderMetricIcon(const QString &kind, QWidget *parent = nullptr)
+        : QWidget(parent)
+        , m_kind(kind)
+    {
+        setFixedSize(48, 48);
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setAttribute(Qt::WA_TranslucentBackground, true);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        const QPointF c = rect().center();
+        QRadialGradient halo(c, 24);
+        halo.setColorAt(0.0, QColor(255, 210, 26, 42));
+        halo.setColorAt(0.62, QColor(0, 216, 255, 24));
+        halo.setColorAt(1.0, QColor(0, 0, 0, 0));
+        p.setPen(Qt::NoPen);
+        p.setBrush(halo);
+        p.drawEllipse(QRectF(c.x() - 23, c.y() - 23, 46, 46));
+
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(QColor("#ffd21a"), 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        drawIcon(p, c, 0.82);
+    }
+
+private:
+    void drawIcon(QPainter &p, const QPointF &c, qreal s)
+    {
+        if (m_kind == QStringLiteral("progress")) {
+            const QColor ringColor("#ffd21a");
+
+            p.save();
+            p.setPen(QPen(QColor(255, 210, 26, 178), 1.45, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            for (qreal radius : {7.0 * s, 14.5 * s}) {
+                p.drawEllipse(c, radius, radius);
+            }
+            p.setPen(QPen(QColor(255, 210, 26, 210), 2.7, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p.drawEllipse(c, 22.0 * s, 22.0 * s);
+
+            p.setPen(QPen(ringColor, 2.0, Qt::SolidLine, Qt::RoundCap));
+            p.drawLine(c, QPointF(c.x() + 19 * s, c.y() - 10 * s));
+
+            p.setPen(Qt::NoPen);
+            p.setBrush(ringColor);
+            p.drawEllipse(c, 3.8 * s, 3.8 * s);
+            p.drawEllipse(QPointF(c.x() + 19 * s, c.y() - 10 * s), 2.5 * s, 2.5 * s);
+            p.restore();
+        } else if (m_kind == QStringLiteral("time")) {
+            p.drawEllipse(c, 17 * s, 17 * s);
+            p.drawLine(c, QPointF(c.x(), c.y() - 10 * s));
+            p.drawLine(c, QPointF(c.x() + 9 * s, c.y() + 5 * s));
+        } else if (m_kind == QStringLiteral("robot")) {
+            const QPointF rc(c.x(), c.y() + 5 * s);
+            const QRectF body(rc.x() - 13 * s, rc.y() - 6 * s, 26 * s, 18 * s);
+            p.drawRoundedRect(body, 5 * s, 5 * s);
+            p.drawEllipse(QPointF(rc.x() - 5 * s, rc.y() + 2 * s), 1.7 * s, 1.7 * s);
+            p.drawEllipse(QPointF(rc.x() + 5 * s, rc.y() + 2 * s), 1.7 * s, 1.7 * s);
+            p.drawLine(QPointF(rc.x(), rc.y() - 6 * s), QPointF(rc.x(), rc.y() - 13 * s));
+            p.drawArc(QRectF(rc.x() - 12 * s, rc.y() - 22 * s, 24 * s, 16 * s), 35 * 16, 110 * 16);
+            p.drawArc(QRectF(rc.x() - 17 * s, rc.y() - 27 * s, 34 * s, 24 * s), 35 * 16, 110 * 16);
+        } else {
+            const QRectF bell(c.x() - 11 * s, c.y() - 9 * s, 22 * s, 22 * s);
+            p.drawArc(bell, 20 * 16, 140 * 16);
+            p.drawLine(QPointF(c.x() - 11 * s, c.y() + 2 * s), QPointF(c.x() - 11 * s, c.y() + 10 * s));
+            p.drawLine(QPointF(c.x() + 11 * s, c.y() + 2 * s), QPointF(c.x() + 11 * s, c.y() + 10 * s));
+            p.drawLine(QPointF(c.x() - 14 * s, c.y() + 10 * s), QPointF(c.x() + 14 * s, c.y() + 10 * s));
+            p.drawArc(QRectF(c.x() - 4 * s, c.y() + 10 * s, 8 * s, 7 * s), 180 * 16, 180 * 16);
+            p.drawLine(QPointF(c.x(), c.y() - 14 * s), QPointF(c.x(), c.y() - 18 * s));
+        }
+    }
+
+    QString m_kind;
+};
+
+class EmptyEventListWidget : public QListWidget
+{
+public:
+    explicit EmptyEventListWidget(QWidget *parent = nullptr)
+        : QListWidget(parent)
+    {
+    }
+
+protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        QListWidget::paintEvent(event);
+        if (count() > 0) {
+            return;
+        }
+
+        QPainter p(viewport());
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setRenderHint(QPainter::TextAntialiasing, true);
+
+        const QRectF area = viewport()->rect().adjusted(18, 18, -18, -18);
+        const QPointF c(area.center().x(), area.center().y() - 42.0);
+        const qreal s = 0.72;
+
+        QRadialGradient halo(c, 28);
+        halo.setColorAt(0.0, QColor(255, 210, 26, 34));
+        halo.setColorAt(0.72, QColor(0, 216, 255, 18));
+        halo.setColorAt(1.0, QColor(0, 0, 0, 0));
+        p.setPen(Qt::NoPen);
+        p.setBrush(halo);
+        p.drawEllipse(QRectF(c.x() - 28, c.y() - 28, 56, 56));
+
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(QColor("#ffd21a"), 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        QPainterPath doc;
+        doc.moveTo(c.x() - 15 * s, c.y() - 21 * s);
+        doc.lineTo(c.x() + 7 * s, c.y() - 21 * s);
+        doc.lineTo(c.x() + 17 * s, c.y() - 11 * s);
+        doc.lineTo(c.x() + 17 * s, c.y() + 22 * s);
+        doc.lineTo(c.x() - 15 * s, c.y() + 22 * s);
+        doc.closeSubpath();
+        p.drawPath(doc);
+        p.drawLine(QPointF(c.x() + 7 * s, c.y() - 21 * s),
+                   QPointF(c.x() + 7 * s, c.y() - 11 * s));
+        p.drawLine(QPointF(c.x() + 7 * s, c.y() - 11 * s),
+                   QPointF(c.x() + 17 * s, c.y() - 11 * s));
+        p.drawLine(QPointF(c.x() - 7 * s, c.y() - 2 * s),
+                   QPointF(c.x() + 8 * s, c.y() - 2 * s));
+        p.drawLine(QPointF(c.x() - 7 * s, c.y() + 8 * s),
+                   QPointF(c.x() + 10 * s, c.y() + 8 * s));
+
+        p.setPen(QColor("#f3f7fc"));
+        QFont title(QStringLiteral("Noto Sans"), 14, QFont::Black);
+        p.setFont(title);
+        p.drawText(QRectF(area.left(), c.y() + 34, area.width(), 28),
+                   Qt::AlignCenter, QStringLiteral("이벤트가 없습니다"));
+        p.setPen(QColor("#aeb8c8"));
+        QFont sub(QStringLiteral("Noto Sans"), 10, QFont::DemiBold);
+        p.setFont(sub);
+        p.drawText(QRectF(area.left(), c.y() + 64, area.width(), 24),
+                   Qt::AlignCenter, QStringLiteral("발생한 이벤트가 여기에 표시됩니다."));
+    }
+};
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
@@ -1109,6 +3207,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     buildUi();
     applyStyle();
+    qApp->installEventFilter(new ButtonGlowFilter(this));
 
     if (m_demoMode) {
         startDemoMode(m_robotCount);
@@ -1162,17 +3261,45 @@ void MainWindow::buildUi()
     };
     QPushButton *navExplore = makeNavButton("관제", true);
     QPushButton *navRobots = makeNavButton("로봇\n상태");
+    QPushButton *navDrone = makeNavButton("드론");
     QPushButton *navLogs = makeNavButton("로그");
     QPushButton *navSettings = makeNavButton("설정");
-    m_navButtons = {navExplore, navRobots, navLogs, navSettings};
-    navLayout->addSpacing(24);
+    m_navButtons = {navExplore, navRobots, navDrone, navLogs, navSettings};
+    navLayout->addWidget(new NavBrandWidget(nav), 0, Qt::AlignHCenter);
+    navLayout->addSpacing(8);
     navLayout->addWidget(navExplore);
     addNavSeparator();
     navLayout->addWidget(navRobots);
     addNavSeparator();
+    navLayout->addWidget(navDrone);
+    addNavSeparator();
     navLayout->addWidget(navLogs);
     addNavSeparator();
     navLayout->addWidget(navSettings);
+    m_manualActionPanel = new QWidget(nav);
+    m_manualActionPanel->setObjectName("manualActionPanel");
+    QHBoxLayout *manualActionLayout = new QHBoxLayout(m_manualActionPanel);
+    manualActionLayout->setContentsMargins(0, 0, 0, 0);
+    manualActionLayout->setSpacing(12);
+    manualActionLayout->setAlignment(Qt::AlignVCenter);
+    auto makeManualActionButton = [this, manualActionLayout](const QString &text,
+                                                             int actionCode,
+                                                             const QString &label) {
+        QPushButton *button = new QPushButton(text, m_manualActionPanel);
+        button->setObjectName("manualActionButton");
+        button->setCursor(Qt::PointingHandCursor);
+        button->setMinimumHeight(96);
+        button->setMaximumHeight(108);
+        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        connect(button, &QPushButton::clicked, this, [this, actionCode, label]() {
+            sendManualAction(actionCode, label);
+        });
+        manualActionLayout->addWidget(button);
+    };
+    makeManualActionButton(QStringLiteral("서기"), kManualActionStand, QStringLiteral("서기"));
+    makeManualActionButton(QStringLiteral("앉기"), kManualActionSit, QStringLiteral("앉기"));
+    makeManualActionButton(QStringLiteral("인사"), kManualActionGreet, QStringLiteral("인사"));
+    m_manualActionPanel->hide();
     navLayout->addStretch(1);
     navLayout->addWidget(new NavWatermark(nav), 0, Qt::AlignHCenter);
     rootLayout->addWidget(nav);
@@ -1185,6 +3312,11 @@ void MainWindow::buildUi()
     m_victimAlertButton->setObjectName("victimAlert");
     m_victimAlertButton->setCursor(Qt::PointingHandCursor);
     m_victimAlertButton->setText(QString());
+    auto *victimAlertGlow = new QGraphicsDropShadowEffect(m_victimAlertButton);
+    victimAlertGlow->setColor(QColor(255, 55, 48, 112));
+    victimAlertGlow->setBlurRadius(34.0);
+    victimAlertGlow->setOffset(0, 0);
+    m_victimAlertButton->setGraphicsEffect(victimAlertGlow);
     QVBoxLayout *victimAlertLayout = new QVBoxLayout(m_victimAlertButton);
     victimAlertLayout->setContentsMargins(32, 6, 32, 22);
     victimAlertLayout->setSpacing(12);
@@ -1232,7 +3364,7 @@ void MainWindow::buildUi()
     topLayout->setContentsMargins(18, 10, 18, 10);
     QLabel *title = new QLabel("통합 관제 대시보드");
     title->setObjectName("title");
-    m_crumb = new QLabel("  >  재난 탐색");
+    m_crumb = new QLabel("  >  관제");
     m_crumb->setObjectName("accentText");
     m_system = new QLabel("● 시스템 대기");
     m_system->setObjectName("systemText");
@@ -1249,6 +3381,19 @@ void MainWindow::buildUi()
     m_contentStack = new QStackedWidget;
     main->addWidget(m_contentStack, 1);
 
+    m_manualJoystickPanel = new QFrame(root);
+    m_manualJoystickPanel->setObjectName("manualJoystickPanel");
+    m_manualJoystickPanel->setAttribute(Qt::WA_StyledBackground, true);
+    QVBoxLayout *manualJoystickLayout = new QVBoxLayout(m_manualJoystickPanel);
+    manualJoystickLayout->setContentsMargins(6, 8, 6, 14);
+    manualJoystickLayout->setSpacing(0);
+    m_manualJoystick = new ManualJoystickWidget(m_manualJoystickPanel);
+    m_manualJoystick->setVelocityCallback([this](float vx, float vy, float omega, bool force) {
+        sendManualVelocity(vx, vy, omega, force);
+    });
+    manualJoystickLayout->addWidget(m_manualJoystick);
+    m_manualJoystickPanel->hide();
+
     QWidget *dashboardPage = new QWidget;
     QVBoxLayout *dashboard = new QVBoxLayout(dashboardPage);
     dashboard->setContentsMargins(0, 0, 0, 0);
@@ -1256,10 +3401,14 @@ void MainWindow::buildUi()
 
     QHBoxLayout *metrics = new QHBoxLayout;
     metrics->setSpacing(12);
-    metrics->addWidget(makeHeaderMetricCard("탐색 진행률", &m_metricProgress, "#18d878", &m_metricProgressBar), 3);
-    metrics->addWidget(makeHeaderMetricCard("임무 수행 시간", &m_metricMissionTime, "#ffffff"), 2);
-    metrics->addWidget(makeHeaderMetricCard("연결 로봇 갯수", &m_metricConnected, "#ffffff"), 2);
-    metrics->addWidget(makeHeaderMetricCard("주요 이벤트", &m_metricEvents, "#ffffff"), 2);
+    metrics->addWidget(makeHeaderMetricCard("탐색 진행률", &m_metricProgress, "#18d878",
+                                            &m_metricProgressBar, "progress"), 3);
+    metrics->addWidget(makeHeaderMetricCard("임무 수행 시간", &m_metricMissionTime, "#ffffff",
+                                            nullptr, "time"), 2);
+    metrics->addWidget(makeHeaderMetricCard("연결 로봇 갯수", &m_metricConnected, "#ffffff",
+                                            nullptr, "robot"), 2);
+    metrics->addWidget(makeHeaderMetricCard("주요 이벤트", &m_metricEvents, "#ffffff",
+                                            nullptr, "event"), 2);
     dashboard->addLayout(metrics);
 
     QHBoxLayout *upper = new QHBoxLayout;
@@ -1283,29 +3432,40 @@ void MainWindow::buildUi()
     QWidget *mapBody = new QWidget;
     m_mapLayout = new QVBoxLayout(mapBody);
     m_mapLayout->setContentsMargins(0, 0, 0, 0);
-    QHBoxLayout *mapToggle = new QHBoxLayout;
+    m_mapLayout->setSpacing(0);
     m_btn2d = new QPushButton("2D");
     m_btn2d->setObjectName("smallActive");
     m_btn3d = new QPushButton("3D");
     m_btn3d->setObjectName("smallButton");
     QPushButton *mapMaximize = new QPushButton("최대화");
     mapMaximize->setObjectName("smallButton");
-    mapToggle->addStretch();
-    mapToggle->addWidget(m_btn2d);
-    mapToggle->addWidget(m_btn3d);
-    mapToggle->addWidget(mapMaximize);
-    m_map = new MapWidget;
-    const QString mapYaml = findMapYaml();
-    if (!mapYaml.isEmpty()) {
-        m_map->loadMapConfig(mapYaml);
-    } else {
-        qWarning() << "map_data/new_map.yaml or map_data/map.yaml not found; map overlay disabled";
+    for (QPushButton *button : {m_btn2d, m_btn3d, mapMaximize}) {
+        button->setFixedHeight(30);
+        button->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
     }
+    m_map = new MapWidget;
     connect(m_map, &MapWidget::routeGenerationRequested,
             this, &MainWindow::handleRouteGenerationRequested);
-    m_mapLayout->addLayout(mapToggle);
     m_mapLayout->addWidget(m_map, 1);
-    upper->addWidget(makePanel("탐색 지도", mapBody), 5);
+
+    QFrame *mapPanel = new QFrame;
+    mapPanel->setObjectName("panel");
+    QVBoxLayout *mapPanelLayout = new QVBoxLayout(mapPanel);
+    mapPanelLayout->setContentsMargins(14, 12, 14, 14);
+    mapPanelLayout->setSpacing(10);
+    QHBoxLayout *mapHeader = new QHBoxLayout;
+    mapHeader->setContentsMargins(0, 0, 0, 0);
+    mapHeader->setSpacing(8);
+    QLabel *mapTitle = new QLabel("탐색 지도");
+    mapTitle->setObjectName("panelTitle");
+    mapHeader->addWidget(mapTitle, 0, Qt::AlignVCenter);
+    mapHeader->addStretch(1);
+    mapHeader->addWidget(m_btn2d, 0, Qt::AlignVCenter);
+    mapHeader->addWidget(m_btn3d, 0, Qt::AlignVCenter);
+    mapHeader->addWidget(mapMaximize, 0, Qt::AlignVCenter);
+    mapPanelLayout->addLayout(mapHeader);
+    mapPanelLayout->addWidget(mapBody, 1);
+    upper->addWidget(mapPanel, 5);
     dashboard->addLayout(upper, 5);
 
     QHBoxLayout *lower = new QHBoxLayout;
@@ -1320,18 +3480,23 @@ void MainWindow::buildUi()
     m_robotStatusScroll->setWidgetResizable(true);
     m_robotStatusScroll->setFrameShape(QFrame::NoFrame);
     m_robotStatusScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_robotStatusScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_robotStatusScroll->setWidget(robotBody);
     syncStatusRows(m_robotCount);
     lower->addWidget(makePanel("로봇 상태", m_robotStatusScroll), 4);
 
-    m_eventList = new QListWidget;
+    m_eventList = new EmptyEventListWidget;
     m_eventList->setObjectName("eventList");
     lower->addWidget(makePanel("이벤트 목록", m_eventList), 3);
 
     QWidget *controlBody = new QWidget;
     QVBoxLayout *control = new QVBoxLayout(controlBody);
     control->setContentsMargins(0, 0, 0, 0);
-    QHBoxLayout *robots = new QHBoxLayout;
+    control->setSpacing(10);
+    m_robotSelectRow = new QWidget(controlBody);
+    QHBoxLayout *robots = new QHBoxLayout(m_robotSelectRow);
+    robots->setContentsMargins(0, 0, 0, 0);
+    robots->setSpacing(8);
     QLabel *robotSelectLabel = new QLabel("제어 로봇");
     robotSelectLabel->setObjectName("infoLine");
     m_robotSelector = new BorderlessComboBox;
@@ -1382,24 +3547,31 @@ void MainWindow::buildUi()
     });
     robots->addWidget(robotSelectLabel);
     robots->addWidget(m_robotSelector, 1);
-    control->addLayout(robots);
 
-    QHBoxLayout *commands = new QHBoxLayout;
-    commands->setContentsMargins(0, 0, 0, 0);
-    commands->setSpacing(8);
-    QPushButton *move = makeCommandButton("이동", "yellowCommand");
-    QPushButton *manual = makeCommandButton("수동 제어", "controlCommand");
-    QPushButton *addRobot = makeCommandButton("로봇 투입", "controlCommand");
-    QPushButton *estop = makeCommandButton("긴급 정지", "redCommand");
-    connect(move, &QPushButton::clicked, this, &MainWindow::sendMove);
-    connect(manual, &QPushButton::clicked, this, [this]() {
-        appendEvent(UiEvent{m_selectedRobot,
-                            2,
-                            0,
-                            static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000ULL,
-                            "수동 제어 모드 선택"});
-    });
-    connect(addRobot, &QPushButton::clicked, this, [this]() {
+    m_autoCommandBody = new QWidget(controlBody);
+    m_commandButtonLayout = new QHBoxLayout(m_autoCommandBody);
+    m_commandButtonLayout->setContentsMargins(0, 0, 0, 0);
+    m_commandButtonLayout->setSpacing(8);
+    m_moveButton = makeCommandButton(QStringLiteral("이동"), "yellowCommand");
+    m_moveButton->setProperty("commandKind", "move");
+    m_manualToggleButton = makeCommandButton(QStringLiteral("수동 제어"), "controlCommand");
+    m_manualToggleButton->setProperty("commandKind", "manual");
+    m_manualToggleButton->setCheckable(true);
+    m_manualModeToggleButton = makeCommandButton(QStringLiteral("자동 제어"), "controlCommand");
+    m_manualModeToggleButton->setProperty("commandKind", "auto");
+    m_manualModeToggleButton->setObjectName("manualModeToggleButton");
+    m_manualModeToggleButton->setCheckable(true);
+    m_manualModeToggleButton->setChecked(true);
+    m_addRobotButton = makeCommandButton(QStringLiteral("로봇 투입"), "controlCommand");
+    m_addRobotButton->setProperty("commandKind", "deploy");
+    m_addRobotButton->setEnabled(false);
+    m_estopButton = makeCommandButton(QStringLiteral("긴급 정지"), "redCommand");
+    m_estopButton->setProperty("striped", true);
+    m_estopButton->setProperty("commandKind", "estop");
+    connect(m_moveButton, &QPushButton::clicked, this, &MainWindow::sendMove);
+    connect(m_manualToggleButton, &QPushButton::clicked, this, &MainWindow::toggleManualControl);
+    connect(m_manualModeToggleButton, &QPushButton::clicked, this, &MainWindow::toggleManualControl);
+    connect(m_addRobotButton, &QPushButton::clicked, this, [this]() {
         const int available = kMaxRobots - m_robotCount;
         if (available <= 0) {
             QMessageBox::information(this,
@@ -1541,20 +3713,99 @@ void MainWindow::buildUi()
 
         const int previousCount = m_robotCount;
         setRobotCount(m_robotCount + addCount);
-        selectRobot(m_robotCount - 1);
+        if (previousCount == 0 && addCount == 4) {
+            selectRobot(kAllRobotsSelection);
+        } else {
+            selectRobot(m_robotCount - 1);
+        }
+        if (m_map && m_robotCount > previousCount) {
+            refreshGlobalPathDisplay();
+        }
         appendEvent(UiEvent{-1,
                             1,
                             0,
                             static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000ULL,
                             QString("로봇 투입: %1대 -> %2대").arg(previousCount).arg(m_robotCount)});
     });
-    connect(estop, &QPushButton::clicked, this, &MainWindow::sendEstop);
-    for (QPushButton *button : {move, manual, addRobot, estop}) {
+    connect(m_estopButton, &QPushButton::clicked, this, &MainWindow::sendEstop);
+    for (QPushButton *button : {m_moveButton, m_manualToggleButton, m_addRobotButton, m_estopButton}) {
         button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-        commands->addWidget(button);
     }
-    control->addLayout(commands, 1);
-    lower->addWidget(makePanel("운용 제어", controlBody), 5);
+    m_manualModeToggleButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_manualModeToggleButton->setMinimumHeight(116);
+    m_manualModeToggleButton->setMaximumHeight(124);
+
+    m_manualControlBody = new QWidget(controlBody);
+    m_manualControlBody->setObjectName("manualControlBody");
+    QGridLayout *manualModeLayout = new QGridLayout(m_manualControlBody);
+    manualModeLayout->setSizeConstraint(QLayout::SetNoConstraint);
+    manualModeLayout->setContentsMargins(0, 0, 0, 0);
+    manualModeLayout->setHorizontalSpacing(12);
+    manualModeLayout->setVerticalSpacing(8);
+    manualModeLayout->setColumnStretch(0, 5);
+    manualModeLayout->setColumnStretch(1, 4);
+    manualModeLayout->setRowStretch(0, 0);
+    manualModeLayout->setRowStretch(1, 1);
+    m_manualJoystickPanel->setParent(m_manualControlBody);
+    m_manualJoystickPanel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    m_manualJoystickPanel->setMinimumSize(230, 230);
+    QFrame *manualActionGroupPanel = new QFrame(m_manualControlBody);
+    manualActionGroupPanel->setObjectName("manualActionGroupPanel");
+    manualActionGroupPanel->setAttribute(Qt::WA_StyledBackground, true);
+    manualActionGroupPanel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    QVBoxLayout *manualActionGroupLayout = new QVBoxLayout(manualActionGroupPanel);
+    manualActionGroupLayout->setContentsMargins(14, 14, 14, 14);
+    manualActionGroupLayout->setSpacing(12);
+    m_manualActionPanel->setParent(manualActionGroupPanel);
+    m_manualActionPanel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    manualActionGroupLayout->addWidget(m_manualModeToggleButton);
+    manualActionGroupLayout->addWidget(m_manualActionPanel, 1);
+    manualModeLayout->addWidget(manualActionGroupPanel, 0, 0, 2, 1);
+    manualModeLayout->addWidget(m_manualJoystickPanel, 0, 1, 2, 1);
+
+    m_autoControlPage = new QWidget(controlBody);
+    QVBoxLayout *autoControlLayout = new QVBoxLayout(m_autoControlPage);
+    autoControlLayout->setSizeConstraint(QLayout::SetNoConstraint);
+    autoControlLayout->setContentsMargins(0, 0, 0, 0);
+    autoControlLayout->setSpacing(10);
+    m_robotSelectRow->setParent(m_autoControlPage);
+    m_autoCommandBody->setParent(m_autoControlPage);
+    autoControlLayout->addWidget(m_robotSelectRow);
+    autoControlLayout->addWidget(m_autoCommandBody, 1);
+
+    m_controlModeStack = new QStackedWidget(controlBody);
+    m_controlModeStack->setObjectName("controlModeStack");
+    m_controlModeStack->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    m_controlModeStack->addWidget(m_autoControlPage);
+    m_controlModeStack->addWidget(m_manualControlBody);
+    control->addWidget(m_controlModeStack, 1);
+    updateCommandButtonOrder();
+
+    QFrame *controlPanel = new QFrame;
+    controlPanel->setObjectName("panel");
+    QVBoxLayout *controlPanelLayout = new QVBoxLayout(controlPanel);
+    controlPanelLayout->setContentsMargins(14, 12, 14, 14);
+    controlPanelLayout->setSpacing(8);
+    QHBoxLayout *controlHeader = new QHBoxLayout;
+    controlHeader->setContentsMargins(0, 0, 0, 0);
+    controlHeader->setSpacing(10);
+    QLabel *controlTitle = new QLabel("운용 제어");
+    controlTitle->setObjectName("panelTitle");
+    controlHeader->addWidget(controlTitle);
+    controlHeader->addSpacing(18);
+    m_controlRobotCaption = new QLabel("현재 제어 로봇");
+    m_controlRobotCaption->setObjectName("controlRobotCaption");
+    controlHeader->addWidget(m_controlRobotCaption);
+    m_controlRobotBadge = new QLabel(robotName(qMax(0, m_selectedRobot)));
+    m_controlRobotBadge->setObjectName("controlRobotBadge");
+    m_controlRobotBadge->setAlignment(Qt::AlignCenter);
+    controlHeader->addWidget(m_controlRobotBadge);
+    m_controlRobotCaption->hide();
+    m_controlRobotBadge->hide();
+    controlHeader->addStretch(1);
+    controlPanelLayout->addLayout(controlHeader);
+    controlPanelLayout->addWidget(controlBody, 1);
+    lower->addWidget(controlPanel, 5);
 
     dashboard->addLayout(lower, 3);
     m_contentStack->addWidget(dashboardPage);
@@ -1617,6 +3868,245 @@ void MainWindow::buildUi()
     footerLayout->addWidget(new QLabel("자동 갱신  ●"));
     robotPageLayout->addWidget(robotFooter);
     m_contentStack->addWidget(robotPage);
+
+    QWidget *dronePage = new QWidget;
+    dronePage->setObjectName("dronePage");
+    QVBoxLayout *droneLayout = new QVBoxLayout(dronePage);
+    droneLayout->setContentsMargins(0, 0, 0, 0);
+    droneLayout->setSpacing(12);
+
+    QHBoxLayout *droneUpper = new QHBoxLayout;
+    droneUpper->setSpacing(12);
+    QWidget *droneCameraBody = new QWidget;
+    QGridLayout *droneCameraLayout = new QGridLayout(droneCameraBody);
+    droneCameraLayout->setContentsMargins(0, 0, 0, 0);
+    droneCameraLayout->setSpacing(0);
+    DroneCameraWidget *droneCamera = new DroneCameraWidget;
+    QPushButton *captureDroneImageButton = new QPushButton(QStringLiteral("이미지 캡쳐"));
+    captureDroneImageButton->setObjectName("droneCaptureButton");
+    captureDroneImageButton->setCursor(Qt::PointingHandCursor);
+    captureDroneImageButton->setMinimumSize(112, 30);
+    droneCameraLayout->addWidget(droneCamera, 0, 0);
+    droneCameraLayout->addWidget(captureDroneImageButton, 0, 0, Qt::AlignRight | Qt::AlignBottom);
+    droneUpper->addWidget(makePanel("드론 카메라", droneCameraBody), 1);
+
+    QWidget *droneMapBody = new QWidget;
+    QVBoxLayout *droneMapLayout = new QVBoxLayout(droneMapBody);
+    droneMapLayout->setContentsMargins(0, 0, 0, 0);
+    droneMapLayout->setSpacing(10);
+    DroneMapWidget *droneMap = new DroneMapWidget;
+    droneMapLayout->addWidget(droneMap, 1);
+    QPushButton *applyDroneToControl = new QPushButton("맵 업데이트");
+    applyDroneToControl->setObjectName("droneApplyButton");
+    applyDroneToControl->setCursor(Qt::PointingHandCursor);
+    applyDroneToControl->setMinimumHeight(58);
+    applyDroneToControl->setMinimumWidth(280);
+    connect(applyDroneToControl, &QPushButton::clicked, this, [this]() {
+        if (!publishDroneMapToControl()) {
+            QMessageBox::warning(this,
+                                 "맵 업데이트 실패",
+                                 "관제탭에 표시할 YAML 맵을 찾거나 읽지 못했습니다.");
+            return;
+        }
+        showPage(0);
+    });
+    droneUpper->addWidget(makePanel("맵 생성", droneMapBody), 1);
+    droneLayout->addLayout(droneUpper, 5);
+
+    QHBoxLayout *droneLower = new QHBoxLayout;
+    droneLower->setSpacing(12);
+
+    QWidget *droneStatusBody = new QWidget;
+    QHBoxLayout *droneStatusLayout = new QHBoxLayout(droneStatusBody);
+    droneStatusLayout->setContentsMargins(18, 16, 18, 16);
+    droneStatusLayout->setSpacing(22);
+    auto makeDroneStatusMetric = [](const QString &iconKind, const QString &title,
+                                    const QString &value, const QString &valueColor) {
+        QWidget *metric = new QWidget;
+        metric->setObjectName("droneMetric");
+        metric->setAttribute(Qt::WA_StyledBackground, true);
+        QHBoxLayout *metricLayout = new QHBoxLayout(metric);
+        metricLayout->setContentsMargins(0, 0, 0, 0);
+        metricLayout->setSpacing(16);
+        DroneStatusIcon *icon = new DroneStatusIcon(iconKind, metric);
+        QWidget *textColumn = new QWidget(metric);
+        textColumn->setFixedHeight(58);
+        QVBoxLayout *textLayout = new QVBoxLayout(textColumn);
+        textLayout->setContentsMargins(0, 0, 0, 4);
+        textLayout->setSpacing(10);
+        QLabel *titleLabel = new QLabel(title);
+        titleLabel->setObjectName("droneMetricTitle");
+        titleLabel->setFixedHeight(16);
+        QLabel *valueLabel = new QLabel(value);
+        valueLabel->setObjectName("droneMetricValue");
+        valueLabel->setFixedHeight(28);
+        valueLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        valueLabel->setStyleSheet(QString("color:%1").arg(valueColor));
+        textLayout->addWidget(titleLabel);
+        textLayout->addWidget(valueLabel);
+        metricLayout->addWidget(icon, 0, Qt::AlignVCenter);
+        metricLayout->addWidget(textColumn, 1, Qt::AlignVCenter);
+        return metric;
+    };
+    auto addDroneStatusMetric = [droneStatusLayout, makeDroneStatusMetric](const QString &iconKind,
+                                                                           const QString &title,
+                                                                           const QString &value,
+                                                                           const QString &valueColor,
+                                                                           bool addSeparator = true) {
+        droneStatusLayout->addWidget(makeDroneStatusMetric(iconKind, title, value, valueColor), 1);
+        if (addSeparator) {
+            QFrame *separator = new QFrame;
+            separator->setObjectName("droneMetricSeparator");
+            separator->setFrameShape(QFrame::VLine);
+            separator->setFixedWidth(1);
+            droneStatusLayout->addWidget(separator);
+        }
+    };
+    addDroneStatusMetric("battery", "배터리", "89%", "#35e878");
+    addDroneStatusMetric("altitude", "고도", "12 m", "#ffffff");
+    addDroneStatusMetric("speed", "속도", "0.1 m/s", "#ffffff");
+    addDroneStatusMetric("signal", "연결 상태", "정상", "#35e878", false);
+    droneLower->addWidget(makePanel("드론 상태", droneStatusBody), 3);
+
+    QListWidget *droneEventList = new QListWidget;
+    droneEventList->setObjectName("droneEventList");
+    for (const QString &row : {
+             QStringLiteral("15:03:39    드론 이륙"),
+             QStringLiteral("15:03:31    경로 계획 완료"),
+             QStringLiteral("15:03:22    카메라 스트리밍 시작")}) {
+        QListWidgetItem *item = new QListWidgetItem(row);
+        item->setForeground(QColor("#d6e1ef"));
+        droneEventList->addItem(item);
+    }
+    droneLower->addWidget(makePanel("이벤트 로그", droneEventList), 2);
+    QWidget *dronePlannerBody = new QWidget;
+    dronePlannerBody->setObjectName("dronePlannerBody");
+    QVBoxLayout *dronePlannerLayout = new QVBoxLayout(dronePlannerBody);
+    dronePlannerLayout->setContentsMargins(14, 12, 14, 12);
+    dronePlannerLayout->setSpacing(10);
+
+    QLabel *dronePlannerState = new QLabel(droneMap->statusText());
+    dronePlannerState->setObjectName("dronePlannerState");
+    QLabel *dronePlannerDetail = new QLabel(droneMap->detailText());
+    dronePlannerDetail->setObjectName("dronePlannerDetail");
+    dronePlannerDetail->setWordWrap(true);
+    dronePlannerLayout->addWidget(dronePlannerState);
+    dronePlannerLayout->addWidget(dronePlannerDetail);
+
+    QGridLayout *droneToolGrid = new QGridLayout;
+    droneToolGrid->setContentsMargins(0, 0, 0, 0);
+    droneToolGrid->setHorizontalSpacing(8);
+    droneToolGrid->setVerticalSpacing(8);
+    auto makeDroneToolButton = [](const QString &text) {
+        QPushButton *button = new QPushButton(text);
+        button->setObjectName("droneToolButton");
+        button->setCursor(Qt::PointingHandCursor);
+        button->setMinimumHeight(34);
+        return button;
+    };
+    QPushButton *autoBuildDroneMapButton = makeDroneToolButton(QStringLiteral("자동 맵 생성"));
+    autoBuildDroneMapButton->setObjectName("droneAutoBuildButton");
+    autoBuildDroneMapButton->setMinimumHeight(42);
+    QPushButton *originToolButton = makeDroneToolButton(QStringLiteral("원점"));
+    QPushButton *xAxisToolButton = makeDroneToolButton(QStringLiteral("+X"));
+    QPushButton *obstacleToolButton = makeDroneToolButton(QStringLiteral("장애물"));
+    QPushButton *undoDroneMapButton = makeDroneToolButton(QStringLiteral("되돌리기"));
+    QPushButton *clearDroneMapButton = makeDroneToolButton(QStringLiteral("초기화"));
+    QPushButton *previewDroneMapButton = makeDroneToolButton(QStringLiteral("미리보기"));
+    dronePlannerLayout->addWidget(autoBuildDroneMapButton);
+    droneToolGrid->addWidget(originToolButton, 0, 0);
+    droneToolGrid->addWidget(xAxisToolButton, 0, 1);
+    droneToolGrid->addWidget(obstacleToolButton, 0, 2);
+    droneToolGrid->addWidget(undoDroneMapButton, 1, 0);
+    droneToolGrid->addWidget(clearDroneMapButton, 1, 1);
+    droneToolGrid->addWidget(previewDroneMapButton, 1, 2);
+    dronePlannerLayout->addLayout(droneToolGrid);
+
+    applyDroneToControl->setMinimumHeight(44);
+    applyDroneToControl->setMinimumWidth(0);
+    applyDroneToControl->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    dronePlannerLayout->addWidget(applyDroneToControl);
+
+    auto refreshDronePlannerUi = [droneMap,
+                                  dronePlannerState,
+                                  dronePlannerDetail,
+                                  originToolButton,
+                                  xAxisToolButton,
+                                  obstacleToolButton,
+                                  previewDroneMapButton,
+                                  undoDroneMapButton,
+                                  clearDroneMapButton,
+                                  applyDroneToControl]() {
+        dronePlannerState->setText(droneMap->statusText());
+        dronePlannerDetail->setText(droneMap->detailText());
+        originToolButton->setProperty("active", droneMap->tool() == DroneMapWidget::OriginTool);
+        xAxisToolButton->setProperty("active", droneMap->tool() == DroneMapWidget::XAxisTool);
+        obstacleToolButton->setProperty("active", droneMap->tool() == DroneMapWidget::ObstacleTool
+                                                   && !droneMap->previewMode());
+        originToolButton->setEnabled(droneMap->hasCapturedImage());
+        xAxisToolButton->setEnabled(droneMap->hasCapturedImage());
+        obstacleToolButton->setEnabled(droneMap->hasCapturedImage());
+        undoDroneMapButton->setEnabled(droneMap->hasCapturedImage());
+        clearDroneMapButton->setEnabled(droneMap->hasCapturedImage());
+        previewDroneMapButton->setEnabled(droneMap->hasCapturedImage() && droneMap->axesReady());
+        applyDroneToControl->setEnabled(droneMap->previewMode());
+        for (QPushButton *button : {originToolButton, xAxisToolButton, obstacleToolButton}) {
+            button->style()->unpolish(button);
+            button->style()->polish(button);
+        }
+    };
+    connect(originToolButton, &QPushButton::clicked, this, [droneMap, refreshDronePlannerUi]() {
+        droneMap->setTool(DroneMapWidget::OriginTool);
+        refreshDronePlannerUi();
+    });
+    connect(xAxisToolButton, &QPushButton::clicked, this, [droneMap, refreshDronePlannerUi]() {
+        droneMap->setTool(DroneMapWidget::XAxisTool);
+        refreshDronePlannerUi();
+    });
+    connect(obstacleToolButton, &QPushButton::clicked, this, [droneMap, refreshDronePlannerUi]() {
+        droneMap->setTool(DroneMapWidget::ObstacleTool);
+        refreshDronePlannerUi();
+    });
+    connect(undoDroneMapButton, &QPushButton::clicked, this, [droneMap, refreshDronePlannerUi]() {
+        droneMap->undo();
+        refreshDronePlannerUi();
+    });
+    connect(clearDroneMapButton, &QPushButton::clicked, this, [droneMap, refreshDronePlannerUi]() {
+        droneMap->clearAll();
+        refreshDronePlannerUi();
+    });
+    connect(previewDroneMapButton, &QPushButton::clicked, this, [droneMap, refreshDronePlannerUi]() {
+        droneMap->generatePreview();
+        refreshDronePlannerUi();
+    });
+    connect(autoBuildDroneMapButton, &QPushButton::clicked, this,
+            [droneMap, droneEventList, refreshDronePlannerUi]() {
+        if (!droneMap->generateAutoPreviewFromYaml(findMapYaml())) {
+            droneMap->generateAutoPreview();
+        }
+        QListWidgetItem *item = new QListWidgetItem(
+            QString("%1    자동 맵 미리보기 생성 완료")
+                .arg(QDateTime::currentDateTime().toString("hh:mm:ss")));
+        item->setForeground(QColor("#d6e1ef"));
+        droneEventList->insertItem(0, item);
+        refreshDronePlannerUi();
+    });
+    droneMap->setChangedCallback(refreshDronePlannerUi);
+    connect(captureDroneImageButton, &QPushButton::clicked, this,
+            [droneMap, droneEventList, refreshDronePlannerUi]() {
+        droneMap->loadCapturedImage();
+        QListWidgetItem *item = new QListWidgetItem(
+            QString("%1    이미지 캡쳐 완료")
+                .arg(QDateTime::currentDateTime().toString("hh:mm:ss")));
+        item->setForeground(QColor("#d6e1ef"));
+        droneEventList->insertItem(0, item);
+        refreshDronePlannerUi();
+    });
+    refreshDronePlannerUi();
+
+    droneLower->addWidget(makePanel("맵 빌더", dronePlannerBody), 4);
+    droneLayout->addLayout(droneLower, 2);
+    m_contentStack->addWidget(dronePage);
 
     QWidget *logPage = new QWidget;
     logPage->setObjectName("logPage");
@@ -1849,7 +4339,7 @@ void MainWindow::buildUi()
     QFormLayout *form = new QFormLayout(settingsBody);
     form->setContentsMargins(8, 4, 8, 4);
     QSpinBox *maxRobots = new QSpinBox;
-    maxRobots->setRange(1, kMaxRobots);
+    maxRobots->setRange(0, kMaxRobots);
     maxRobots->setValue(m_robotCount);
     QLineEdit *cmdIpc = new QLineEdit("SHM cmd_queue (/robot_bridge_N)");
     cmdIpc->setReadOnly(true);
@@ -1878,23 +4368,11 @@ void MainWindow::buildUi()
     m_fullscreenBtn2d->setObjectName("smallActive");
     m_fullscreenBtn3d = new QPushButton("3D");
     m_fullscreenBtn3d->setObjectName("smallButton");
-    QPushButton *mapManualControlButton = new QPushButton("수동 제어");
-    mapManualControlButton->setObjectName("manualControlButton");
-    mapManualControlButton->setMinimumSize(168, 42);
-    connect(mapManualControlButton, &QPushButton::clicked, this, [this] {
-        appendEvent(UiEvent{m_selectedRobot,
-                            2,
-                            0,
-                            static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000ULL,
-                            "수동 제어 모드 선택"});
-    });
     QPushButton *mapBackButton = new QPushButton("뒤로가기");
     mapBackButton->setObjectName("backButton");
     mapBackButton->setMinimumWidth(104);
     connect(mapBackButton, &QPushButton::clicked, this, &MainWindow::leaveMapFullscreen);
     mapFullscreenHeader->addWidget(mapFullscreenTitle);
-    mapFullscreenHeader->addStretch();
-    mapFullscreenHeader->addWidget(mapManualControlButton);
     mapFullscreenHeader->addStretch();
     mapFullscreenHeader->addWidget(m_fullscreenBtn2d);
     mapFullscreenHeader->addWidget(m_fullscreenBtn3d);
@@ -1916,21 +4394,9 @@ void MainWindow::buildUi()
     backButton->setObjectName("backButton");
     backButton->setMinimumWidth(104);
     connect(backButton, &QPushButton::clicked, this, &MainWindow::leaveCameraFullscreen);
-    QPushButton *manualControlButton = new QPushButton("수동 제어");
-    manualControlButton->setObjectName("manualControlButton");
-    manualControlButton->setMinimumSize(168, 42);
-    connect(manualControlButton, &QPushButton::clicked, this, [this] {
-        appendEvent(UiEvent{m_expandedRobotId,
-                            2,
-                            0,
-                            static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000ULL,
-                            "수동 제어 모드 선택"});
-    });
     m_cameraTitle = new QLabel("카메라 스트리밍");
     m_cameraTitle->setObjectName("panelTitle");
     cameraHeader->addWidget(m_cameraTitle);
-    cameraHeader->addStretch();
-    cameraHeader->addWidget(manualControlButton);
     cameraHeader->addStretch();
     cameraHeader->addWidget(backButton);
     cameraPageLayout->addLayout(cameraHeader);
@@ -1941,8 +4407,9 @@ void MainWindow::buildUi()
 
     connect(navExplore, &QPushButton::clicked, this, [this] { showPage(0); });
     connect(navRobots, &QPushButton::clicked, this, [this] { showPage(1); });
-    connect(navLogs, &QPushButton::clicked, this, [this] { showPage(2); });
-    connect(navSettings, &QPushButton::clicked, this, [this] { showPage(3); });
+    connect(navDrone, &QPushButton::clicked, this, [this] { showPage(2); });
+    connect(navLogs, &QPushButton::clicked, this, [this] { showPage(3); });
+    connect(navSettings, &QPushButton::clicked, this, [this] { showPage(4); });
     connect(m_btn2d, &QPushButton::clicked, this, &MainWindow::showMap2D);
     connect(m_btn3d, &QPushButton::clicked, this, &MainWindow::showMap3D);
     connect(m_fullscreenBtn2d, &QPushButton::clicked, this, &MainWindow::showMap2D);
@@ -1956,6 +4423,7 @@ void MainWindow::buildUi()
                             static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000ULL,
                             "생존자 탐지 테스트"});
     });
+    refreshRobotSelector();
     selectRobot(kAllRobotsSelection);
 }
 
@@ -1963,6 +4431,10 @@ void MainWindow::applyStyle()
 {
     setStyleSheet(R"(
         QMainWindow, QWidget { background:#03080d; color:#dce7f3; }
+        QWidget#robotEmptyState {
+            background:transparent;
+            border:0;
+        }
         #nav {
             background:#07131d;
             border:1px solid #263c4e;
@@ -1984,6 +4456,24 @@ void MainWindow::applyStyle()
         #systemText { font-size:15px; font-weight:700; color:#00e66b; }
         #clockText { font-size:18px; color:#c7d0db; }
         #panelTitle { font-size:20px; font-weight:800; color:#ffffff; background:transparent; border:0; }
+        #controlRobotCaption {
+            color:#aab7c5;
+            background:transparent;
+            border:0;
+            font-size:15px;
+            font-weight:800;
+        }
+        #controlRobotBadge {
+            min-width:116px;
+            min-height:34px;
+            padding:2px 14px;
+            color:#ffd21a;
+            background:#071017;
+            border:1px solid #bb9715;
+            border-radius:8px;
+            font-size:20px;
+            font-weight:900;
+        }
         QScrollArea#panelScrollArea {
             background:transparent;
             border:0;
@@ -2032,7 +4522,7 @@ void MainWindow::applyStyle()
             color:#18d878;
             background:transparent;
             border:0;
-            font-size:38px;
+            font-size:28px;
             font-weight:900;
         }
         QProgressBar#headerProgressBar {
@@ -2147,27 +4637,34 @@ void MainWindow::applyStyle()
         #videoBadge[state="wait"] { color:#9aa7b2; }
         #videoBadge[state="nosignal"] { color:#ff453a; }
         #victimAlert {
-            background:rgba(176, 0, 18, 185);
-            border:3px solid #ff3b30;
+            background:qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                        stop:0 rgba(220, 28, 42, 168),
+                                        stop:0.18 rgba(182, 8, 26, 162),
+                                        stop:1 rgba(112, 0, 16, 168));
+            border:3px solid #ff5a52;
             border-radius:10px;
             color:#ffffff;
             font-weight:900;
             padding:0;
         }
         #victimAlert:hover {
-            background:rgba(208, 0, 24, 205);
-            border-color:#ffdedb;
+            background:qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                        stop:0 rgba(238, 44, 58, 186),
+                                        stop:0.18 rgba(198, 15, 32, 180),
+                                        stop:1 rgba(128, 0, 18, 186));
+            border-color:#ffe2de;
         }
         #victimAlertTitle {
             background:transparent;
             border:0;
-            color:#ffffff;
+            color:#fff7f5;
             font-size:78px;
             font-weight:900;
         }
         #victimAlertFooter {
-            background:rgba(0,0,0,80);
-            border:0;
+            background:rgba(32,0,6,70);
+            border:1px solid rgba(255,190,180,66);
+            border-radius:7px;
             min-height:64px;
             max-height:64px;
         }
@@ -2190,6 +4687,143 @@ void MainWindow::applyStyle()
             border:0;
             outline:0;
             font-size:14px;
+        }
+        #dronePage { background:#03080d; }
+        #droneCaptureButton {
+            margin:0 16px 16px 0;
+            padding:4px 12px;
+            background:#101c25;
+            border:1px solid #ffd21a;
+            border-radius:6px;
+            color:#ffd21a;
+            font-size:13px;
+            font-weight:900;
+        }
+        #droneCaptureButton:hover {
+            background:#1b1805;
+            border-color:#fff2a8;
+            color:#fff2a8;
+        }
+        #droneCaptureButton:pressed {
+            background:#ffd21a;
+            color:#1b1500;
+        }
+        #droneApplyButton {
+            min-width:220px;
+            padding:8px 28px;
+            background:qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                        stop:0 #ffe16a, stop:0.52 #ffd21a, stop:1 #d99b05);
+            border:1px solid #ffe989;
+            border-radius:7px;
+            color:#1b1500;
+            font-size:20px;
+            font-weight:900;
+        }
+        #droneApplyButton:hover {
+            background:qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                        stop:0 #fff2a8, stop:0.55 #ffdc36, stop:1 #e0aa13);
+        }
+        #droneApplyButton:disabled {
+            background:#17232d;
+            border-color:#314251;
+            color:#70808f;
+        }
+        #dronePlannerBody {
+            background:transparent;
+            border:0;
+        }
+        #dronePlannerState {
+            background:transparent;
+            border:0;
+            color:#ffffff;
+            font-size:17px;
+            font-weight:900;
+        }
+        #dronePlannerDetail {
+            background:transparent;
+            border:0;
+            color:#aeb8c8;
+            font-size:12px;
+            font-weight:700;
+        }
+        #droneToolButton {
+            background:#101c25;
+            border:1px solid #284357;
+            border-radius:6px;
+            color:#dce7f3;
+            font-size:14px;
+            font-weight:800;
+            padding:4px 8px;
+        }
+        #droneToolButton:hover {
+            border-color:#ffd21a;
+            color:#ffd21a;
+        }
+        #droneToolButton[active="true"] {
+            background:#1b1805;
+            border-color:#ffd21a;
+            color:#ffd21a;
+        }
+        #droneToolButton:disabled {
+            background:#081018;
+            border-color:#1c2f3d;
+            color:#546575;
+        }
+        #droneAutoBuildButton {
+            background:#123125;
+            border:1px solid #35e878;
+            border-radius:6px;
+            color:#dfffee;
+            font-size:15px;
+            font-weight:900;
+            padding:6px 10px;
+        }
+        #droneAutoBuildButton:hover {
+            background:#174532;
+            border-color:#88ffb6;
+            color:#ffffff;
+        }
+        #droneAutoBuildButton:pressed {
+            background:#35e878;
+            color:#04130b;
+        }
+        #droneMetric {
+            background:transparent;
+            border:0;
+        }
+        #droneMetricTitle {
+            color:#aeb8c8;
+            background:transparent;
+            border:0;
+            font-size:17px;
+            font-weight:800;
+        }
+        #droneMetricValue {
+            background:transparent;
+            border:0;
+            font-size:22px;
+            font-weight:900;
+        }
+        #droneStatusIcon {
+            background:transparent;
+            border:0;
+        }
+        #droneMetricSeparator {
+            background:#223548;
+            border:0;
+            min-width:1px;
+            max-width:1px;
+        }
+        QListWidget#droneEventList {
+            background:#071017;
+            border:0;
+            outline:0;
+            font-size:16px;
+            font-weight:700;
+        }
+        QListWidget#droneEventList::item {
+            min-height:32px;
+            padding:4px 8px;
         }
         #logPage { background:#03080d; }
         #logHeroTitle {
@@ -2375,6 +5009,11 @@ void MainWindow::applyStyle()
             color:#ffd21a;
         }
         QPushButton:hover { border-color:#ffd21a; }
+        QPushButton:disabled {
+            background:#071017;
+            border-color:#1c2a34;
+            color:#596978;
+        }
         #backButton {
             min-height:34px;
             padding:4px 12px;
@@ -2459,6 +5098,70 @@ void MainWindow::applyStyle()
             font-size:17px;
             font-weight:800;
         }
+        #manualModeToggleButton {
+            background:qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                        stop:0 #3a3005, stop:0.52 #211b04, stop:1 #0f160d);
+            border:2px solid #ffd21a;
+            border-radius:8px;
+            color:#ffd21a;
+            font-size:26px;
+            font-weight:900;
+        }
+        #manualModeToggleButton:hover {
+            background:qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                        stop:0 #5a4807, stop:0.52 #2b2405, stop:1 #132010);
+            border-color:#fff1a6;
+            color:#fff1a6;
+        }
+        #manualJoystickPanel {
+            background:qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                        stop:0 #101820, stop:0.62 #071017, stop:1 #04090e);
+            border:1px solid #4b3d12;
+            border-radius:8px;
+        }
+        #manualActionGroupPanel {
+            background:qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                        stop:0 #071421, stop:0.62 #06111b, stop:1 #04090e);
+            border:1px solid #2a78a7;
+            border-radius:8px;
+        }
+        #manualJoystickTitle {
+            background:transparent;
+            border:0;
+            color:#ffd21a;
+            font-size:16px;
+            font-weight:900;
+        }
+        #manualActionPanel {
+            background:transparent;
+            border:0;
+        }
+        #manualActionButton {
+            min-height:96px;
+            max-height:108px;
+            padding:8px 6px;
+            border-radius:7px;
+            font-size:21px;
+            font-weight:900;
+        }
+        #manualActionButton {
+            background:qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                        stop:0 #1f3948, stop:0.45 #102532, stop:1 #07131d);
+            border:1px solid #58758a;
+            color:#ecf7ff;
+        }
+        #manualActionButton:hover {
+            border-color:#ffd21a;
+            color:#ffd21a;
+            background:qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                        stop:0 #315268, stop:0.45 #173544, stop:1 #0a1b27);
+        }
+        #manualActionButton:pressed {
+            border:2px solid #fff1a6;
+            color:#fff1a6;
+            background:qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                        stop:0 #5f4d08, stop:0.45 #332907, stop:1 #101b12);
+        }
         #smallButton, #smallActive { min-height:30px; min-width:70px; }
         #infoLine { color:#b9c5d0; background:#071017; border:0; padding:6px 2px; font-size:14px; }
         #robotOverviewPage { background:#03080d; }
@@ -2477,7 +5180,7 @@ void MainWindow::applyStyle()
             border-radius:8px;
         }
         #robotStatusCard[state="normal"], #robotStatusCard[state="moving"] {
-            border-color:#2a3d50;
+            border-color:#2d9f5a;
         }
         #robotStatusCard[state="warning"] { border-color:#9a7625; }
         #robotStatusCard[state="danger"] { border-color:#a94730; }
@@ -2499,7 +5202,8 @@ void MainWindow::applyStyle()
             font-weight:900;
         }
         #robotAccentLine {
-            background:#6bb7ff;
+            background:qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                        stop:0 #00d4ff, stop:0.55 #ffd21a, stop:1 rgba(255,210,26,0));
             border:0;
         }
         #robotDetailPanel { background:transparent; border:0; }
@@ -2757,7 +5461,7 @@ QPushButton *MainWindow::makeNavButton(const QString &text, bool active)
 
 QPushButton *MainWindow::makeCommandButton(const QString &text, const QString &objectName)
 {
-    QPushButton *button = new QPushButton(text);
+    QPushButton *button = new CommandButton(text);
     if (!objectName.isEmpty()) {
         button->setObjectName(objectName);
     }
@@ -2767,14 +5471,21 @@ QPushButton *MainWindow::makeCommandButton(const QString &text, const QString &o
 
 QFrame *MainWindow::makeHeaderMetricCard(const QString &title, QLabel **valueLabel,
                                          const QString &accentColor,
-                                         QProgressBar **progressBar)
+                                         QProgressBar **progressBar,
+                                         const QString &iconKind)
 {
     QFrame *card = new QFrame;
     card->setObjectName("headerMetric");
-    card->setMinimumHeight(112);
+    auto *glow = new QGraphicsDropShadowEffect(card);
+    glow->setColor(QColor(0, 137, 201, 112));
+    glow->setBlurRadius(36.0);
+    glow->setOffset(0, 0);
+    card->setGraphicsEffect(glow);
+    card->setFixedHeight(132);
+    card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     QVBoxLayout *layout = new QVBoxLayout(card);
-    layout->setContentsMargins(24, 13, 24, 12);
-    layout->setSpacing(progressBar ? 4 : 6);
+    layout->setContentsMargins(24, progressBar ? 6 : 12, 24, progressBar ? 10 : 12);
+    layout->setSpacing(progressBar ? 0 : 3);
 
     QLabel *titleLabel = new QLabel(title);
     titleLabel->setObjectName("headerMetricTitle");
@@ -2782,28 +5493,46 @@ QFrame *MainWindow::makeHeaderMetricCard(const QString &title, QLabel **valueLab
     value->setObjectName(progressBar ? "headerProgressValue" : "headerMetricValue");
     value->setStyleSheet(QString("color:%1").arg(accentColor));
     value->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    value->setMaximumHeight(38);
     *valueLabel = value;
 
-    if (progressBar) {
-        QHBoxLayout *headerRow = new QHBoxLayout;
-        headerRow->setContentsMargins(0, 0, 0, 0);
-        headerRow->setSpacing(10);
-        headerRow->addWidget(titleLabel);
-        headerRow->addStretch(1);
-        headerRow->addWidget(value);
-        layout->addLayout(headerRow);
-        layout->addStretch(1);
+    auto makeTitleRow = [&]() {
+        QHBoxLayout *titleRow = new QHBoxLayout;
+        titleRow->setContentsMargins(0, 0, 0, 0);
+        titleRow->setSpacing(10);
+        if (!iconKind.isEmpty()) {
+            titleRow->addWidget(new HeaderMetricIcon(iconKind));
+        }
+        titleRow->addWidget(titleLabel);
+        titleRow->addStretch(1);
+        return titleRow;
+    };
 
-        QProgressBar *bar = new QProgressBar;
+    if (progressBar) {
+        QHBoxLayout *topRow = new QHBoxLayout;
+        topRow->setContentsMargins(0, 0, 0, 0);
+        topRow->setSpacing(10);
+
+        QHBoxLayout *headerRow = makeTitleRow();
+        headerRow->setContentsMargins(0, 8, 0, 0);
+        topRow->addLayout(headerRow, 1);
+
+        value->setAlignment(Qt::AlignRight | Qt::AlignBottom);
+        value->setFixedHeight(42);
+        topRow->addWidget(value, 0, Qt::AlignBottom);
+        layout->addLayout(topRow);
+        layout->addSpacing(24);
+
+        QProgressBar *bar = new AnimatedProgressBar;
         bar->setObjectName("headerProgressBar");
         bar->setRange(0, 100);
         bar->setValue(0);
         bar->setTextVisible(false);
         *progressBar = bar;
-        layout->addSpacing(2);
         layout->addWidget(bar);
+        layout->addStretch(1);
     } else {
-        layout->addWidget(titleLabel);
+        layout->addLayout(makeTitleRow());
         layout->addWidget(value);
         QFrame *line = new QFrame;
         line->setFrameShape(QFrame::HLine);
@@ -2923,7 +5652,14 @@ QVector<RobotSnapshot> MainWindow::makeDemoSnapshots(int count) const
 
 void MainWindow::setRobotCount(int count)
 {
-    m_robotCount = qBound(1, count, kMaxRobots);
+    m_robotCount = qBound(0, count, kMaxRobots);
+    QSet<int> retainedRouteIds;
+    for (int robotId : m_routeGeneratedDisplayRobotIds) {
+        if (robotId >= 0 && robotId < m_robotCount) {
+            retainedRouteIds.insert(robotId);
+        }
+    }
+    m_routeGeneratedDisplayRobotIds = retainedRouteIds;
     syncRobotUi(m_robotCount);
     clampSelectedRobot();
 
@@ -2948,11 +5684,42 @@ void MainWindow::setRobotCount(int count)
     m_monitor.start(kMaxRobots);
     refreshRobotSelector();
     refreshRobotList();
+    refreshGlobalPathDisplay();
+}
+
+void MainWindow::noteRouteGeneratedForDisplayRobots(const QVector<int> &robotIds)
+{
+    for (int robotId : robotIds) {
+        if (robotId >= 0 && robotId < m_robotCount) {
+            m_routeGeneratedDisplayRobotIds.insert(robotId);
+        }
+    }
+    refreshGlobalPathDisplay();
+}
+
+void MainWindow::refreshGlobalPathDisplay()
+{
+    if (!m_map) {
+        return;
+    }
+
+    QVector<int> visiblePathIds;
+    const int count = qBound(0, m_robotCount, kMaxRobots);
+    visiblePathIds.reserve(count);
+    for (int robotId = 0; robotId < count; ++robotId) {
+        if (showsPathOnDeploy(robotId)
+            || m_routeGeneratedDisplayRobotIds.contains(robotId)) {
+            visiblePathIds.append(robotId);
+        }
+    }
+
+    m_map->setGlobalPathRobotIds(visiblePathIds);
+    m_map->setGlobalPathsVisible(!visiblePathIds.isEmpty());
 }
 
 void MainWindow::syncRobotUi(int count)
 {
-    const int clamped = qBound(1, count, kMaxRobots);
+    const int clamped = qBound(0, count, kMaxRobots);
     syncVideoTiles(clamped);
     syncStatusRows(clamped);
     syncRobotStatusCards(clamped);
@@ -2976,6 +5743,29 @@ void MainWindow::syncVideoTiles(int count)
         VideoTile *tile = m_videoTiles.takeLast();
         m_videoGrid->removeWidget(tile);
         tile->deleteLater();
+    }
+    if (count <= 0) {
+        if (!m_videoEmptyState) {
+            m_videoEmptyState = new DashboardEmptyState(DashboardEmptyState::Kind::Video,
+                                                        m_videoGrid->parentWidget());
+        }
+        if (m_videoGrid->indexOf(m_videoEmptyState) < 0) {
+            m_videoGrid->addWidget(m_videoEmptyState, 0, 0,
+                                   kVideoLayoutRows, kVideoLayoutColumns);
+        }
+        m_videoEmptyState->show();
+        for (int row = 0; row < kVideoLayoutRows; ++row) {
+            m_videoGrid->setRowStretch(row, 1);
+        }
+        for (int col = 0; col < kVideoLayoutColumns; ++col) {
+            m_videoGrid->setColumnStretch(col, 1);
+        }
+        resetVideoLayout(0);
+        return;
+    }
+    if (m_videoEmptyState) {
+        m_videoGrid->removeWidget(m_videoEmptyState);
+        m_videoEmptyState->hide();
     }
     while (m_videoTiles.size() < count) {
         const int robotId = m_videoTiles.size();
@@ -3006,6 +5796,27 @@ void MainWindow::syncStatusRows(int count)
         m_robotStatusGrid->removeWidget(row);
         row->deleteLater();
     }
+    if (count <= 0) {
+        if (!m_robotStatusEmptyState) {
+            m_robotStatusEmptyState = new DashboardEmptyState(DashboardEmptyState::Kind::RobotStatus,
+                                                              m_robotStatusGrid->parentWidget());
+        }
+        if (m_robotStatusGrid->indexOf(m_robotStatusEmptyState) < 0) {
+            m_robotStatusGrid->addWidget(m_robotStatusEmptyState, 0, 0);
+        }
+        m_robotStatusEmptyState->show();
+        m_robotStatusGrid->setRowStretch(0, 1);
+        m_robotStatusGrid->setColumnStretch(0, 1);
+        if (QWidget *body = m_robotStatusGrid->parentWidget()) {
+            body->setMinimumHeight(0);
+            body->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        }
+        return;
+    }
+    if (m_robotStatusEmptyState) {
+        m_robotStatusGrid->removeWidget(m_robotStatusEmptyState);
+        m_robotStatusEmptyState->hide();
+    }
     while (m_statusRows.size() < count) {
         const int robotId = m_statusRows.size();
         StatusRow *row = new StatusRow(robotId);
@@ -3034,10 +5845,10 @@ void MainWindow::syncStatusRows(int count)
     if (QWidget *body = m_robotStatusGrid->parentWidget()) {
         if (count >= 6) {
             body->setMinimumHeight(m_statusRows.size() * 36 + qMax(0, m_statusRows.size() - 1) * m_robotStatusGrid->spacing());
-            body->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+            body->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         } else {
             body->setMinimumHeight(0);
-            body->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Expanding);
+            body->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         }
     }
 }
@@ -3066,10 +5877,14 @@ void MainWindow::syncRobotStatusCards(int count)
 
 void MainWindow::resetVideoLayout(int count)
 {
-    const int clamped = qBound(1, count, kMaxRobots);
+    const int clamped = qBound(0, count, kMaxRobots);
     const VideoLayoutSpec spec = videoLayoutSpec(clamped);
     m_videoPlacements.clear();
     m_videoPlacements.resize(clamped);
+    if (clamped <= 0) {
+        updateVideoLayoutBodySize();
+        return;
+    }
 
     QVector<int> ordered;
     ordered.reserve(clamped);
@@ -3356,6 +6171,13 @@ void MainWindow::relayoutRobotStatusCards()
 
 void MainWindow::clampSelectedRobot()
 {
+    if (m_robotCount <= 0) {
+        m_selectedRobot = kAllRobotsSelection;
+        if (m_map) {
+            m_map->setSelectedRobot(m_selectedRobot);
+        }
+        return;
+    }
     if (m_selectedRobot == kAllRobotsSelection) {
         if (m_map) {
             m_map->setSelectedRobot(m_selectedRobot);
@@ -3402,7 +6224,7 @@ void MainWindow::updateMissionSummary()
         m_metricProgress->setText(QString("%1%").arg(progress));
     }
     if (m_metricProgressBar) {
-        m_metricProgressBar->setValue(progress);
+        setProgressBarValueAnimated(m_metricProgressBar, progress);
     }
     if (m_metricMissionTime) {
         m_metricMissionTime->setText(formatMissionTime());
@@ -3457,6 +6279,10 @@ void MainWindow::updateSnapshots(const QVector<RobotSnapshot> &snapshots)
     QVector<RobotSnapshot> displaySnapshots = remapSnapshotsForDisplay(snapshots);
     for (RobotSnapshot &snapshot : displaySnapshots) {
         snapshot.commandMoving = snapshot.connected && m_commandMovingRobotIds.contains(snapshot.id);
+        if (snapshot.id >= 0 && snapshot.id < 4
+            && snapshot.shmOpen && snapshot.connected && snapshot.image.isNull()) {
+            snapshot.image = spotStartFrameForDisplayRobot(snapshot.id);
+        }
     }
     const QVector<RobotSnapshot> deployedSnapshots = snapshotsForDeployedRobots(displaySnapshots, m_robotCount);
     m_snapshots = displaySnapshots;
@@ -3718,6 +6544,9 @@ void MainWindow::appendEvent(const UiEvent &event)
     if (isBridgeCommandSentEvent(event) || isReassemblyTimeoutEvent(event) || isCommandAckEvent(event)) {
         return;
     }
+    if (event.robotId < 0 && event.message.contains(QStringLiteral("드론 생성"))) {
+        return;
+    }
 
     QString severity = "정보";
     QString color = "#8a96a3";
@@ -3804,6 +6633,9 @@ void MainWindow::showVictimAlert(const UiEvent &event)
     if (m_victimAlertAction) {
         m_victimAlertAction->setText("카메라 보기");
     }
+    if (m_map) {
+        m_map->showVictimDetection(event.robotId);
+    }
     m_victimAlertButton->adjustSize();
     positionVictimAlert();
     m_victimAlertButton->raise();
@@ -3829,6 +6661,8 @@ void MainWindow::resizeEvent(QResizeEvent *event)
 {
     QMainWindow::resizeEvent(event);
     positionVictimAlert();
+    positionManualActionPanel();
+    positionManualControlOverlay();
 }
 
 void MainWindow::showPage(int index)
@@ -3839,8 +6673,9 @@ void MainWindow::showPage(int index)
     restoreMapToDashboard();
     m_contentStack->setCurrentIndex(index);
     static const QStringList crumbs = {
-        "  >  재난 탐색",
+        "  >  관제",
         "  >  로봇 상태",
+        "  >  드론",
         "  >  로그",
         "  >  설정"
     };
@@ -3852,10 +6687,10 @@ void MainWindow::showPage(int index)
         m_navButtons[i]->style()->unpolish(m_navButtons[i]);
         m_navButtons[i]->style()->polish(m_navButtons[i]);
     }
-    if (index == 0 && m_map) {
+    if (index == 0 && m_map && m_mapPublished) {
         QTimer::singleShot(0, this, [this]() {
             if (m_map) {
-                m_map->fitToAvailableSize();
+                m_map->fitToAvailableSize(kDashboardMapStartupScale);
             }
         });
     }
@@ -3902,7 +6737,7 @@ void MainWindow::leaveCameraFullscreen()
         m_cameraReturnWidget = nullptr;
         m_cameraReturnCrumb.clear();
 
-        if (returnIndex >= 0 && returnIndex < 4 &&
+        if (returnIndex >= 0 && returnIndex < 5 &&
             returnWidget == m_contentStack->widget(returnIndex)) {
             showPage(returnIndex);
             return;
@@ -3920,7 +6755,8 @@ void MainWindow::leaveCameraFullscreen()
 
 void MainWindow::showMapFullscreen()
 {
-    if (!m_contentStack || !m_mapFullscreenPage || !m_mapFullscreenContentLayout || !m_map) {
+    if (!m_contentStack || !m_mapFullscreenPage || !m_mapFullscreenContentLayout || !m_map
+        || !m_mapPublished) {
         return;
     }
     m_mapFullscreenContentLayout->addWidget(m_map, 1);
@@ -3946,6 +6782,41 @@ void MainWindow::restoreMapToDashboard()
     m_mapLayout->addWidget(m_map, 1);
 }
 
+bool MainWindow::publishDroneMapToControl(const QString &preferredYamlPath)
+{
+    if (!m_map) {
+        return false;
+    }
+
+    QString mapYaml = preferredYamlPath;
+    if (mapYaml.isEmpty() || !QFileInfo::exists(mapYaml)) {
+        mapYaml = findMapYaml();
+    }
+    if (mapYaml.isEmpty() || !m_map->loadMapConfig(mapYaml)) {
+        return false;
+    }
+
+    m_mapPublished = true;
+    m_map->setVisible(true);
+    m_map->setSnapshots(snapshotsForDeployedRobots(m_snapshots, m_robotCount));
+    m_routeGeneratedDisplayRobotIds.clear();
+    refreshGlobalPathDisplay();
+    if (m_addRobotButton) {
+        m_addRobotButton->setEnabled(true);
+    }
+    appendEvent(UiEvent{-1,
+                        1,
+                        0,
+                        static_cast<quint64>(QDateTime::currentMSecsSinceEpoch()) * 1000ULL,
+                        QStringLiteral("드론 맵 업데이트 완료")});
+    QTimer::singleShot(0, this, [this]() {
+        if (m_map) {
+            m_map->fitToAvailableSize(kDashboardMapStartupScale);
+        }
+    });
+    return true;
+}
+
 void MainWindow::leaveMapFullscreen()
 {
     if (!m_contentStack || !m_mapLayout || !m_map) {
@@ -3957,6 +6828,9 @@ void MainWindow::leaveMapFullscreen()
 
 void MainWindow::showMap2D()
 {
+    if (!m_map || !m_mapPublished) {
+        return;
+    }
     m_map->setViewMode3D(false);
     if (m_contentStack && m_contentStack->currentWidget() == m_mapFullscreenPage) {
         QTimer::singleShot(0, this, [this]() {
@@ -3977,6 +6851,9 @@ void MainWindow::showMap2D()
 
 void MainWindow::showMap3D()
 {
+    if (!m_map || !m_mapPublished) {
+        return;
+    }
     m_map->setViewMode3D(true);
     m_btn2d->setObjectName("smallButton");
     m_btn3d->setObjectName("smallActive");
@@ -3992,6 +6869,9 @@ void MainWindow::selectRobot(int robotId)
 {
     if (robotId != kAllRobotsSelection && (robotId < 0 || robotId >= m_robotCount)) {
         return;
+    }
+    if (robotId == kAllRobotsSelection && m_manualControlEnabled) {
+        setManualControlEnabled(false);
     }
     m_selectedRobot = robotId;
     if (m_robotSelector) {
@@ -4023,6 +6903,7 @@ void MainWindow::selectRobot(int robotId)
 
     relayoutVideoTiles();
     refreshRobotList();
+    updateManualControlUi();
 }
 
 void MainWindow::refreshRobotSelector()
@@ -4044,13 +6925,15 @@ void MainWindow::refreshRobotSelector()
     };
 
     QVector<int> availableIds;
-    availableIds.append(kAllRobotsSelection);
     const int count = qBound(0, m_robotCount, kMaxRobots);
-    for (int i = 0; i < count; ++i) {
-        availableIds.append(i);
+    if (count > 0) {
+        availableIds.append(kAllRobotsSelection);
+        for (int i = 0; i < count; ++i) {
+            availableIds.append(i);
+        }
     }
 
-    if (availableIds == m_availableRobotIds) {
+    if (availableIds == m_availableRobotIds && m_robotSelector->count() > 0) {
         const int idx = m_robotSelector->findData(m_selectedRobot);
         if (idx >= 0 && m_robotSelector->currentIndex() != idx) {
             m_updatingRobotSelector = true;
@@ -4064,11 +6947,17 @@ void MainWindow::refreshRobotSelector()
 
     m_updatingRobotSelector = true;
     m_robotSelector->clear();
-    m_robotSelector->setEnabled(true);
-    for (int robotId : availableIds) {
-        m_robotSelector->addItem(robotId == kAllRobotsSelection ? QStringLiteral("전체")
-                                                                : robotName(robotId),
-                                 robotId);
+    m_robotSelector->setEnabled(count > 0);
+    if (availableIds.isEmpty()) {
+        m_robotSelector->addItem(QStringLiteral("미투입"), kAllRobotsSelection);
+        m_robotSelector->setCurrentIndex(0);
+        m_selectedRobot = kAllRobotsSelection;
+    } else {
+        for (int robotId : availableIds) {
+            m_robotSelector->addItem(robotId == kAllRobotsSelection ? QStringLiteral("전체")
+                                                                    : robotName(robotId),
+                                     robotId);
+        }
     }
 
     const int selectedIndex = m_robotSelector->findData(m_selectedRobot);
@@ -4234,6 +7123,326 @@ void MainWindow::sendCommand(uint8_t commandType, float vx, float vy, float omeg
                         QString("명령 전송: %1").arg(commandTypeText(commandType))});
 }
 
+bool MainWindow::sendControlCommand(uint8_t commandType, float vx, float vy, float omega,
+                                    const QString &logText, int severity, bool quiet)
+{
+    auto noteCommandState = [this, commandType, vx, vy, omega](int displayRobotId) {
+        if (displayRobotId < 0) {
+            return;
+        }
+        if (commandType == CMD_TYPE_MOVE ||
+            (commandType == CMD_TYPE_MANUAL_MOVE &&
+             (std::hypot(vx, vy) > 0.001f || std::fabs(omega) > 0.001f))) {
+            m_commandMovingRobotIds.insert(displayRobotId);
+        } else if (commandType == CMD_TYPE_STOP || commandType == CMD_TYPE_ESTOP ||
+                   commandType == CMD_TYPE_PAUSE_MISSION ||
+                   commandType == CMD_TYPE_CANCEL_MISSION ||
+                   commandType == CMD_TYPE_SET_AUTO ||
+                   commandType == CMD_TYPE_MANUAL_MOVE) {
+            m_commandMovingRobotIds.remove(displayRobotId);
+        }
+    };
+
+    int targetRobot = m_selectedRobot;
+    if (m_robotSelector && m_robotSelector->currentIndex() >= 0) {
+        targetRobot = m_robotSelector->currentData().toInt();
+        m_selectedRobot = targetRobot;
+    }
+
+    if (m_demoMode) {
+        if (!quiet) {
+            appendEvent(UiEvent{targetRobot, severity, commandType, 0,
+                                logText.isEmpty()
+                                    ? QString("테스트 명령: %1").arg(commandTypeText(commandType))
+                                    : logText});
+        }
+        return true;
+    }
+
+    auto sendOne = [this, commandType, vx, vy, omega, &noteCommandState](int displayRobotId,
+                                                                         QString *errorText) {
+        if (isHardcodedDisplayRobot(displayRobotId)) {
+            if (errorText) {
+                *errorText = QString("%1은 고정 표시 로봇이라 실제 명령 대상이 아닙니다.")
+                    .arg(robotName(displayRobotId));
+            }
+            return false;
+        }
+        const int physicalRobotId = displayToPhysicalRobotId(displayRobotId);
+        QString perRobotError;
+        if (!m_monitor.sendCommand(physicalRobotId, commandType, vx, vy, omega, &perRobotError)) {
+            if (errorText) {
+                *errorText = QString("%1: %2").arg(robotName(displayRobotId), perRobotError);
+            }
+            return false;
+        }
+        noteCommandState(displayRobotId);
+        return true;
+    };
+
+    bool anySent = false;
+    QString failed;
+    int sent = 0;
+    if (targetRobot == kAllRobotsSelection) {
+        for (int robotId = 0; robotId < m_robotCount; ++robotId) {
+            QString perRobotError;
+            if (sendOne(robotId, &perRobotError)) {
+                anySent = true;
+                ++sent;
+            } else if (!perRobotError.isEmpty()) {
+                failed += perRobotError + QLatin1Char('\n');
+            }
+        }
+    } else {
+        QString perRobotError;
+        anySent = sendOne(targetRobot, &perRobotError);
+        sent = anySent ? 1 : 0;
+        if (!perRobotError.isEmpty()) {
+            failed = perRobotError + QLatin1Char('\n');
+        }
+    }
+
+    if (!failed.isEmpty() && !quiet) {
+        QMessageBox::warning(this, "명령 전송 실패",
+                             QString("브릿지 명령 큐에 쓰지 못했습니다.\n%1").arg(failed));
+    }
+    if (anySent && !quiet) {
+        const QString text = logText.isEmpty()
+            ? QString("명령 전송: %1").arg(commandTypeText(commandType))
+            : (targetRobot == kAllRobotsSelection && sent > 1
+                   ? QString("%1 (%2대)").arg(logText).arg(sent)
+                   : logText);
+        appendEvent(UiEvent{targetRobot, severity, commandType, 0, text});
+    }
+    return anySent;
+}
+
+void MainWindow::toggleManualControl()
+{
+    if (m_selectedRobot == kAllRobotsSelection) {
+        updateManualControlUi();
+        QMessageBox::information(this,
+                                 QStringLiteral("수동 제어"),
+                                 QStringLiteral("수동 제어는 특정 SPOT을 선택했을 때만 사용할 수 있습니다."));
+        return;
+    }
+    setManualControlEnabled(!m_manualControlEnabled);
+}
+
+void MainWindow::setManualControlEnabled(bool enabled)
+{
+    if (enabled && m_selectedRobot == kAllRobotsSelection) {
+        m_manualControlEnabled = false;
+        updateManualControlUi();
+        return;
+    }
+    if (m_manualControlEnabled == enabled) {
+        updateManualControlUi();
+        return;
+    }
+
+    if (!enabled && m_manualJoystick) {
+        m_manualJoystick->resetStick();
+    }
+
+    m_manualControlEnabled = enabled;
+    m_lastManualVx = 0.0f;
+    m_lastManualVy = 0.0f;
+    m_lastManualOmega = 0.0f;
+    updateManualControlUi();
+
+    if (enabled) {
+        sendControlCommand(CMD_TYPE_MANUAL_MOVE, 0.0f, 0.0f, 0.0f,
+                           QStringLiteral("수동 제어 전환"), 2, false);
+    } else {
+        sendControlCommand(CMD_TYPE_SET_AUTO, 0.0f, 0.0f, 0.0f,
+                           QStringLiteral("자동 제어 전환"), 1, false);
+    }
+}
+
+void MainWindow::updateManualControlUi()
+{
+    const bool robotSelected = m_selectedRobot != kAllRobotsSelection;
+    if (m_manualToggleButton) {
+        m_manualToggleButton->setChecked(m_manualControlEnabled);
+        m_manualToggleButton->setEnabled(robotSelected);
+        m_manualToggleButton->setProperty("commandKind", m_manualControlEnabled ? "auto" : "manual");
+        m_manualToggleButton->setText(m_manualControlEnabled
+                                          ? QStringLiteral("자동 제어")
+                                          : QStringLiteral("수동 제어"));
+        m_manualToggleButton->style()->unpolish(m_manualToggleButton);
+        m_manualToggleButton->style()->polish(m_manualToggleButton);
+    }
+    if (m_manualModeToggleButton) {
+        m_manualModeToggleButton->setChecked(m_manualControlEnabled);
+        m_manualModeToggleButton->setEnabled(robotSelected);
+        m_manualModeToggleButton->setText(QStringLiteral("자동 제어"));
+        m_manualModeToggleButton->style()->unpolish(m_manualModeToggleButton);
+        m_manualModeToggleButton->style()->polish(m_manualModeToggleButton);
+    }
+    if (m_controlRobotBadge) {
+        m_controlRobotBadge->setText(robotSelected ? robotName(m_selectedRobot) : QStringLiteral("전체"));
+    }
+    const bool showManualControls = m_manualControlEnabled && robotSelected;
+    if (m_controlRobotCaption) {
+        m_controlRobotCaption->setVisible(showManualControls);
+    }
+    if (m_controlRobotBadge) {
+        m_controlRobotBadge->setVisible(showManualControls);
+    }
+    if (m_manualActionPanel) {
+        m_manualActionPanel->setVisible(true);
+    }
+    if (m_manualJoystickPanel) {
+        m_manualJoystickPanel->setVisible(true);
+    }
+    updateCommandButtonOrder();
+}
+
+void MainWindow::positionManualActionPanel()
+{
+    if (m_manualActionPanel && m_manualActionPanel->parentWidget() &&
+        m_manualActionPanel->parentWidget()->objectName() == QStringLiteral("manualActionGroupPanel")) {
+        return;
+    }
+    if (m_manualActionPanel && m_manualActionPanel->parentWidget() == m_manualControlBody) {
+        return;
+    }
+    if (!m_manualActionPanel || !m_manualActionPanel->parentWidget()) {
+        return;
+    }
+    constexpr int panelX = 14;
+    constexpr int panelW = 98;
+    constexpr int panelH = 348;
+    constexpr int bottomMargin = 82;
+    const QRect navRect = m_manualActionPanel->parentWidget()->rect();
+    const int y = qMax(12, navRect.bottom() - bottomMargin - panelH);
+    m_manualActionPanel->setGeometry(panelX, y, panelW, panelH);
+}
+
+void MainWindow::updateCommandButtonOrder()
+{
+    if (!m_commandButtonLayout || !m_moveButton || !m_manualToggleButton ||
+        !m_addRobotButton || !m_estopButton || !m_autoCommandBody ||
+        !m_autoControlPage || !m_manualControlBody || !m_robotSelectRow ||
+        !m_controlModeStack) {
+        return;
+    }
+    while (QLayoutItem *item = m_commandButtonLayout->takeAt(0)) {
+        delete item;
+    }
+    const bool robotSelected = m_selectedRobot != kAllRobotsSelection;
+    const bool manualMode = m_manualControlEnabled && robotSelected;
+    m_controlModeStack->setCurrentWidget(manualMode ? m_manualControlBody : m_autoControlPage);
+    m_robotSelectRow->setVisible(true);
+    m_autoCommandBody->setVisible(true);
+    m_moveButton->setVisible(true);
+    m_manualToggleButton->setVisible(true);
+    m_addRobotButton->setVisible(true);
+    m_estopButton->setVisible(true);
+    if (m_manualModeToggleButton) {
+        m_manualModeToggleButton->setVisible(true);
+    }
+    for (QPushButton *button : {m_moveButton, m_manualToggleButton, m_addRobotButton, m_estopButton}) {
+        m_commandButtonLayout->addWidget(button);
+    }
+}
+
+void MainWindow::sendManualVelocity(float vx, float vy, float omega, bool force)
+{
+    if (!m_manualControlEnabled || m_selectedRobot == kAllRobotsSelection) {
+        return;
+    }
+    if (std::hypot(vx, vy) < kManualCommandDeadband * kManualMaxForwardMps) {
+        vx = 0.0f;
+        vy = 0.0f;
+    }
+    if (std::fabs(omega) < kManualCommandDeadband * kManualMaxYawRadps) {
+        omega = 0.0f;
+    }
+
+    const bool wasZero = std::hypot(m_lastManualVx, m_lastManualVy) <= 0.001f
+        && std::fabs(m_lastManualOmega) <= 0.001f;
+    const bool isZero = std::hypot(vx, vy) <= 0.001f && std::fabs(omega) <= 0.001f;
+    if (!force && wasZero && isZero) {
+        return;
+    }
+
+    m_lastManualVx = vx;
+    m_lastManualVy = vy;
+    m_lastManualOmega = omega;
+    sendControlCommand(CMD_TYPE_MANUAL_MOVE, vx, vy, omega, QString(), 1, true);
+}
+
+void MainWindow::sendManualAction(int actionCode, const QString &label)
+{
+    if (m_selectedRobot == kAllRobotsSelection) {
+        QMessageBox::information(this,
+                                 QStringLiteral("수동 제어"),
+                                 QStringLiteral("수동 동작은 특정 SPOT을 선택했을 때만 사용할 수 있습니다."));
+        return;
+    }
+    if (!m_manualControlEnabled) {
+        setManualControlEnabled(true);
+    }
+    if (label == QStringLiteral("인사")) {
+        sendControlCommand(CMD_TYPE_BODY_ACTION,
+                           static_cast<float>(actionCode),
+                           0.0f,
+                           0.0f,
+                           QString("수동 동작: %1").arg(label),
+                           1,
+                           false);
+        return;
+    }
+
+    sendManualVelocity(0.0f, 0.0f, 0.0f, true);
+    sendControlCommand(CMD_TYPE_SET_MODE,
+                       static_cast<float>(actionCode),
+                       0.0f,
+                       0.0f,
+                       QString("수동 자세: %1").arg(label),
+                       1,
+                       false);
+}
+
+void MainWindow::positionManualControlOverlay()
+{
+    if (m_manualJoystickPanel && m_manualJoystickPanel->parentWidget() == m_manualControlBody) {
+        return;
+    }
+    if (!m_manualJoystickPanel || !centralWidget()) {
+        return;
+    }
+    constexpr int panelW = 278;
+    constexpr int panelH = 278;
+    constexpr int margin = 10;
+    const QRect r = centralWidget()->rect();
+    const int x = qMax(12, r.right() - panelW - margin);
+    const int y = qMax(12, r.bottom() - panelH - margin);
+    int clippedTop = 0;
+    if (m_map && m_map->isVisible()) {
+        const QRect mapRect(m_map->mapTo(centralWidget(), QPoint(0, 0)), m_map->size());
+        const QRect panelRect(x, y, panelW, panelH);
+        if (panelRect.intersects(mapRect.adjusted(-8, -8, 8, 8))) {
+            clippedTop = qBound(0, mapRect.bottom() + margin - y, panelH);
+        }
+    }
+    if (clippedTop >= panelH) {
+        m_manualJoystickPanel->hide();
+        return;
+    }
+    if (clippedTop > 0) {
+        m_manualJoystickPanel->setMask(QRegion(0, clippedTop, panelW, panelH - clippedTop));
+    } else {
+        m_manualJoystickPanel->clearMask();
+    }
+    if (m_manualControlEnabled && m_selectedRobot != kAllRobotsSelection) {
+        m_manualJoystickPanel->show();
+    }
+    m_manualJoystickPanel->setGeometry(x, y, panelW, panelH);
+}
+
 void MainWindow::handleRouteGenerationRequested(int robotId, const QPointF &end)
 {
     if (robotId != kAllRobotsSelection && (robotId < 0 || robotId >= m_robotCount)) {
@@ -4272,10 +7481,7 @@ void MainWindow::handleRouteGenerationRequested(int robotId, const QPointF &end)
                             QString("테스트 경로 생성: 목적지(%1, %2)")
                                 .arg(end.x(), 0, 'f', 2)
                                 .arg(end.y(), 0, 'f', 2)});
-        if (m_map) {
-            m_map->setGlobalPathRobotIds(visiblePathIds);
-            m_map->setGlobalPathsVisible(true);
-        }
+        noteRouteGeneratedForDisplayRobots(visiblePathIds);
         return;
     }
 
@@ -4317,10 +7523,7 @@ void MainWindow::handleRouteGenerationRequested(int robotId, const QPointF &end)
                                      .arg(failed));
         }
         if (sent > 0) {
-            if (m_map) {
-                m_map->setGlobalPathRobotIds(deployedRobotIds(m_snapshots, m_robotCount));
-                m_map->setGlobalPathsVisible(true);
-            }
+            noteRouteGeneratedForDisplayRobots(sentIds);
             appendEvent(UiEvent{kAllRobotsSelection, 1, CMD_TYPE_SET_ROUTE, 0,
                                 QString("전체 경로 생성 요청: 목적지(%1, %2), %3대")
                                     .arg(end.x(), 0, 'f', 2)
@@ -4359,10 +7562,7 @@ void MainWindow::handleRouteGenerationRequested(int robotId, const QPointF &end)
                         QString("경로 생성 요청: 목적지(%1, %2)")
                             .arg(end.x(), 0, 'f', 2)
                             .arg(end.y(), 0, 'f', 2)});
-    if (m_map) {
-        m_map->addGlobalPathRobotIds(QVector<int>{robotId});
-        m_map->setGlobalPathsVisible(true);
-    }
+    noteRouteGeneratedForDisplayRobots(QVector<int>{robotId});
 }
 
 void MainWindow::sendMove()

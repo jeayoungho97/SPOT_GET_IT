@@ -29,7 +29,7 @@ qt_add_resources(DisasterControlQt "robot_assets"
         assets/spot_robot.png
 )
 
-target_include_directories(DisasterControlQt PRIVATE ../bride_app_codex_indexed)
+target_include_directories(DisasterControlQt PRIVATE ../bridge_app)
 
 target_link_libraries(DisasterControlQt
     PRIVATE
