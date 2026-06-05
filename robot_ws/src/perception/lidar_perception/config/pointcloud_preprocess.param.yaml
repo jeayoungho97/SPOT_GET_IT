@@ -5,12 +5,12 @@ pointcloud_preprocess_node:
 
     # ROI 범위 (x, y, z) = (전방, 좌우, 높이) 제한 [m]
     # 앞뒤 범위
-    roi_min_x: 0.35  
+    roi_min_x: 0.1    # 0.35
     roi_max_x: 1.5
 
     # 좌우 범위
-    roi_min_y: -1.0   # 왼쪽 1m
-    roi_max_y:  1.0   # 오른쪽 1m
+    roi_min_y: -2.0   # 왼쪽 1m
+    roi_max_y:  2.0   # 오른쪽 1m
 
     # 상하 범위
     roi_min_z: 0.05   # 지면 5cm 위 부터 인식

@@ -114,7 +114,8 @@ free_space_model_node:
     # ============================================================
     # [1] Topic / Frame
     # ============================================================
-    input_topic: "/perception/lidar/local_occupancy_grid"
+    #input_topic: "/perception/lidar/local_occupancy_grid"
+    input_topic: "/perception/lidar/local_occupancy_grid_with_memory"
     output_topic: "/perception/lidar/free_space_model"
     frame_id: "base_link"
 

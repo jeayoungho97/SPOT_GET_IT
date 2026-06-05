@@ -232,10 +232,19 @@ namespace spot_navigation
         
 
         avoidance_min_clearance_m_ = this->declare_parameter<double>(
-            "avoidance_min_clearance_m", 0.60);
+            "avoidance_min_clearance_m", 0.60); 
 
         avoidance_horizon_m_ = this->declare_parameter<double>(
             "avoidance_horizon_m", 0.70);
+
+        // [추가] AVOIDANCE latch parameter
+        // obstacle_clear가 true가 되더라도 이 시간 또는 거리 조건을 만족하기 전까지는
+        // REJOIN으로 전환하지 않고 AVOIDANCE를 유지한다.
+        avoidance_min_hold_sec_ = this->declare_parameter<double>(
+            "avoidance_min_hold_sec", 1.0);
+
+        avoidance_min_travel_m_ = this->declare_parameter<double>(
+            "avoidance_min_travel_m", 0.50);
 
         rejoin_tolerance_m_ = this->declare_parameter<double>(
             "rejoin_tolerance_m", 0.30);
@@ -460,11 +469,21 @@ namespace spot_navigation
                 AVOIDANCE 상태.
 
                 핵심 변경:
-                    front가 clear여도 side가 clear가 아니면 REJOIN 금지.
-                    obstacle_clear = front_clear && side_clear일 때만 REJOIN 허용.
+                    - front가 clear여도 side가 clear가 아니면 REJOIN 금지
+                    - obstacle_clear = front_clear && side_clear일 때만 REJOIN 허용
+                    - AVOIDANCE latch 적용
+                        - obstacle_clear가 true가 되더라도,
+                        - AVOIDANCE 진입 후 최소 시간 또는 최소 이동거리 조건을 만족하기 전까지는
+                        - REJOIN으로 전환 X.
+                주의:
+                    Latch는 local path 자체를 고정하는 것 X
+                    latch_done이 false이면 AVOIDANCE 상태를 유지하면서
+                    현재 pose 기준으로 새로운 avoidance local path를 계속 생성
                 */
                 // [추가]
-                if (obstacle_clear) {
+                const bool avoidance_latch_done = isAvoidanceLatchDone(pose, stamp);
+
+                if (obstacle_clear && avoidance_latch_done) {
                     publishRejoinPath(stamp, pose, progress, obstacle_model, free_space_model);
                 }
                 else if (free_space_ok) {
@@ -581,13 +600,17 @@ namespace spot_navigation
                 obstacle_clear가 되면 REJOIN으로 복귀.
                 clear는 아니지만 free-space가 회복되면 AVOIDANCE 재개.
                 */
+                const bool avoidance_latch_done = isAvoidanceLatchDone(pose, stamp);
                 
-                if (obstacle_clear) {
+                // 1. 완전히 clear했고 latch도 끝났으면 global path 복귀
+                if (obstacle_clear && avoidance_latch_done) {
                     publishRejoinPath(stamp, pose, progress, obstacle_model, free_space_model);
                 }
+                // 2. 완전히 clear하지는 않지만, FreeSpaceModel이 회피 가능한 방향을 찾았으면 BLOCKED에서 AVOIDANCE로 탈출
                 else if (free_space_ok) {
                     publishAvoidancePath(stamp, pose, progress, obstacle_model, free_space_model);
                 }
+                // 3. clear도 아니고 회피 가능한 free-space도 없으면 계속 hold
                 else {
                     publishBlocked(
                         stamp, pose, progress, obstacle_model, free_space_model,
@@ -963,6 +986,70 @@ namespace spot_navigation
         return distance_ok || heading_ok;
     }
 
+    // AVOIDANCE Latch 시작 시점&위치 저장 함수
+    void LocalPathPlannerNode::startAvoidanceLatch(
+        const LocalizedPoseMsg &pose,
+        const rclcpp::Time &now)
+    {
+        /*
+        AVOIDANCE episode 시작 시점과 시작 위치를 저장한다.
+
+        중요:
+            - local path를 고정하는 기능이 아니다.
+            - AVOIDANCE 상태에서 REJOIN으로 너무 빨리 넘어가지 않도록
+            최소 시간/거리 조건을 판단하기 위한 기준값이다.
+        */
+        avoidance_latch_active_ = true;
+        avoidance_start_time_   = now;
+        avoidance_start_x_m_    = static_cast<double>(pose.x_m);
+        avoidance_start_y_m_    = static_cast<double>(pose.y_m);
+    }
+
+    // AVOIDANCE Latch 상태 정보(시간, 위치) 초기화 함수
+    void LocalPathPlannerNode::resetAvoidanceLatch()
+    {
+        /*
+        AVOIDANCE episode가 끝났다고 판단될 때 latch 상태를 초기화한다.
+
+        일반적으로:
+            - REJOIN으로 전환될 때
+            - GLOBAL_SUB_GOAL로 정상 복귀할 때
+            - GLOBAL_GOAL_REACHED가 되었을 때
+            - INVALID_INPUT으로 인해 정상 planning이 불가능할 때
+        호출할 수 있다.
+        */
+        avoidance_latch_active_ = false;
+        avoidance_start_x_m_    = 0.0;
+        avoidance_start_y_m_    = 0.0;
+    }
+
+    // AVOIDANCE 상태 최소 시간 or 거리 이상 유지했는지 판단 함수
+    bool LocalPathPlannerNode::isAvoidanceLatchDone(
+        const LocalizedPoseMsg &pose,
+        const rclcpp::Time &now) const
+    {
+        /*
+        AVOIDANCE 상태를 최소 시간 또는 최소 거리 이상 유지했는지 판단한다.
+
+        - true: obstacle_clear가 true일 때 REJOIN 전환을 허용할 수 있다.
+
+        - false: obstacle_clear가 true여도 아직 AVOIDANCE를 유지해야 한다.
+        */
+        
+        if (!avoidance_latch_active_) return true;
+
+        // elapsed_sec: AVOIDANCE에 진입한 뒤 현재까지 몇 초가 지났는가?
+        const double elapsed_sec = (now - avoidance_start_time_).seconds();
+
+        // traveled_m: AVOIDANCE 시작 위치에서 현재 pose까지의 직선 거리
+        const double dx = static_cast<double>(pose.x_m) - avoidance_start_x_m_;
+        const double dy = static_cast<double>(pose.y_m) - avoidance_start_y_m_;
+        const double traveled_m = std::hypot(dx, dy);
+
+        return elapsed_sec >= avoidance_min_hold_sec_ ||
+            traveled_m >= avoidance_min_travel_m_;
+    }
+
     // 기본 상태 메시지 생성 함수
     LocalPathPlannerNode::LocalPlannerStatusMsg LocalPathPlannerNode::makeBaseStatus(
         const rclcpp::Time &stamp, 
@@ -1195,6 +1282,10 @@ namespace spot_navigation
         bool pose_valid,
         const std::string &reason)
     {
+
+        // [추가] 입력 invalid 상태이므로 AVOIDANCE latch 종료
+        resetAvoidanceLatch();
+
         planner_state_ = LocalPlannerStatusMsg::INVALID_INPUT;
   
         auto status = makeBaseStatus(stamp, path_progress_valid, pose_valid);
@@ -1260,6 +1351,9 @@ namespace spot_navigation
         const LocalizedPoseMsg &pose,
         const PathProgressMsg &progress)
     {
+        // [추가] goal에 도달한 경우 AVOIDANCE latch 종료
+        resetAvoidanceLatch();
+
         planner_state_ = LocalPlannerStatusMsg::GLOBAL_GOAL_REACHED;
 
         auto path_msg = makeHoldLocalPath(pose, stamp);
@@ -1308,6 +1402,9 @@ namespace spot_navigation
         const LocalizedPoseMsg & pose,
         const PathProgressMsg & progress)
     {
+        // [추가] 정상 global path 추종 상태이므로 AVOIDANCE latch 종료
+        resetAvoidanceLatch();
+
         planner_state_ = LocalPlannerStatusMsg::GLOBAL_SUB_GOAL;
 
         const double target_x = static_cast<double>(progress.target_x_m);
@@ -1416,6 +1513,18 @@ namespace spot_navigation
         const ObstacleModelMsg &obstacle_model,
         const FreeSpaceModelMsg &free_space_model)
     {
+        /*
+        AVOIDANCE latch 시작.
+
+        주의:
+            publishAvoidancePath()는 timer cycle마다 반복 호출될 수 있다.
+            따라서 매번 latch를 새로 시작하면 안 된다.
+            avoidance_latch_active_가 false일 때만 시작해야 한다.
+        */
+        if (!avoidance_latch_active_) {
+            startAvoidanceLatch(pose, stamp);
+        }
+
         planner_state_ = LocalPlannerStatusMsg::AVOIDANCE;
 
         const double current_x   = static_cast<double>(pose.x_m);
@@ -1526,6 +1635,9 @@ namespace spot_navigation
         const FreeSpaceModelMsg & free_space_model)
     {
         (void)obstacle_model;
+
+        // [추가] REJOIN으로 전환되면 AVOIDANCE latch 종료
+        resetAvoidanceLatch();
 
         planner_state_ = LocalPlannerStatusMsg::REJOIN;
 

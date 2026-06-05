@@ -3,6 +3,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <nav_msgs/msg/path.hpp>
+#include <std_msgs/msg/string.hpp>
 
 #include <robot_interfaces/msg/path_progress.hpp>
 #include <robot_interfaces/msg/localized_robot_pose.hpp>
@@ -32,6 +33,7 @@ private:
   // Publisher
   // ============================================================
   rclcpp::Publisher<robot_interfaces::msg::NavigationState>::SharedPtr nav_state_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr drive_mode_pub_;
 
   // ============================================================
   // Timer
@@ -58,12 +60,7 @@ private:
   // ============================================================
   uint8_t current_nav_state_;
 
-  // Hysteresis : front blocked 여부
-  // front_clearance < front_block_distance_m  → blocked = true
-  // front_clearance > front_clear_distance_m  → blocked = false
   bool front_blocked_;
-
-  // clear_hold_time_sec 동안 clear 상태가 유지되었는지 확인용
   rclcpp::Time front_clear_start_time_;
   bool front_clear_timer_active_;
 
@@ -71,8 +68,6 @@ private:
   // Parameters
   // ============================================================
   std::string robot_id_;
-
-  // Topic names (파라미터로 관리)
   std::string topic_pose_;
   std::string topic_obstacle_;
   std::string topic_free_space_;
@@ -85,7 +80,7 @@ private:
   double pose_timeout_sec_;
   double perception_timeout_sec_;
   double emergency_stop_distance_m_;
-  double front_azimuth_limit_rad_;  // 전방 장애물 유효 방위각 한계 (rad)
+  double front_azimuth_limit_rad_;
   double timer_period_sec_;
 
   // ============================================================

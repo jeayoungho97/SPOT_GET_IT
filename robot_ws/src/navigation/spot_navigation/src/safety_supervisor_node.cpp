@@ -9,7 +9,8 @@ namespace spot_navigation
 SafetySupervisorNode::SafetySupervisorNode(const rclcpp::NodeOptions & options)
 : Node("safety_supervisor_node", options),
   prev_v_(0.0),
-  prev_w_(0.0)
+  prev_w_(0.0),
+  drive_mode_("manual")
 {
   // ============================================================
   // Parameters
@@ -18,11 +19,12 @@ SafetySupervisorNode::SafetySupervisorNode(const rclcpp::NodeOptions & options)
   topic_pose_                 = declare_parameter<std::string>("topic_pose", "/localization/pose");
   topic_obstacle_             = declare_parameter<std::string>("topic_obstacle", "/perception/lidar/obstacle_model");
   topic_free_space_           = declare_parameter<std::string>("topic_free_space", "/perception/lidar/free_space_model");
+  topic_drive_mode_           = declare_parameter<std::string>("topic_drive_mode", "/control/drive_mode/spot_01");
   soft_stop_distance_m_       = declare_parameter<double>("soft_stop_distance_m", 0.65);
   emergency_stop_distance_m_  = declare_parameter<double>("emergency_stop_distance_m", 0.30);
   max_safe_linear_x_mps_      = declare_parameter<double>("max_safe_linear_x_mps", 0.10);
   max_safe_angular_z_radps_   = declare_parameter<double>("max_safe_angular_z_radps", 0.40);
-  max_linear_accel_mps2_      = declare_parameter<double>("max_linear_accel_mps2", 0.33);
+  max_linear_accel_mps2_      = declare_parameter<double>("max_linear_accel_mps2", 1.65);
   max_linear_decel_mps2_      = declare_parameter<double>("max_linear_decel_mps2", 0.20);
   max_angular_accel_radps2_   = declare_parameter<double>("max_angular_accel_radps2", 1.0);
   cmd_timeout_sec_            = declare_parameter<double>("cmd_timeout_sec", 0.30);
@@ -53,6 +55,14 @@ SafetySupervisorNode::SafetySupervisorNode(const rclcpp::NodeOptions & options)
   pose_sub_ = create_subscription<robot_interfaces::msg::LocalizedRobotPose>(
     topic_pose_, 10,
     std::bind(&SafetySupervisorNode::on_pose, this, std::placeholders::_1));
+
+  rclcpp::QoS drive_mode_qos(10);
+  drive_mode_qos.reliable();
+  drive_mode_qos.transient_local();
+
+  drive_mode_sub_ = create_subscription<std_msgs::msg::String>(
+    topic_drive_mode_, drive_mode_qos,
+    std::bind(&SafetySupervisorNode::on_drive_mode, this, std::placeholders::_1));
 
   // ============================================================
   // Publishers
@@ -115,6 +125,12 @@ void SafetySupervisorNode::on_pose(
   last_pose_time_ = now();
 }
 
+void SafetySupervisorNode::on_drive_mode(
+  std_msgs::msg::String::SharedPtr msg)
+{
+  drive_mode_ = msg->data;
+}
+
 // ============================================================
 // Timer callback
 // ============================================================
@@ -122,6 +138,10 @@ void SafetySupervisorNode::on_pose(
 void SafetySupervisorNode::on_timer()
 {
   using NS = robot_interfaces::msg::NavigationState;
+  // drive_mode가 AUTO일 때만 publish
+  if (drive_mode_ != "AUTO") {
+    return;
+  }
 
   const double dt = timer_period_sec_;
   const auto now_time = now();

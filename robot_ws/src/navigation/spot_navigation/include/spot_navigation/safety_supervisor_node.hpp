@@ -4,6 +4,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/twist.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
+#include <std_msgs/msg/string.hpp>
 
 #include <robot_interfaces/msg/navigation_state.hpp>
 #include <robot_interfaces/msg/obstacle_model.hpp>
@@ -28,6 +29,7 @@ private:
   rclcpp::Subscription<robot_interfaces::msg::ObstacleModel>::SharedPtr obstacle_sub_;
   rclcpp::Subscription<robot_interfaces::msg::FreeSpaceModel>::SharedPtr free_space_sub_;
   rclcpp::Subscription<robot_interfaces::msg::LocalizedRobotPose>::SharedPtr pose_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr drive_mode_sub_;
 
   // ============================================================
   // Publishers
@@ -61,6 +63,7 @@ private:
   // ============================================================
   double prev_v_;   // 이전 tick 선속도 (가감속 기준)
   double prev_w_;   // 이전 tick 각속도 (가감속 기준)
+  std::string drive_mode_;  // 현재 드라이브 모드 ("auto" / "manual")
 
   // ============================================================
   // Parameters
@@ -71,6 +74,7 @@ private:
   std::string topic_pose_;
   std::string topic_obstacle_;
   std::string topic_free_space_;
+  std::string topic_drive_mode_;
 
   double soft_stop_distance_m_;
   double emergency_stop_distance_m_;
@@ -93,6 +97,7 @@ private:
   void on_obstacle(robot_interfaces::msg::ObstacleModel::SharedPtr msg);
   void on_free_space(robot_interfaces::msg::FreeSpaceModel::SharedPtr msg);
   void on_pose(robot_interfaces::msg::LocalizedRobotPose::SharedPtr msg);
+  void on_drive_mode(std_msgs::msg::String::SharedPtr msg);
   void on_timer();
 
   // ============================================================
