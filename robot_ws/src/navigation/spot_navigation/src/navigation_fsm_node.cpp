@@ -24,8 +24,35 @@ NavigationFsmNode::NavigationFsmNode(const rclcpp::NodeOptions & options)
   pose_timeout_sec_         = declare_parameter<double>("pose_timeout_sec", 0.5);
   perception_timeout_sec_   = declare_parameter<double>("perception_timeout_sec", 0.5);
   emergency_stop_distance_m_= declare_parameter<double>("emergency_stop_distance_m", 0.30);
-  front_azimuth_limit_rad_  = declare_parameter<double>("front_azimuth_limit_rad", 0.5236);  // 30도
-  timer_period_sec_         = declare_parameter<double>("timer_period_sec", 0.02);  // 50Hz
+  front_azimuth_limit_rad_  = declare_parameter<double>("front_azimuth_limit_rad", 0.5236);
+  timer_period_sec_         = declare_parameter<double>("timer_period_sec", 0.02);
+
+  // ============================================================
+  // Publishers
+  // ============================================================
+  nav_state_pub_ = create_publisher<robot_interfaces::msg::NavigationState>(
+    "/navigation/state/" + robot_id_, 10);
+
+  // 하위 제어기(safety_supervisor_node) 요구사항에 맞춰 QoS Durability를 Transient Local로 설정
+  rclcpp::QoS drive_mode_qos(10);
+  drive_mode_qos.transient_local();
+
+  drive_mode_pub_ = create_publisher<std_msgs::msg::String>(
+    "/control/drive_mode/" + robot_id_, drive_mode_qos);
+
+  // 노드가 완전히 기동하기 전 AUTO 모드 즉시 발행
+  RCLCPP_INFO(get_logger(), "하위 제어기 AUTO 주행 모드 전환 명령 발행 시작...");
+  auto mode_msg = std_msgs::msg::String();
+  mode_msg.data = "AUTO";
+
+  // 네트워크 탐색(Discovery) 및 초기 동기화를 위해 10Hz로 0.5초간 반복 발행
+  rclcpp::Rate ready_rate(10);
+  for (int i = 0; i < 5; ++i) {
+    drive_mode_pub_->publish(mode_msg);
+    rclcpp::spin_some(this->get_node_base_interface());
+    ready_rate.sleep();
+  }
+  RCLCPP_INFO(get_logger(), "AUTO 주행 모드 전환 완료.");
 
   // ============================================================
   // Subscribers
@@ -51,19 +78,12 @@ NavigationFsmNode::NavigationFsmNode(const rclcpp::NodeOptions & options)
     std::bind(&NavigationFsmNode::on_local_path, this, std::placeholders::_1));
 
   // ============================================================
-  // Publisher
-  // ============================================================
-  nav_state_pub_ = create_publisher<robot_interfaces::msg::NavigationState>(
-    "/navigation/state/" + robot_id_, 10);
-
-  // ============================================================
   // Timer
   // ============================================================
   timer_ = create_wall_timer(
     std::chrono::duration<double>(timer_period_sec_),
     std::bind(&NavigationFsmNode::on_timer, this));
 
-  // 초기 시간 설정
   last_pose_time_       = now();
   last_perception_time_ = now();
 
@@ -73,43 +93,24 @@ NavigationFsmNode::NavigationFsmNode(const rclcpp::NodeOptions & options)
 // ============================================================
 // Callbacks
 // ============================================================
+void NavigationFsmNode::on_path_progress(robot_interfaces::msg::PathProgress::SharedPtr msg)
+{ latest_path_progress_ = msg; }
 
-void NavigationFsmNode::on_path_progress(
-  robot_interfaces::msg::PathProgress::SharedPtr msg)
-{
-  latest_path_progress_ = msg;
-}
+void NavigationFsmNode::on_pose(robot_interfaces::msg::LocalizedRobotPose::SharedPtr msg)
+{ latest_pose_ = msg; last_pose_time_ = now(); }
 
-void NavigationFsmNode::on_pose(
-  robot_interfaces::msg::LocalizedRobotPose::SharedPtr msg)
-{
-  latest_pose_    = msg;
-  last_pose_time_ = now();
-}
+void NavigationFsmNode::on_obstacle(robot_interfaces::msg::ObstacleModel::SharedPtr msg)
+{ latest_obstacle_ = msg; last_perception_time_ = now(); }
 
-void NavigationFsmNode::on_obstacle(
-  robot_interfaces::msg::ObstacleModel::SharedPtr msg)
-{
-  latest_obstacle_      = msg;
-  last_perception_time_ = now();
-}
+void NavigationFsmNode::on_free_space(robot_interfaces::msg::FreeSpaceModel::SharedPtr msg)
+{ latest_free_space_ = msg; }
 
-void NavigationFsmNode::on_free_space(
-  robot_interfaces::msg::FreeSpaceModel::SharedPtr msg)
-{
-  latest_free_space_ = msg;
-}
-
-void NavigationFsmNode::on_local_path(
-  nav_msgs::msg::Path::SharedPtr msg)
-{
-  latest_local_path_ = msg;
-}
+void NavigationFsmNode::on_local_path(nav_msgs::msg::Path::SharedPtr msg)
+{ latest_local_path_ = msg; }
 
 // ============================================================
 // Timer callback : FSM 판단 및 publish
 // ============================================================
-
 void NavigationFsmNode::on_timer()
 {
   current_nav_state_ = determine_nav_state();
@@ -120,43 +121,23 @@ void NavigationFsmNode::on_timer()
 // ============================================================
 // FSM 판단 (우선순위 순)
 // ============================================================
-
 uint8_t NavigationFsmNode::determine_nav_state()
 {
   using NS = robot_interfaces::msg::NavigationState;
-
   const auto now_time = now();
 
-  // ----------------------------------------------------------
   // 1. NAV_LOCALIZATION_LOST
-  // ----------------------------------------------------------
   const double pose_age = (now_time - last_pose_time_).seconds();
   if (pose_age > pose_timeout_sec_) {
     return NS::NAV_LOCALIZATION_LOST;
   }
 
-  // ----------------------------------------------------------
-  // 2. NAV_PERCEPTION_STALE
-  // 비활성화 : obstacle_model/free_space_model이 장애물 없을 때 미발행되는 구조라
-  // lidar 동작 여부와 무관하게 stale이 뜨는 문제 → 향후 별도 토픽으로 대체 필요
-  // ----------------------------------------------------------
-  // const double perception_age = (now_time - last_perception_time_).seconds();
-  // if (perception_age > perception_timeout_sec_) {
-  //   return NS::NAV_PERCEPTION_STALE;
-  // }
-
-  // ----------------------------------------------------------
   // 3. NAV_WAITING_FOR_PATH
-  // ----------------------------------------------------------
   if (!latest_path_progress_ || !latest_path_progress_->path_valid) {
     return NS::NAV_WAITING_FOR_PATH;
   }
 
-  // ----------------------------------------------------------
   // 4. NAV_EMERGENCY_STOP
-  //    전방 장애물이 emergency_stop_distance_m 이내
-  //    azimuth_angle_rad 기준으로 front_azimuth_limit_rad 이내인 경우만 유효
-  // ----------------------------------------------------------
   if (latest_obstacle_ && latest_obstacle_->front.valid) {
     const float azimuth   = latest_obstacle_->front.azimuth_angle_rad;
     const float front_dist = latest_obstacle_->front.nearest_distance_xy;
@@ -166,16 +147,12 @@ uint8_t NavigationFsmNode::determine_nav_state()
     }
   }
 
-  // ----------------------------------------------------------
   // 5. NAV_GOAL_REACHED
-  // ----------------------------------------------------------
   if (latest_path_progress_->goal_reached) {
     return NS::NAV_GOAL_REACHED;
   }
 
-  // ----------------------------------------------------------
   // 6. front_blocked hysteresis 업데이트
-  // ----------------------------------------------------------
   float front_clearance = 9999.0f;
   if (latest_obstacle_ && latest_obstacle_->front.valid) {
     const float azimuth = latest_obstacle_->front.azimuth_angle_rad;
@@ -185,10 +162,7 @@ uint8_t NavigationFsmNode::determine_nav_state()
   }
   update_front_blocked(front_clearance);
 
-  // ----------------------------------------------------------
   // 7. NAV_STOPPED_BY_OBSTACLE
-  //    전방이 막혔고 free space도 없음
-  // ----------------------------------------------------------
   if (front_blocked_) {
     const bool free_space_available =
       latest_free_space_ && latest_free_space_->path_available;
@@ -197,11 +171,7 @@ uint8_t NavigationFsmNode::determine_nav_state()
     }
   }
 
-  // ----------------------------------------------------------
   // 8. NAV_FOLLOWING_LOCAL_PATH / NAV_PLANNING_LOCAL_PATH
-  //    전방이 막혔고 free space는 있음
-  //    local path가 이미 수신된 경우 FOLLOWING, 아직 없으면 PLANNING
-  // ----------------------------------------------------------
   if (front_blocked_) {
     const bool local_path_available =
       latest_local_path_ && !latest_local_path_->poses.empty();
@@ -211,10 +181,7 @@ uint8_t NavigationFsmNode::determine_nav_state()
     return NS::NAV_PLANNING_LOCAL_PATH;
   }
 
-  // ----------------------------------------------------------
   // 9. NAV_REJOINING_GLOBAL_PATH
-  //    이전 state가 회피 계열이고 global path와 가까워진 경우
-  // ----------------------------------------------------------
   const bool was_avoiding =
     (current_nav_state_ == NS::NAV_FOLLOWING_LOCAL_PATH ||
      current_nav_state_ == NS::NAV_AVOIDING_OBSTACLE ||
@@ -226,27 +193,22 @@ uint8_t NavigationFsmNode::determine_nav_state()
     return NS::NAV_REJOINING_GLOBAL_PATH;
   }
 
-  // ----------------------------------------------------------
-  // 10. NAV_TRACKING_GLOBAL_PATH (기본 상태)
-  // ----------------------------------------------------------
+  // 10. NAV_TRACKING_GLOBAL_PATH
   return NS::NAV_TRACKING_GLOBAL_PATH;
 }
 
 // ============================================================
 // Hysteresis : front_blocked 업데이트
 // ============================================================
-
 void NavigationFsmNode::update_front_blocked(float front_clearance)
 {
   if (!front_blocked_) {
-    // 현재 clear 상태 → block 조건 확인
     if (front_clearance < static_cast<float>(front_block_distance_m_)) {
       front_blocked_ = true;
       front_clear_timer_active_ = false;
       RCLCPP_WARN(get_logger(), "front_blocked = true (clearance: %.2fm)", front_clearance);
     }
   } else {
-    // 현재 blocked 상태 → clear 조건 확인
     if (front_clearance > static_cast<float>(front_clear_distance_m_)) {
       if (!front_clear_timer_active_) {
         front_clear_start_time_   = now();
@@ -256,12 +218,10 @@ void NavigationFsmNode::update_front_blocked(float front_clearance)
       if (clear_duration >= clear_hold_time_sec_) {
         front_blocked_            = false;
         front_clear_timer_active_ = false;
-        // local_path도 초기화 — 회피 경로가 유효하지 않을 수 있으므로
         latest_local_path_        = nullptr;
         RCLCPP_INFO(get_logger(), "front_blocked = false (clearance: %.2fm)", front_clearance);
       }
     } else {
-      // clear 조건 미충족 → clear 타이머 리셋
       front_clear_timer_active_ = false;
     }
   }
@@ -270,7 +230,6 @@ void NavigationFsmNode::update_front_blocked(float front_clearance)
 // ============================================================
 // NavigationState 메시지 빌드
 // ============================================================
-
 robot_interfaces::msg::NavigationState
 NavigationFsmNode::build_nav_state_msg(uint8_t nav_state)
 {
@@ -282,37 +241,28 @@ NavigationFsmNode::build_nav_state_msg(uint8_t nav_state)
   msg.robot_id        = robot_id_;
   msg.nav_state       = nav_state;
 
-  // 입력 상태
   msg.path_received    = (latest_path_progress_ != nullptr);
   msg.pose_valid       = (latest_pose_ != nullptr);
   msg.perception_valid = (latest_obstacle_ != nullptr);
 
-  // 장애물 상태 — front_blocked는 hysteresis 적용된 내부 상태를 그대로 반영
   msg.front_blocked = front_blocked_;
   if (latest_obstacle_) {
     msg.left_blocked  = latest_obstacle_->left.valid &&
-      (latest_obstacle_->left.nearest_distance_xy <
-       static_cast<float>(side_block_distance_m_));
+      (latest_obstacle_->left.nearest_distance_xy < static_cast<float>(side_block_distance_m_));
     msg.right_blocked = latest_obstacle_->right.valid &&
-      (latest_obstacle_->right.nearest_distance_xy <
-       static_cast<float>(side_block_distance_m_));
+      (latest_obstacle_->right.nearest_distance_xy < static_cast<float>(side_block_distance_m_));
 
-    msg.front_clearance_m = latest_obstacle_->front.valid ?
-      latest_obstacle_->front.nearest_distance_xy : 9999.0f;
-    msg.left_clearance_m  = latest_obstacle_->left.valid ?
-      latest_obstacle_->left.nearest_distance_xy : 9999.0f;
-    msg.right_clearance_m = latest_obstacle_->right.valid ?
-      latest_obstacle_->right.nearest_distance_xy : 9999.0f;
+    msg.front_clearance_m = latest_obstacle_->front.valid ? latest_obstacle_->front.nearest_distance_xy : 9999.0f;
+    msg.left_clearance_m  = latest_obstacle_->left.valid ? latest_obstacle_->left.nearest_distance_xy : 9999.0f;
+    msg.right_clearance_m = latest_obstacle_->right.valid ? latest_obstacle_->right.nearest_distance_xy : 9999.0f;
   }
 
-  // 경로 상태
   if (latest_path_progress_) {
     msg.goal_reached              = latest_path_progress_->goal_reached;
     msg.distance_to_goal_m        = latest_path_progress_->distance_to_goal_m;
     msg.distance_to_global_path_m = latest_path_progress_->distance_to_nearest_m;
   }
 
-  // 명령성 플래그
   msg.local_path_required = (nav_state == NS::NAV_PLANNING_LOCAL_PATH ||
                              nav_state == NS::NAV_FOLLOWING_LOCAL_PATH ||
                              nav_state == NS::NAV_AVOIDING_OBSTACLE);
@@ -323,7 +273,6 @@ NavigationFsmNode::build_nav_state_msg(uint8_t nav_state)
                              nav_state == NS::NAV_LOCALIZATION_LOST ||
                              nav_state == NS::NAV_PERCEPTION_STALE);
 
-  // reason
   switch (nav_state) {
     case NS::NAV_WAITING_FOR_PATH:      msg.reason = "waiting for global path"; break;
     case NS::NAV_TRACKING_GLOBAL_PATH:  msg.reason = "tracking global path"; break;

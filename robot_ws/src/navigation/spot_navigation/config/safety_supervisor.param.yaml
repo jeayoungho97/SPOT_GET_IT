@@ -8,14 +8,15 @@ safety_supervisor_node:
     topic_pose: "/localization/pose"
     topic_obstacle: "/perception/lidar/obstacle_model"
     topic_free_space: "/perception/lidar/free_space_model"
+    topic_drive_mode: "/control/drive_mode/spot_01"
 
     # 감속 시작 전방 거리 (m)
     # front_clearance < soft_stop_distance_m → v 점진 감속
-    soft_stop_distance_m: 0.65
+    soft_stop_distance_m: 0.01
 
     # 즉시 정지 전방 거리 (m)
     # front_clearance < emergency_stop_distance_m → v=0, w=0 즉시
-    emergency_stop_distance_m: 0.30
+    emergency_stop_distance_m: 0.01
 
     # safety 통과 후 허용 최대 선속도 (m/s) - 실측 기준
     max_safe_linear_x_mps: 0.10
@@ -23,8 +24,8 @@ safety_supervisor_node:
     # safety 통과 후 허용 최대 각속도 (rad/s)
     max_safe_angular_z_radps: 0.40
 
-    # 선속도 최대 가속도 (m/s²)
-    max_linear_accel_mps2: 0.33
+    # 선속도 최대 가속도 (m/s²) - 50Hz 기준 (10Hz 대비 5배)
+    max_linear_accel_mps2: 1.65
 
     # 선속도 최대 감속도 (m/s²)
     max_linear_decel_mps2: 0.20

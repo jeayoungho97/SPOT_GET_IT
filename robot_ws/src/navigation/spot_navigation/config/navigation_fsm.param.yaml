@@ -11,7 +11,7 @@ navigation_fsm_node:
 
     # 전방 장애물 판단 거리 (m)
     # front_clearance < front_block_distance_m → front_blocked = true
-    front_block_distance_m: 0.70
+    front_block_distance_m: 0.01  # 0.70
 
     # 좌/우 장애물 판단 거리 (m)
     side_block_distance_m: 0.50
@@ -35,7 +35,7 @@ navigation_fsm_node:
 
     # 즉시 정지 판단 거리 (m)
     # front_clearance < emergency_stop_distance_m → NAV_EMERGENCY_STOP
-    emergency_stop_distance_m: 0.30
+    emergency_stop_distance_m: 0.01 # 0.30
 
     # 전방 장애물 유효 방위각 한계 (rad)
     # 이 각도 이내의 장애물만 전방 장애물로 판단

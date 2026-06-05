@@ -23,7 +23,8 @@ path_progress_tracker_node:
     lookahead_distance_m: 0.5
 
     # goal에 도착했다고 판단할 거리 기준.
-    goal_tolerance_m: 0.3
+    #goal_tolerance_m: 0.3
+    goal_tolerance_m: 0.1
 
     # nearest_index가 뒤로 튀는 것을 막기 위한 설정.
     # 실제 로봇 전진 주행 검증에서는 false 유지 (중요)

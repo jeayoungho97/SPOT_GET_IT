@@ -116,6 +116,23 @@ namespace spot_navigation
             bool isRejoinDone(const PathProgressMsg &progress) const;
 
             // ==========================================
+            // [추가] AVOIDANCE Latch Helper 함수
+            // - AVOIDANCE 진입 시점/위치를 저장한다.
+            // - obstacle_clear가 true가 되더라도 최소 시간/거리 조건을 만족하기 전까지
+            //   REJOIN으로 전환하지 않도록 한다.
+            // - local path 자체를 고정하는 것이 아니라, AVOIDANCE 상태만 유지한다.
+            // ==========================================
+            void startAvoidanceLatch(
+                const LocalizedPoseMsg &pose,
+                const rclcpp::Time &now);
+            
+            void resetAvoidanceLatch();
+
+            bool isAvoidanceLatchDone(
+                const LocalizedPoseMsg &pose,
+                const rclcpp::Time &now) const;
+
+            // ==========================================
             // [5] 기본 상태 메시지 생성 함수
             // - header, robot_id 채우기
             // - 입력 수신 여부 채우기
@@ -300,6 +317,12 @@ namespace spot_navigation
             double avoidance_min_clearance_m_;      // 실제 회피 주행에 사용할 최소 clearance
             double avoidance_horizon_m_;            // FreeSpaceModel이 선택한 회피 heading 방향으로 70cm 앞에 target 생성 거리
 
+            // [추가] AVOIDANCE latch 파라미터
+            // - AVOIDANCE에 진입한 뒤 최소 시간 또는 최소 이동거리 조건을 만족하기 전까지
+            //   REJOIN 전환을 막기 위한 값이다.
+            double avoidance_min_hold_sec_;         // AVOIDANCE 최소 유지 시간 [sec]
+            double avoidance_min_travel_m_;         // AVOIDANCE 최소 이동 거리 [m]
+
             double rejoin_tolerance_m_;             // 회피 후 global path로 복귀(REJOIN) 완료 기준 거리
             double rejoin_heading_tolerance_rad_;   // 회피 후 global path로 복귀(REJOIN) 완료 기준 각도
 
@@ -339,6 +362,14 @@ namespace spot_navigation
             // Planner state
             // ==============
             std::uint8_t planner_state_{LocalPlannerStatusMsg::IDLE};
+
+            // [추가] AVOIDANCE latch state
+            // - AVOIDANCE episode가 언제, 어디서 시작되었는지 저장한다.
+            // - path를 고정하는 용도가 아니라 REJOIN 허용 조건을 판단하기 위한 상태값이다.
+            rclcpp::Time avoidance_start_time_;         // latch 시작 시간
+            bool avoidance_latch_active_{false};        // latch 활성화 flag
+            double avoidance_start_x_m_{0.0};           // latch 시작 위치 x
+            double avoidance_start_y_m_{0.0};           // latch 시작 위치 y
     };
 }
 
