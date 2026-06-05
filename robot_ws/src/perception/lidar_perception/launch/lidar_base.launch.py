@@ -10,11 +10,15 @@ def generate_launch_description():
     cyglidar_share = FindPackageShare("cyglidar_d1_ros2")
 
     preprocess_param_file = PathJoinSubstitution([
-        lidar_perception_share, "config", "pointcloud_preprocess.param.yaml"
+        lidar_perception_share, 
+        "config", 
+        "pointcloud_preprocess.param.yaml"
     ])
 
     cyglidar_launch_file = PathJoinSubstitution([
-        cyglidar_share, "launch", "cyglidar.launch.py"
+        cyglidar_share, 
+        "launch", 
+        "cyglidar.launch.py"
     ])
 
     return LaunchDescription([
@@ -24,7 +28,7 @@ def generate_launch_description():
             PythonLaunchDescriptionSource(cyglidar_launch_file)
         ),
 
-        # [2] Static TF
+        # [2] LiDAR Static TF
         Node(
             package="tf2_ros",
             executable="static_transform_publisher",
