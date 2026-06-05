@@ -12,7 +12,7 @@ actuator_bridge_node:
     uart_baudrate: 921600
     feedback_timeout_ms: 100.0
     max_rx_buffer_size: 4096
-    status_transient_fail_limit: 3
+    status_transient_fail_limit: 15
 
     target_topic: "/control/selected/joint_target"
     cmd_vel_topic: "/control/cmd_vel/spot_01"

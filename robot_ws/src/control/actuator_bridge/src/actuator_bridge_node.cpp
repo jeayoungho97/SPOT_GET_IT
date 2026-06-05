@@ -43,6 +43,8 @@ constexpr uint8_t FAULT_FEEDBACK_DECODE_FAILED = 12;
 constexpr uint8_t FAULT_SEQ_MISMATCH = 13;
 constexpr uint8_t FAULT_LINK_TIMEOUT = 14;
 
+constexpr uint8_t STM_FAULT_STALE_COMMAND = 4;
+
 // ROS JointTarget semantic mode
 constexpr uint8_t JT_MODE_DISABLE = 0;
 constexpr uint8_t JT_MODE_STAND = 1;
@@ -185,7 +187,7 @@ public:
     uart_baudrate_ = this->declare_parameter("uart_baudrate", 921600);
     feedback_timeout_ms_ = this->declare_parameter("feedback_timeout_ms", 100.0);
     max_rx_buffer_size_ = this->declare_parameter("max_rx_buffer_size", 4096);
-    status_transient_fail_limit_ = this->declare_parameter("status_transient_fail_limit", 3);
+    status_transient_fail_limit_ = this->declare_parameter("status_transient_fail_limit", 15);
     if (status_transient_fail_limit_ < 1) {
       throw std::runtime_error("status_transient_fail_limit must be >= 1");
     }
@@ -496,11 +498,13 @@ private:
     const bool in_safe_state = (feedback.status & STM_STATUS_IN_SAFE_STATE) != 0U;
     const bool calibrating = (feedback.status & STM_STATUS_CALIBRATING) != 0U;
     const bool fault_ok = (feedback.fault_code == FAULT_NONE);
+    const bool stm_stale_command =
+      (feedback.fault_code == STM_FAULT_STALE_COMMAND) && !cmd_fresh;
     const bool raw_ok =
       fault_ok && !in_safe_state && !calibrating && imu_ok && servos_ok && cmd_fresh && torque_on;
     const bool transient_status_candidate =
-      fault_ok && !in_safe_state && !calibrating && imu_ok && servos_ok &&
-      (!cmd_fresh || !torque_on);
+      !in_safe_state && !calibrating && imu_ok && servos_ok &&
+      ((fault_ok && (!cmd_fresh || !torque_on)) || (stm_stale_command && torque_on));
 
     bool effective_ok = raw_ok;
     bool effective_torque_on = torque_on;
@@ -510,7 +514,7 @@ private:
       status_transient_fail_streak_ = 0;
     } else if (transient_status_candidate) {
       status_transient_fail_streak_++;
-      if (status_transient_fail_streak_ <
+      if (status_transient_fail_streak_ <=
         static_cast<uint32_t>(status_transient_fail_limit_))
       {
         effective_ok = true;
@@ -529,15 +533,17 @@ private:
     if (stale) {
       msg.status = STATUS_WARN;
       msg.fault_code = FAULT_STALE_TARGET;
-      msg.torque_enabled = false;
+      msg.torque_enabled = effective_torque_on;
       msg.servo_connected = servos_ok;
     } else {
       msg.fault_code = feedback.fault_code;
       msg.torque_enabled = effective_torque_on;
       msg.servo_connected = servos_ok;
 
-      if (!fault_ok) {
+      if (!fault_ok && !stm_stale_command) {
         msg.status = STATUS_FAULT;
+      } else if (stm_stale_command && !suppress_transient_warn) {
+        msg.status = STATUS_WARN;
       } else if (in_safe_state || calibrating) {
         msg.status = STATUS_WARN;
       } else if (effective_ok) {
@@ -652,7 +658,7 @@ private:
   double feedback_timeout_ms_{100.0};
   int max_rx_buffer_size_{4096};
   double motion_state_deadband_{0.05};
-  int status_transient_fail_limit_{3};
+  int status_transient_fail_limit_{15};
   uint32_t status_transient_fail_streak_{0};
 
   actuator_bridge::UartTransport uart_;

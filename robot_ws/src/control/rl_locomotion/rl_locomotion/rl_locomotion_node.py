@@ -111,7 +111,7 @@ class RlLocomotionNode(Node):
         self.declare_parameter("max_raw_action_abs", 10.0)
 
         # 0 MODE_DISABLE, 1 MODE_STAND, 3 MODE_CROUCH, 4 MODE_E_STOP
-        self.declare_parameter("safe_mode", int(JointTarget.MODE_DISABLE))
+        self.declare_parameter("safe_mode", int(JointTarget.MODE_STAND))
 
         self.declare_parameter("vx_min", 0.0)
         self.declare_parameter("vx_max", 0.40)
