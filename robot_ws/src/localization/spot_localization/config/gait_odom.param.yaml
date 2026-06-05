@@ -11,7 +11,7 @@ gait_odom_estimator_node:
 
     # Gait calibration parameters
     # 실측 튜닝 후 이 값을 수정한다.
-    forward_step_length_m: 0.1
+    forward_step_length_m: 0.13
     backward_step_length_m: 0.025
     strafe_left_step_length_m: 0.05
     strafe_right_step_length_m: 0.05
