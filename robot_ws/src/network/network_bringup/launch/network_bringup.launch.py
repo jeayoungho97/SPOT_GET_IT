@@ -45,10 +45,19 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration("enable_lidar")),
     )
 
+    from launch_ros.actions import Node
+    cmd_receiver_node = Node(
+    package="cmd_receiver",
+    executable="cmd_receiver_node",
+    name="cmd_receiver_node",
+    output="screen",
+    )
+
     return LaunchDescription([
         declare_rpi5_ip,
         declare_enable_pose_path_event,
         declare_enable_lidar,
         pose_path_event_sender,
         lidar_sender,
+        cmd_receiver_node,
     ])
