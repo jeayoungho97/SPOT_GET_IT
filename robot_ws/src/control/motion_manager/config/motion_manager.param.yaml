@@ -63,32 +63,22 @@ detect_motion_node:
   ros__parameters:
     rate_hz: 50.0
 
-    # DETECT 진입 후 먼저 CLASSIC 정지 자세로 이동/안정화한다.
-    settle_min_sec: 0.5
-    settle_max_sec: 1.5
-    stand_tolerance_rad: 0.08
-
+    # DETECT 진입 후 현재 joint feedback 자세에서 앉은 자세로 이동한 뒤 인사한다.
     sit_transition_sec: 3.0
+    sit_skip_tolerance_rad: 0.08
     raise_transition_sec: 1.2
     wave_segment_sec: 0.75
     wave_cycles: 3
 
-    stand_max_delta_rad: 0.03
     sit_max_delta_rad: 0.015
     raise_max_delta_rad: 0.02
     wave_max_delta_rad: 0.02
 
-    stand_pose:
-      [0.0, -0.9921237899157832, 1.4907337340120823,
-       0.0, -0.9921237899157832, 1.4907337340120823,
-       0.0, -0.9921237899157832, 1.4907337340120823,
-       0.0, -0.9921237899157832, 1.4907337340120823]
-
     sit_pose:
-      [-0.120000, -0.720000, 1.050000,
-       0.0, -0.662447, 1.272883,
-       0.120000, -1.500000, 2.250000,
-       0.120000, -1.500000, 2.250000]
+      [0.0, -0.700000, 2.250000,
+       0.0, -0.700000, 2.250000,
+       0.0, -0.700000, 2.250000,
+       0.0, -0.700000, 2.250000]
 
     # Joint order: FL, FR, RL, RR.
     # Rear legs crouch low. FL stays extended as a front support while FR is lifted.

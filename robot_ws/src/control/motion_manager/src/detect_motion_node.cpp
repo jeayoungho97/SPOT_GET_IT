@@ -21,7 +21,6 @@ using JointFeedback = robot_interfaces::msg::JointFeedback;
 using JointTarget = robot_interfaces::msg::JointTarget;
 
 constexpr std::size_t NUM_JOINTS = 12;
-constexpr uint8_t MODE_STAND = 1;
 constexpr uint8_t MODE_CROUCH = 3;
 
 std::array<float, NUM_JOINTS> toPoseArray(
@@ -79,37 +78,23 @@ public:
   : Node("detect_motion_node")
   {
     rate_hz_ = this->declare_parameter<double>("rate_hz", 50.0);
-    settle_min_sec_ = this->declare_parameter<double>("settle_min_sec", 0.5);
-    settle_max_sec_ = this->declare_parameter<double>("settle_max_sec", 1.5);
-    stand_tolerance_rad_ = this->declare_parameter<double>("stand_tolerance_rad", 0.08);
     sit_transition_sec_ = this->declare_parameter<double>("sit_transition_sec", 3.0);
+    sit_skip_tolerance_rad_ = this->declare_parameter<double>("sit_skip_tolerance_rad", 0.08);
     raise_transition_sec_ = this->declare_parameter<double>("raise_transition_sec", 1.2);
     wave_segment_sec_ = this->declare_parameter<double>("wave_segment_sec", 0.75);
     wave_cycles_ = this->declare_parameter<int>("wave_cycles", 3);
-    stand_max_delta_rad_ = this->declare_parameter<double>("stand_max_delta_rad", 0.03);
     sit_max_delta_rad_ = this->declare_parameter<double>("sit_max_delta_rad", 0.015);
     raise_max_delta_rad_ = this->declare_parameter<double>("raise_max_delta_rad", 0.02);
     wave_max_delta_rad_ = this->declare_parameter<double>("wave_max_delta_rad", 0.02);
-
-    stand_pose_ = toPoseArray(
-      this->declare_parameter<std::vector<double>>(
-        "stand_pose",
-    {
-      0.0, -0.9921237899157832, 1.4907337340120823,
-      0.0, -0.9921237899157832, 1.4907337340120823,
-      0.0, -0.9921237899157832, 1.4907337340120823,
-      0.0, -0.9921237899157832, 1.4907337340120823
-    }),
-      "stand_pose");
 
     sit_pose_ = toPoseArray(
       this->declare_parameter<std::vector<double>>(
         "sit_pose",
     {
-      -0.120000, -0.720000, 1.050000,
-      0.0, -0.662447, 1.272883,
-      0.120000, -1.500000, 2.250000,
-      0.120000, -1.500000, 2.250000
+      0.0, -0.700000, 2.250000,
+      0.0, -0.700000, 2.250000,
+      0.0, -0.700000, 2.250000,
+      0.0, -0.700000, 2.250000
     }),
       "sit_pose");
 
@@ -134,6 +119,9 @@ public:
       0.120000, -1.500000, 2.250000
     }),
       "right_front_calf_wave_pose");
+
+    transition_from_pose_ = sit_pose_;
+    last_target_pose_ = sit_pose_;
 
     mode_sub_ = this->create_subscription<std_msgs::msg::String>(
       "/control/behavior/active_mode",
@@ -167,7 +155,6 @@ private:
   enum class Phase
   {
     Idle,
-    SettleDefault,
     SitDown,
     RaiseFront,
     Wave,
@@ -179,11 +166,10 @@ private:
     const std::string mode = toUpper(msg->data);
     if (mode == "DETECT") {
       if (!active_) {
-        active_ = true;
-        setPhase(Phase::SettleDefault);
+        startSequence();
         RCLCPP_INFO(this->get_logger(), "DETECT sequence started");
       } else if (phase_ == Phase::HoldRaised || phase_ == Phase::Idle) {
-        setPhase(Phase::SettleDefault);
+        startSequence();
         RCLCPP_INFO(this->get_logger(), "DETECT sequence restarted");
       }
       return;
@@ -208,9 +194,9 @@ private:
 
   void timerCallback()
   {
-    std::array<float, NUM_JOINTS> target = stand_pose_;
-    uint8_t mode = MODE_STAND;
-    double max_delta = stand_max_delta_rad_;
+    std::array<float, NUM_JOINTS> target = sit_pose_;
+    uint8_t mode = MODE_CROUCH;
+    double max_delta = sit_max_delta_rad_;
 
     if (active_) {
       updateActiveTarget(target, mode, max_delta);
@@ -231,6 +217,7 @@ private:
     }
 
     target_pub_->publish(msg);
+    last_target_pose_ = target;
     seq_++;
   }
 
@@ -241,18 +228,8 @@ private:
   {
     const double elapsed = phaseElapsedSec();
 
-    if (phase_ == Phase::SettleDefault) {
-      target = stand_pose_;
-      mode = MODE_STAND;
-      max_delta = stand_max_delta_rad_;
-      if (isDefaultSettled(elapsed)) {
-        setPhase(Phase::SitDown);
-      }
-      return;
-    }
-
     if (phase_ == Phase::SitDown) {
-      target = blendPose(stand_pose_, sit_pose_, elapsed / sit_transition_sec_);
+      target = blendPose(transition_from_pose_, sit_pose_, elapsed / sit_transition_sec_);
       mode = MODE_CROUCH;
       max_delta = sit_max_delta_rad_;
       if (elapsed >= sit_transition_sec_) {
@@ -297,33 +274,47 @@ private:
       return;
     }
 
-    target = stand_pose_;
-    mode = MODE_STAND;
-    max_delta = stand_max_delta_rad_;
+    target = sit_pose_;
+    mode = MODE_CROUCH;
+    max_delta = sit_max_delta_rad_;
   }
 
-  bool isDefaultSettled(double elapsed_sec) const
+  void startSequence()
   {
-    if (elapsed_sec < settle_min_sec_) {
-      return false;
-    }
-
-    if (elapsed_sec >= settle_max_sec_) {
-      return true;
-    }
+    active_ = true;
 
     const auto feedback = latestFeedback();
-    if (!feedback.has_value()) {
-      return false;
+    if (feedback.has_value()) {
+      transition_from_pose_ = feedback.value();
+    } else {
+      transition_from_pose_ = last_target_pose_;
+      RCLCPP_WARN(
+        this->get_logger(),
+        "fresh joint feedback unavailable; starting DETECT sit transition from last target");
     }
 
+    if (maxPoseError(transition_from_pose_, sit_pose_) <= sit_skip_tolerance_rad_) {
+      RCLCPP_INFO(
+        this->get_logger(),
+        "current pose is already near sit pose; skipping SitDown phase");
+      setPhase(Phase::RaiseFront);
+      return;
+    }
+
+    setPhase(Phase::SitDown);
+  }
+
+  static double maxPoseError(
+    const std::array<float, NUM_JOINTS> & lhs,
+    const std::array<float, NUM_JOINTS> & rhs)
+  {
     double max_error = 0.0;
     for (std::size_t i = 0; i < NUM_JOINTS; ++i) {
       max_error = std::max(
         max_error,
-        std::fabs(static_cast<double>(feedback.value()[i] - stand_pose_[i])));
+        std::fabs(static_cast<double>(lhs[i] - rhs[i])));
     }
-    return max_error <= stand_tolerance_rad_;
+    return max_error;
   }
 
   std::optional<std::array<float, NUM_JOINTS>> latestFeedback() const
@@ -357,8 +348,6 @@ private:
     switch (phase) {
       case Phase::Idle:
         return "Idle";
-      case Phase::SettleDefault:
-        return "SettleDefault";
       case Phase::SitDown:
         return "SitDown";
       case Phase::RaiseFront:
@@ -374,14 +363,11 @@ private:
 
 private:
   double rate_hz_{50.0};
-  double settle_min_sec_{0.5};
-  double settle_max_sec_{1.5};
-  double stand_tolerance_rad_{0.08};
   double sit_transition_sec_{3.0};
+  double sit_skip_tolerance_rad_{0.08};
   double raise_transition_sec_{1.2};
   double wave_segment_sec_{0.75};
   int wave_cycles_{3};
-  double stand_max_delta_rad_{0.03};
   double sit_max_delta_rad_{0.015};
   double raise_max_delta_rad_{0.02};
   double wave_max_delta_rad_{0.02};
@@ -391,10 +377,11 @@ private:
   rclcpp::Time phase_start_time_{0, 0, RCL_ROS_TIME};
   uint32_t seq_{0};
 
-  std::array<float, NUM_JOINTS> stand_pose_{};
   std::array<float, NUM_JOINTS> sit_pose_{};
   std::array<float, NUM_JOINTS> raised_pose_{};
   std::array<float, NUM_JOINTS> calf_wave_pose_{};
+  std::array<float, NUM_JOINTS> transition_from_pose_{};
+  std::array<float, NUM_JOINTS> last_target_pose_{};
 
   mutable std::mutex feedback_mutex_;
   std::optional<std::array<float, NUM_JOINTS>> latest_feedback_;
